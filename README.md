@@ -92,7 +92,7 @@ Even-though the kernels are general purpose, they tend to perform well. Below be
 * Only a batch-size of 1 is supported. 
 * Only scalar zero-point/scaling for the moment. Channel-wise normalization can be done outside the matmul call, but grouping support needs to be integrated.
 * Odd bitwidths support like 3-bit is broken because they require padding that makes the number of rows not divisible by the number of columns per warp (32). There's a way to pad the shared memory with zeros to match the padding and add an `if` statement to avoid accessing indices outside the range, but it doesn't give the correct results for the moment.
-* Maybe it's a better idea to follow <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>'s idea that uses a predefined chunk-size to be processed by the threads. This would allow a more flexible usage of the shared memory.
+* Maybe it's a better to follow <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>'s idea that uses a predefined chunk-size to be processed by the threads. This would allow a more flexible usage of the shared memory.
 
 ### Citation 📜
 ```
