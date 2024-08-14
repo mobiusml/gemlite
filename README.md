@@ -98,7 +98,7 @@ Even-though the kernels are general purpose, they tend to perform well. Below be
 ### Citation 📜
 ```
 @misc{badri2024gemlite,
-title  = {Gemlite: Flexible Low-Bit GEMV CUDA Kernels.},
+title  = {Gemlite: Towards Building Custom Low-Bit Fused CUDA Kernels.},
 url    = {https://github.com/mobiusml/gemlite},
 author = {Hicham Badri, Appu Shaji},
 month  = {August},
