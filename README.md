@@ -79,7 +79,7 @@ We provide various implementations of step 2:
   - INT32 accumulation with `int32`: `gemv_A8iWniO32i_int32accint_int32pack_core_kernel()`
 
 ## Using the Implemented Kernels
-If you want to test or use the kernels directly, you can follow the following example:
+If you want to test or use the kernels directly, you can follow the example below:
 ```Python
 from gemlite import GemLiteMatmul, DType
 
