@@ -84,7 +84,8 @@ If you want to test or use the kernels directly, you can follow the example belo
 from gemlite import GemLiteMatmul, DType
 
 #Bitpack
-W_int32_packed = GemLiteMatmul.pack_warped_int32(W_uint, nbits=nbits) 
+W_int32_packed = GemLiteMatmul.pack_warped_int32(W_uint, nbits=nbits)
+#W_uint is the uint8 quantized weight with values ranging from 0 to 2**nbits - 1
 
 #Fp16 input -> Fp16 output
 gemlite_fp16_fp16  = GemLiteMatmul(W_nbits=nbits, input_dtype=DType.FP16, output_dtype=DType.FP16).forward
