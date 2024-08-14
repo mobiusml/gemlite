@@ -12,7 +12,7 @@ Instead of focusing on very specific and performant use-cases, we provide a set 
 
 ## How it Works
 We explain in detail how the implementation works in our <a href="https://mobiusml.github.io/gemlite_blogpost/">blogpost</a>. 
-The main idea is similar to some fast GEMV implementations available like <a href="https://github.com/Bruce-Lee-LY/cuda_hgemv">Bruce-Lee-LY's hgmev</a> and <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>: process chunks of the input vector within a group of threads (warp) to calculate partial dot products and warp-reduce the final result. 
+The main idea is similar to some fast GEMV implementations available like <a href="https://github.com/Bruce-Lee-LY/cuda_hgemv">Bruce-Lee-LY's implementation</a> and <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>: process chunks of the input vector within a group of threads (warp) to calculate partial dot products and warp-reduce the final result. 
 
 In our case, each warp processes `cols_per_warp = 1` columns across 32 threads, and each block processes `cols_per_block = 32` columns. There are 3 main steps:
 * Step 1: we cache the input vector in the shared memory first, since more than 1 column is processed per block.
