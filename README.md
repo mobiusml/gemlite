@@ -78,6 +78,24 @@ We provide various implementations of step 2:
   - INT32 accumulation with `char4` and `dp4a`: `gemv_A8iWniO32i_int32accchar4_int32pack_core_kernel()`
   - INT32 accumulation with `int32`: `gemv_A8iWniO32i_int32accint_int32pack_core_kernel()`
 
+## Using the Implemented Kernels
+If you want to test or use the kernels directly, you can follow the following example:
+```Python
+from gemlite import GemLiteMatmul, DType
+
+#Bitpack
+W_int32_packed = GemLiteMatmul.pack_warped_int32(W_uint, nbits=nbits) 
+
+#Fp16 input -> Fp16 output
+gemlite_fp16_fp16  = GemLiteMatmul(W_nbits=nbits, input_dtype=DType.FP16, output_dtype=DType.FP16).forward
+out = gemlite_fp16_fp16(x_fp16, W_int32_packed, w_shift, w_scale) 
+
+#Int8 input -> Int32 output
+gemlite_int8_int32 = GemLiteMatmul(W_nbits=nbits, input_dtype=DType.INT8, output_dtype=DType.INT32).forward
+out = gemlite_int8_int32(x_int8, W_int32_packed, w_shift)
+```
+The code above should work with `nbits=8, 4, 2` and a batch-size of 1 for the input `x`.
+
 ## Performance
 Even-though the kernels are general purpose, they tend to perform well. Below bechmark numbers on both the 3090 and 4090 (you can reproduce these numbers with the code snippet `examples/benchmark.py`).
  <div class="row"><center>
