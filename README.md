@@ -69,7 +69,7 @@ As mentioned in the code above, we first read one quantized element `W[q_index])
 For bitpacking, we use a universal int32 bitpacking approach to make the code flexible. The main "gotcha" is that, we pack the elements with a stride that corresponds to the number of threads per warp (32). This ensures that memory access is coalesced, so that successive threads read from the cached quantized element 
 `W[q_index])`.
 
-We provide various implementations of step 2, but we only use one for fp16 activations and one for int8 activations. The variants include:
+We provide various implementations of step 2:
 * Half-precision input kernels can be found in `cuda/gemv_A16fWnO16f_int32packing.cu`:
   - FP32 accumulation with `float4`: `gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel()`
   - FP32 accumulation with `float`: `gemv_A16fWniO16f_fp32accfloat_int32pack_core_kernel()`
