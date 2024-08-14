@@ -89,11 +89,13 @@ W_int32_packed = GemLiteMatmul.pack_warped_int32(W_uint, nbits=nbits)
 
 #Fp16 input -> Fp16 output
 gemlite_fp16_fp16  = GemLiteMatmul(W_nbits=nbits, input_dtype=DType.FP16, output_dtype=DType.FP16).forward
-out = gemlite_fp16_fp16(x_fp16, W_int32_packed, w_shift, w_scale) 
+out = gemlite_fp16_fp16(x_fp16, W_int32_packed, w_shift, w_scale)
+#equivalent to torch.matmul(x_fp16, (W_uint.float() - w_shift) / w_scale_f)
 
 #Int8 input -> Int32 output
 gemlite_int8_int32 = GemLiteMatmul(W_nbits=nbits, input_dtype=DType.INT8, output_dtype=DType.INT32).forward
 out = gemlite_int8_int32(x_int8, W_int32_packed, w_shift)
+#equivalent to torch.matmul(x_int8, (W_uint.int() - w_shift))
 ```
 The code above should work with `nbits=8, 4, 2` and a batch-size of 1 for the input `x`.
 
