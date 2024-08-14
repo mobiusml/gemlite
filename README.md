@@ -1,5 +1,5 @@
-# GemLite
-GemLite is a set of simple CUDA kernels for fused low-bit GEMV:
+# Gemlite
+Gemlite is a collection of simple CUDA kernels for fused low-bit GEMV:
 * It is easy to read and customize.
 * It's flexible: one core kernel can be used for any n-bit weight quantization.
 * Multiple implementations: fp32 accumuation, fp16 accumulation, etc.
@@ -10,11 +10,9 @@ The main reason we started this project is because we found that it is very diff
 
 Instead of focusing on very specific and performant use-cases, we provide a set of simple and re-usable kernels that can be used as a good starting point.
 
-## Installation
-`pip install git+https://github.com/mobiusml/gemlite.git`
-
 ## How it Works
-The main idea is similar to some fast GEMV implementations available like <a href="https://github.com/Bruce-Lee-LY/cuda_hgemv">Bruce-Lee-LY/'s hgmev</a> and <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>. They rely on processing chunks of the input vector within a warp and warp-reduce the final result. 
+We explain in detail how the implementation works in our <a href="https://mobiusml.github.io/gemlite_blogpost/">blogpost</a>. 
+The main idea is similar to some fast GEMV implementations available like <a href="https://github.com/Bruce-Lee-LY/cuda_hgemv">Bruce-Lee-LY's hgmev</a> and <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>: process chunks of the input vector within a group of threads (warp) to calculate partial dot products and warp-reduce the final result. 
 
 In our case, each warp processes `cols_per_warp = 1` columns across 32 threads, and each block processes `cols_per_block = 32` columns. There are 3 main steps:
 * Step 1: we cache the input vector in the shared memory first, since more than 1 column is processed per block.
@@ -24,7 +22,7 @@ In our case, each warp processes `cols_per_warp = 1` columns across 32 threads, 
 Step 1 and 3 are standard practice, regardless if the weights are quantized or not. The magic happens in step 2, where the weights are dequantized on-the-fly to calculate the partial dot product. The speed is actually coming from the reduced memory reads, not from the computation, since we read less data from the global memory with quantized weights.
 
 In order to make the kernels flexible, we use two arrays:
-* `loc_shifts`: these are per-cached thread-level indices, they depend on the number of packed elements per quantized weight point.
+* `loc_shifts`: these are pre-cached thread-level indices, they depend on the number of packed elements per quantized weight point.
 * `q_shifts` : array of shifts to use to dequantize the weights.
 Since the bitwidth is fixed, we only need a single unpacking mask `W_nbits **2 - 1`.
 
@@ -66,17 +64,19 @@ For the case of 4-bit and int32 bitpacking, we need the following:
                                                   threads_per_group*4,  threads_per_group*5, threads_per_group*6, threads_per_group*7};
   const uint8_t q_shifts[elements_per_sample]   = {28, 24, 20, 16, 12, 8, 4, 0}; //32 - W_nbits*i
 ```
-As mentioned in the code above, we first read one quantized element `W[q_index])`, and then dequantize it on-the-fly via a loop using `loc_shifts` and `q_shifts`. To make the kernel work for other bitwidths, we simply need to change the params above: `unpack_mask`, `elements_per_sample`, `loc_shifts`, `q_shifts`.
+As mentioned in the code above, we first read one quantized element `W[q_index])`, and then dequantize it on-the-fly via a loop using `loc_shifts` and `q_shifts`. To make the kernel work for other bitwidths, we simply need to change the params above: `unpack_mask`, `elements_per_sample`, `loc_shifts`, `q_shifts`. Odd bitwidths would require some zero-padding to make the weight shapes a multiple of `32 / nbits`.
 
-The last thing to mention is the bitpacking. We use a universal int32 bitpacking logic to make the code flexible. The main "gotcha" is that, we pack the elements with a stride that corresponds to the number of threads per warp (32). This ensures that memory access is coalesced, so that successive threads read from the cached quantized element 
+For bitpacking, we use a universal int32 bitpacking approach to make the code flexible. The main "gotcha" is that, we pack the elements with a stride that corresponds to the number of threads per warp (32). This ensures that memory access is coalesced, so that successive threads read from the cached quantized element 
 `W[q_index])`.
 
 We provide various implementations of step 2, but we only use one for fp16 activations and one for int8 activations. The variants include:
-* FP32 accumulation with `float4`
-* FP32 accumulation with `float`
-* FP16 accumulatiom with `half2`
-* INT32 accumulation with `char4` and `dp4a`
-* INT32 accumulation with `int32`
+* Half-precision input kernels can be found in `cuda/gemv_A16fWnO16f_int32packing.cu`:
+  - FP32 accumulation with `float4`: `gemv_A16fWniO16f_fp32accfloat4_int32pack_core_kernel()`
+  - FP32 accumulation with `float`: `gemv_A16fWniO16f_fp32accfloat_int32pack_core_kernel()`
+  - FP16 accumulatiom with `half2`: `cuda/gemv_A16fWniO16f_fp16acchalf2_int32pack_core_kernel()`
+* Integer (8-bit) input kernels can be found in kernels are in `gemv_A8iWnO32i_int32packing.cu`:
+  - INT32 accumulation with `char4` and `dp4a`: `gemv_A8iWniO32i_int32accchar4_int32pack_core_kernel()`
+  - INT32 accumulation with `int32`: `gemv_A8iWniO32i_int32accint_int32pack_core_kernel()`
 
 ## Performance
 Even-though the kernels are general purpose, they tend to perform well. Below bechmark numbers on both the 3090 and 4090 (you can reproduce these numbers with the code snippet `examples/benchmark.py`).
@@ -90,17 +90,18 @@ Even-though the kernels are general purpose, they tend to perform well. Below be
 
 ## Limitations
 * Only a batch-size of 1 is supported. 
-* Only scalar zero-point/scaling for the moment. Channel-wise normalization can be done outside the matmul call, but grouping support needs to be integrated.
+* Only scalar zero-point/scaling for the moment. Channel-wise normalization can be done outside the matmul call, but grouping support is missing.
 * Odd bitwidths support like 3-bit is broken because they require padding that makes the number of rows not divisible by the number of columns per warp (32). There's a way to pad the shared memory with zeros to match the padding and add an `if` statement to avoid accessing indices outside the range, but it doesn't give the correct results for the moment.
 * Maybe it's a better to follow <a href="https://github.com/wangsiping97/FastGEMV">FastGEMV</a>'s idea that uses a predefined chunk-size to be processed by the threads. This would allow a more flexible usage of the shared memory.
+
 
 ### Citation 📜
 ```
 @misc{badri2024gemlite,
 title  = {Gemlite: Flexible Low-Bit GEMV CUDA Kernels.},
 url    = {https://github.com/mobiusml/gemlite},
-author = {Hicham Badri},
-month  = {July},
+author = {Hicham Badri, Appu Shaji},
+month  = {August},
 year   = {2024}
 ```
  
