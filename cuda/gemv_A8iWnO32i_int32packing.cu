@@ -4,7 +4,7 @@
 #include "helper.cu"
 
 //*********************************************************************************
-//fp16 -> int8 x n-bit as 32-bit packed, int32 accumulation with dp4a
+//int8 x n-bit as 32-bit packed, int32 accumulation with dp4a
 __device__ __forceinline__ void gemv_A8iWniO32i_int32accchar4_int32pack_core_kernel(const int8_t* __restrict__ x, const int32_t* __restrict__ W, int32_t* y, 
                                   const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
                                   const int w_zero,  
@@ -73,7 +73,7 @@ __device__ __forceinline__ void gemv_A8iWniO32i_int32accchar4_int32pack_core_ker
 
 
 //*********************************************************************************
-//fp16 -> int8 x n-bit as 32-bit packed, int32 accumulation without dp4a
+//int8 x n-bit as 32-bit packed, int32 accumulation without dp4a
 __device__ __forceinline__ void gemv_A8iWniO32i_int32accint_int32pack_core_kernel(const int8_t* __restrict__ x, const int32_t* __restrict__ W, int32_t* y, 
                                   const size_t x_rows, const size_t x_cols, const size_t W_rows, const size_t W_cols, 
                                   const int w_zero,  
@@ -99,7 +99,7 @@ __device__ __forceinline__ void gemv_A8iWniO32i_int32accint_int32pack_core_kerne
   }
   __syncthreads();
 
-  //Main loop: float4 acc
+  //Main loop: int32 acc
   int sum_int = 0;                                           
   int32_t _w; 
   int8_t _x;
