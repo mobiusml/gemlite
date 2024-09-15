@@ -222,7 +222,7 @@ torch::Tensor gemv_A8iWniO32i(torch::Tensor x, torch::Tensor W, const int w_zero
     int32_t* y_ptr       = reinterpret_cast<int32_t*>(y.data_ptr<int32_t>());
 
     //Shared memory size
-    static size_t shared_mem_size = x_cols * sizeof(int8_t); //W_rows , x_cols
+    size_t shared_mem_size = x_cols * sizeof(int8_t); //W_rows , x_cols
 
     switch (W_nbits){
       case 8: gemv_A8iW8iO32i_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero); break; 
