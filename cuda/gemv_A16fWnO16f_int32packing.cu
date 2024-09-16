@@ -305,7 +305,7 @@ torch::Tensor gemv_A16fWniO16f(torch::Tensor x, torch::Tensor W, const float w_z
     half* y_ptr          = reinterpret_cast<half*>(y.data_ptr<at::Half>());
 
     //Shared memory size
-    static size_t shared_mem_size = x_cols * sizeof(half); //W_rows , x_cols
+    size_t shared_mem_size = x_cols * sizeof(half); //W_rows , x_cols
 
     switch (W_nbits){
       case 8: gemv_A16fW8iO16f_kernel<<<grid_size, block_size, shared_mem_size>>>(x_ptr, W_ptr, y_ptr, x_rows, x_cols, W_rows, W_cols, w_zero, w_scale); break; 
