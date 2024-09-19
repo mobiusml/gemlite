@@ -25,10 +25,10 @@ setup(
     license="Apache 2",
     ext_modules=[
         CUDAExtension('gemlite_lib', [
-            "cuda/gemlite_lib.cpp",
-            "cuda/gemv_A16fWnO16f_int32packing.cu",
-            "cuda/gemv_A8iWnO32i_int32packing.cu",
-            "cuda/helper.cu"
+            "gemlite/cuda_kernels/gemlite_lib.cpp",
+            "gemlite/cuda_kernels/gemv_A16fWnO16f_int32packing.cu",
+            "gemlite/cuda_kernels/gemv_A8iWnO32i_int32packing.cu",
+            "gemlite/cuda_kernels/helper.cu"
             ],
         extra_compile_args={
                 "cxx": ["-O3", "-std=c++17"],
@@ -42,7 +42,7 @@ setup(
     },
     include_package_data=True,
     cmdclass={'build_ext': BuildExtension},
-    install_requires=["numpy", "ninja"],
+    install_requires=["numpy", "ninja", "triton>=3.0.0"], #3.0.0+dedb7bdf33
 )
 
 # python3 setup.py install
