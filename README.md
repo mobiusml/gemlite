@@ -1,13 +1,14 @@
-GemLite is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for <b>simplicity</b> and <b>reasubility</b>.
+# GemLite
+<a href="https://github.com/mobiusml/gemlite/">GemLite</a>  is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for <b>simplicity</b> and <b>reasubility</b>.
 
 This project was initiated because we found it challenging to customize the low-bit kernels that are currently available.
 <a href="https://github.com/mobiusml/gemlite/">GemLite</a> provides both flexibility and performance, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs.
 
-While GemLite can outperform the best existing implementations on large matrices, there's still potential for further optimization!
+While <a href="https://github.com/mobiusml/gemlite/">GemLite</a> can outperform the best existing implementations on large matrices, there's still potential for further optimization!
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_ 32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
@@ -15,14 +16,14 @@ While GemLite can outperform the best existing implementations on large matrices
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_4090RTX.svg" alt="4bit_gs=128_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_ 32768x32768_4090RTX.svg" alt="4bit_gs=128_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_32768x32768_4090RTX.svg" alt="2bit_gs=128_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_ 32768x32768_4090RTX.svg" alt="2bit_gs=128_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
@@ -83,28 +84,28 @@ We present performance results across various batch sizes on the RTX 4096. Perfo
 <summary>8-bit Weights</summary>
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_4096x4096_4090RTX.svg" alt="8bit_gs=infeatures_4096x4096_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_ 4096x4096_4090RTX.svg" alt="8bit_gs=infeatures_4096x4096_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_8192x8192_4090RTX.svg" alt="8bit_gs=infeatures_8192x8192_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_ 8192x8192_4090RTX.svg" alt="8bit_gs=infeatures_8192x8192_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_16384x16384_4090RTX.svg" alt="8bit_gs=infeatures_16384x16384_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_ 16384x16384_4090RTX.svg" alt="8bit_gs=infeatures_16384x16384_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_ 32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
@@ -115,28 +116,28 @@ We present performance results across various batch sizes on the RTX 4096. Perfo
 <summary>4-bit Weights</summary>
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_4090RTX.svg" alt="4bit_gs=128_4096x4096_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_ 4096x4096_4090RTX.svg" alt="4bit_gs=128_4096x4096_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_4090RTX.svg" alt="4bit_gs=128_8192x8192_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_ 8192x8192_4090RTX.svg" alt="4bit_gs=128_8192x8192_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_4090RTX.svg" alt="4bit_gs=128_16384x16384_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_ 16384x16384_4090RTX.svg" alt="4bit_gs=128_16384x16384_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_4090RTX.svg" alt="4bit_gs=128_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_ 32768x32768_4090RTX.svg" alt="4bit_gs=128_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
@@ -146,28 +147,28 @@ We present performance results across various batch sizes on the RTX 4096. Perfo
 <summary>2-bit Weights</summary>
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_4096x4096_4090RTX.svg" alt="2bit_gs=128_4096x4096_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_ 4096x4096_4090RTX.svg" alt="2bit_gs=128_4096x4096_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_8192x8192_4090RTX.svg" alt="2bit_gs=128_8192x8192_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_ 8192x8192_4090RTX.svg" alt="2bit_gs=128_8192x8192_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_16384x16384_4090RTX.svg" alt="2bit_gs=128_16384x16384_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_ 16384x16384_4090RTX.svg" alt="2bit_gs=128_16384x16384_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
 
 <div class="row"><center>
   <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_32768x32768_4090RTX.svg" alt="2bit_gs=128_32768x32768_4090RTX" style="width:89%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_ 32768x32768_4090RTX.svg" alt="2bit_gs=128_32768x32768_4090RTX" style="width:98%">
   </div>
  </center>
 </div> 
@@ -244,7 +245,7 @@ Although the kernels are designed for general purposes, they perform well in pra
  <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/gemlite_3090_fp16.png" alt="3090" style="width:49%">
-	<img src="https://github.com/mobiusml/gemlite/blob/master/images/gemlite_4090_fp16.png" alt="4090" style="width:48%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/gemlite_4090_fp16.png" alt="4090" style="width:48%">
   </div>
  </center>
 </div> 
