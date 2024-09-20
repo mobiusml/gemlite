@@ -76,6 +76,7 @@ For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, whic
 * Performance needs improvement for smaller matrices or lower batch sizes, particularly with the GEMV kernel.
 * There is a <a href="https://github.com/triton-lang/triton/issues/2637">high overhead</a> when launching Triton kernels, which becomes more noticeable with lighter workloads. Unfortunately, Cudagraphs does not seem to resolve this issue.
 * Autotuning is time-consuming, so the current kernels were optimized with a limited set of configurations. More exhaustive autotuning would likely yield better results. If you plan to run these kernels with different settings or devices, consider adding more configurations for better performance.
+* Performance has been mainly optimized for the 4090 RTX (see the autotune configs in the kernel files).
 
 ### Performance
 We present performance results across various batch sizes on the RTX 4096. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
