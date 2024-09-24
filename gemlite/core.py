@@ -178,6 +178,9 @@ GEMLITE_TRITON_MAPPING = {
     ("BF16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
+def get_closest_m(M):
+    allowed_m_values = [1, 2, 4, 8, 16, 32, 64, 128]  # Add or modify as needed
+    return min(allowed_m_values, key=lambda x: abs(x - M))
 
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):
@@ -310,7 +313,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.acc_dtype,
         ]
 
-        _signature = (x_input.shape[0],) + self.signature
+        _signature = (get_closest_m(x_input.shape[0]),) + self.signature
         if _signature not in GEMLITE_TRITON_CACHE:
             self.warmup(_signature, args)
 
