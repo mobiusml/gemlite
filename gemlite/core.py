@@ -297,8 +297,9 @@ class GemLiteLinearTriton(torch.nn.Module):
     def forward_auto(self, x):
         global GEMLITE_TRITON_CACHE
         out_shape = x.shape[:-1] + (self.out_features,)
+        x_input = x.view(-1, x.shape[-1])
         args = [
-            x.view(-1, x.shape[-1]),
+            x_input,
             self.W_q,
             self.scales,
             self.zeros,
@@ -309,7 +310,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.acc_dtype,
         ]
 
-        _signature = (x.shape[0],) + self.signature
+        _signature = (x_input.shape[0],) + self.signature
         if _signature not in GEMLITE_TRITON_CACHE:
             self.warmup(_signature, args)
 
