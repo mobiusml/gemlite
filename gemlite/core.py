@@ -3,6 +3,7 @@
 import torch
 import numpy as np
 from enum import Enum
+import math
 
 # CUDA extension
 import gemlite_lib
@@ -178,6 +179,9 @@ GEMLITE_TRITON_MAPPING = {
     ("BF16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
+def get_closest_m(M):
+    if M <= 8: return M
+    else:      return 2 ** int(math.ceil(math.log2(M)))
 
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):
@@ -310,7 +314,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.acc_dtype,
         ]
 
-        _signature = (x_input.shape[0],) + self.signature
+        _signature = (get_closest_m(x_input.shape[0]),) + self.signature
         if _signature not in GEMLITE_TRITON_CACHE:
             self.warmup(_signature, args)
 

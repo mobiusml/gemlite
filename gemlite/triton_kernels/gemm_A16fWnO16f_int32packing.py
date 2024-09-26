@@ -49,9 +49,10 @@ def get_gemm_config():
                                 )
     return _configs
 
+@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs = get_gemm_config(),
-    key=['M', 'N', 'K', 'group_size', 'W_nbits'],
+    key=['CLOSEST_M', 'N', 'K', 'group_size', 'W_nbits'],
     prune_configs_by={
         'early_config_prune': kernel_config_pruner,
     },
@@ -70,6 +71,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_cm, stride_cn,
     stride_meta, 
     acc_dtype: tl.constexpr,
+    CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     num_stages: tl.constexpr
