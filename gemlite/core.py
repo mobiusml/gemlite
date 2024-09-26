@@ -3,6 +3,7 @@
 import torch
 import numpy as np
 from enum import Enum
+import math
 
 # CUDA extension
 import gemlite_lib
@@ -179,8 +180,8 @@ GEMLITE_TRITON_MAPPING = {
 }
 
 def get_closest_m(M):
-    allowed_m_values = [1, 2, 4, 8, 16, 32, 64, 128]  # Add or modify as needed
-    return min(allowed_m_values, key=lambda x: abs(x - M))
+    if M <= 8: return M
+    else:      return 2 ** int(math.ceil(math.log2(M)))
 
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):

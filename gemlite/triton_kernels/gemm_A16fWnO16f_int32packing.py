@@ -49,11 +49,7 @@ def get_gemm_config():
                                 )
     return _configs
 
-def get_closest_m(M):
-    allowed_m_values = [8, 16, 32, 64, 128]  # Add or modify as needed
-    return min(allowed_m_values, key=lambda x: abs(x - M))
-
-@triton.heuristics({'CLOSEST_M': lambda args: get_closest_m(args['M'])})
+@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs = get_gemm_config(),
     key=['CLOSEST_M', 'N', 'K', 'group_size', 'W_nbits'],
