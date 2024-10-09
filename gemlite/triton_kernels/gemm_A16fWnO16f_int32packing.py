@@ -143,8 +143,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
-
-        #k_m = (k + pid_k) // (group_size // BLOCK_SIZE_K)
+            
         k_m = (k * stride_mul).to(tl.int32)
         if(cache_meta == 0):
             scales = tl.load(scales_ptrs + k_m * stride_meta) 
