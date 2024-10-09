@@ -14,12 +14,12 @@ from triton.testing import do_bench
 from .triton_kernels import *
 
 class DType(Enum):
-    FP16 = "FP16"
-    BF16 = "BF16"
-    FP32 = "FP32"
-    INT8 = "INT8"
-    INT32 = "INT32"
-    FP16D8 = "FP16D8i"  # dynamic quantization
+    FP16 = "fp16"
+    BF16 = "bf16"
+    FP32 = "fp32"
+    INT8 = "int8"
+    INT32 = "int32"
+    #FP16D8 = "fp16d8i"  # todo: dynamic quantization
 
 ###################################################################################################################################
 # CUDA backend
@@ -171,17 +171,17 @@ def eval_time(fct, params, warmup=25, rep=200, fast_flush=True, return_mode="min
         )
 
 
-GEMLITE_TRITON_CACHE= {}
+GEMLITE_TRITON_CACHE = {}
 
 GEMLITE_TRITON_MAPPING = {
-    ("FP16", "GEMV"): gemv_A16fWnO16f_int32packing,
-    ("FP16", "GEMM"): gemm_A16fWnO16f_int32packing,
-    ("BF16", "GEMM"): gemm_A16fWnO16f_int32packing,
+    ("fp16", "GEMV"): gemv_A16fWnO16f_int32packing,
+    ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
+    ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
 def get_closest_m(M):
-    if M <= 8: return M
-    else:      return 2 ** int(math.ceil(math.log2(M)))
+    #return M if M <= 8 else 2 ** int(math.ceil(math.log2(M)))
+    return 2 ** int(math.ceil(math.log2(M)))
 
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):
@@ -199,7 +199,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         super().__init__()
         if W_nbits not in self._SUPPORTED_BITS_TRITON:
-            raise NotImplementedError("Only 2,4,8 W_nbits are supported.")
+            raise NotImplementedError("Only " + str(self._SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
         if in_features % 128 != 0 or out_features % 128 != 0:
             raise NotImplementedError("Invalid input shapes")
 
@@ -219,6 +219,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
             self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing]
             self.compute_dtype = torch.float16
+
         if input_dtype == DType.BF16 and output_dtype == DType.BF16:
             self.kernels = [gemm_A16fWnO16f_int32packing]
             self.compute_dtype = torch.bfloat16
@@ -232,7 +233,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         if acc_dtype is None:
             acc_dtype = DType.FP16 if (self.compute_dtype == torch.float16) else DType.FP32
 
-        self.acc_dtype = tl.float16 if (acc_dtype == DType.FP16) else tl.float32
+        self.acc_dtype = DType.FP16.value
 
         with torch.device("meta"):
             self.register_buffer(
@@ -262,23 +263,44 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.forward = self.forward_auto
 
     # Pack data: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
+    # def pack(self, W_q, scales, zeros, bias=None):
+    #     W_q      = W_q.reshape(self.orig_shape).t().contiguous().to(torch.int32)
+    #     self.W_q = torch.zeros((W_q.shape[0] // 32 * self.W_nbits, W_q.shape[1]), dtype=torch.int32, device=W_q.device)
+
+    #     step = 32 // self.W_nbits
+    #     i, row = 0, 0
+    #     while row < self.W_q.shape[0]:
+    #         shift = 0
+    #         for j in range(i, i + step):
+    #             self.W_q[row] |= W_q[j] << shift
+    #             shift += self.W_nbits
+    #         i += step
+    #         row += 1
+
+    #     self.W_q    = self.W_q.contiguous()
+    #     self.scales = scales.reshape((self.out_features, -1)).t().contiguous()
+    #     self.zeros  = zeros.reshape((self.out_features, -1)).t().contiguous()
+    #     self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
+    #     self.device = self.W_q.device
+    #     return self
+
     def pack(self, W_q, scales, zeros, bias=None):
-        W_q      = W_q.reshape(self.orig_shape).t().contiguous().to(torch.int32)
-        self.W_q = torch.zeros((W_q.shape[0] // 32 * self.W_nbits, W_q.shape[1]), dtype=torch.int32, device=W_q.device)
+        W_q      = W_q.view(self.orig_shape).to(torch.int32) 
+        self.W_q = torch.zeros((W_q.shape[0], W_q.shape[1] // 32 * self.W_nbits), dtype=torch.int32, device=W_q.device) 
 
         step = 32 // self.W_nbits
-        i, row = 0, 0
-        while row < self.W_q.shape[0]:
+        i, col = 0, 0
+        while col <  self.W_q.shape[1]: 
             shift = 0
             for j in range(i, i + step):
-                self.W_q[row] |= W_q[j] << shift
+                self.W_q[:, col] |= (W_q[:, j] << shift)
                 shift += self.W_nbits
             i += step
-            row += 1
+            col += 1
 
-        self.W_q    = self.W_q.contiguous()
-        self.scales = scales.reshape((self.out_features, -1)).t().contiguous()
-        self.zeros  = zeros.reshape((self.out_features, -1)).t().contiguous()
+        self.W_q    = self.W_q.t().contiguous() #row-major contiguous()
+        self.scales = scales.view((self.out_features, -1)).t().contiguous() 
+        self.zeros  = zeros.view((self.out_features, -1)).t().contiguous() 
         self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
         self.device = self.W_q.device
         return self
@@ -286,11 +308,13 @@ class GemLiteLinearTriton(torch.nn.Module):
     # Warm up all the selected kernels
     def warmup(self, signature, args):
         global GEMLITE_TRITON_CACHE
-        t = []
-        for _kernel in self.kernels:
-            if signature[0] > 8 and _kernel.matmul_type == "GEMV":
-                continue  # skip gemvs for larger batch-sizes
-            t.append(eval_time(_kernel.forward, args))
+        t = [np.inf] * len(self.kernels)
+        for i, _kernel in enumerate(self.kernels):
+            if signature[0] >= 8 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes
+                pass 
+            else:
+                t[i] = eval_time(_kernel.forward, args)
+
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
             "forward": self.kernels[indx].forward,
