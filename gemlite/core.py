@@ -175,7 +175,7 @@ GEMLITE_TRITON_CACHE = {}
 
 GEMLITE_TRITON_MAPPING = {
     ("fp16", "GEMV"): gemv_A16fWnO16f_int32packing,
-    ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
+    ("fp16", "GEMM"): gemm_A16fWnO16f_int32packing,
     ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
