@@ -14,15 +14,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     used = set()
     for config in configs:
-        group_size_m = config.kwargs['GROUP_SIZE_M']
-        block_size_m = min(m, config.kwargs['BLOCK_SIZE_M'])
-        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
-        block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
-        A_load_order = config.kwargs['A_load_order']
-        cache_meta   = config.kwargs['cache_meta']
+        block_size_m      = min(m, config.kwargs['BLOCK_SIZE_M'])
+        block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
+        block_size_k      = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
+        group_size_m      = config.kwargs['GROUP_SIZE_M']
+        A_load_order      = config.kwargs['A_load_order']
+        meta_evict_policy = config.kwargs['meta_evict_policy']
 
-        _key = (block_size_m, block_size_n, block_size_k, group_size_m, A_load_order, cache_meta, config.num_stages, config.num_warps)
+        _key = (block_size_m, block_size_n, block_size_k, group_size_m, 
+                A_load_order, meta_evict_policy, 
+                config.num_stages, config.num_warps)
         
         if _key in used:
             continue
@@ -35,7 +37,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
                 'A_load_order': A_load_order,
-                'cache_meta'  : cache_meta,
+                'meta_evict_policy': meta_evict_policy,
             },
             num_stages=config.num_stages,
             num_warps=config.num_warps
@@ -50,12 +52,12 @@ def get_gemm_config():
             for _K in [32, 64, 128]: #[32, 64, 128], 32 <= block_size
                 for _w in [2, 4]: 
                     for _s in [2, 4]:
-                        for _a_load_order in [2]: #[1, 2, 3] - [2]: default 4090
-                            for _cache_meta in [0]: #[0, 1] - [0]: default 4090
+                        for _A_load_order in [2]: #[1, 2, 3] - [2]: default 4090
+                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
-                                            'A_load_order': _a_load_order, 'cache_meta': _cache_meta}, 
+                                            'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy}, 
                                             num_stages=_s, num_warps=_w)
                                         )
     return _configs
@@ -86,7 +88,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
-    A_load_order: tl.constexpr, cache_meta: tl.constexpr,
+    A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,
 ):
     """
     Based on https://github.com/fpgaminer/GPTQ-triton
@@ -138,37 +140,34 @@ def gemm_A16fWnO16f_int32packing_kernel(
     ####################################################################################
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype) 
 
-    for k in tl.range(0, num_pid_k, 1, num_stages=1):
-        b = tl.load(b_ptrs, eviction_policy='evict_first') #(BLOCK_SIZE_K, BLOCK_SIZE_N) - repeated over K dim
+    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
+    for k in range(num_pid_k):
+        if(k < num_pid_k):
+            b = tl.load(b_ptrs, eviction_policy='evict_first') #(BLOCK_SIZE_K, BLOCK_SIZE_N) - repeated over K dim
 
-        if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
+            if(A_load_order == 1): #Early load
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
+                
+            k_m    = (k * stride_mul).to(tl.int32)
+            scales = tl.load(scales_ptrs + k_m * stride_meta, eviction_policy=meta_evict_policy)
+            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta, eviction_policy=meta_evict_policy)
+
+            if(A_load_order == 2): #Mid load
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
+
+            # Unpack and dequantize
+            b = ((b >> q_shifts) & unpack_mask)
+            b = (b - zeros) * scales
+
+            if(A_load_order == 3): #Late load 
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
             
-        k_m = (k * stride_mul).to(tl.int32)
-        if(cache_meta == 0):
-            scales = tl.load(scales_ptrs + k_m * stride_meta) 
-            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta) 
+            #Dot
+            acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
 
-        if(cache_meta == 1):
-            scales = tl.load(scales_ptrs + k_m * stride_meta, eviction_policy='evict_last')
-            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta, eviction_policy='evict_last')
-
-        if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
-
-        # Unpack and dequantize
-        b = ((b >> q_shifts) & unpack_mask)
-        b = (b - zeros) * scales
-
-        if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
-        
-        #Dot
-        acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
-
-        #Advance
-        a_ptrs += BLOCK_SIZE_K
-        b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
+            #Advance
+            a_ptrs += BLOCK_SIZE_K
+            b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
 
     tl.store(c_ptrs, acc, mask=(offs_am[:, None] < M) & (offs_bn[None, :] < N))
 
@@ -176,7 +175,9 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
 @torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward", mutates_args=())
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
-                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, acc_dtype: str = 'fp16') -> Tensor:
+                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                         acc_dtype: int,
+                                        ) -> Tensor:
     
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
@@ -195,14 +196,16 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0),
-        tl.dtype(acc_dtype),
+        tl.float16 if (acc_dtype == 1) else tl.float32,
     )
 
     return output
 
 @torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward")
 def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
-                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, acc_dtype: str = 'fp16') -> Tensor:
+                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                              acc_dtype: int,
+                                              ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)

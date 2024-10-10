@@ -16,14 +16,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     used = set()
     for config in configs:
-        block_size_m = 1
-        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
-        block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
-        A_load_order = config.kwargs['A_load_order']
-        cache_meta   = config.kwargs['cache_meta']
+        block_size_m      = 1
+        block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
+        block_size_k      = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
+        A_load_order      = config.kwargs['A_load_order']
+        meta_evict_policy = config.kwargs['meta_evict_policy']
+        atomic_mode       = config.kwargs['atomic_mode']
 
-        _key  = (block_size_m, block_size_n, block_size_k, A_load_order, cache_meta, config.num_stages, config.num_warps)
+        _key  = (block_size_m, block_size_n, block_size_k, A_load_order, meta_evict_policy, atomic_mode, config.num_stages, config.num_warps)
 
         if _key in used:
             continue
@@ -35,11 +36,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
                 'A_load_order': A_load_order,
-                'cache_meta': cache_meta,
+                'meta_evict_policy': meta_evict_policy,
+                'atomic_mode': atomic_mode,
             },
             num_stages=config.num_stages,
             num_warps=config.num_warps,
-            pre_hook=config.pre_hook
+            pre_hook=config.pre_hook,
         )
 
 def get_gemv_config():
@@ -50,16 +52,17 @@ def get_gemv_config():
             for _K in [32, 64]: #block_size >=32 
                 for _w in [2, 4]:
                     for _s in [1, 2]: 
-                        for _a_load_order in [1, 2, 3]: #2 - default 4090 #[1, 2, 3]
-                            for _cache_meta in [0]: # [0, 1]
-                                _configs.append(
-                                        triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                            'A_load_order': _a_load_order, 'cache_meta': _cache_meta}, 
-                                            num_stages=_s, num_warps=_w, pre_hook=init_to_zero("c_ptr"),
-                                            #num_ctas=1,
+                        for _A_load_order in [1, 2, 3]: #2 - default 4090: [1, 2, 3]
+                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                                for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+                                    _configs.append(
+                                            triton.Config(
+                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+                                                'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode}, 
+                                                num_stages=_s, num_warps=_w, 
+                                                pre_hook=init_to_zero("c_ptr"),
+                                                )
                                             )
-                                        )
 
     return _configs
 
@@ -86,7 +89,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     acc_dtype: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    A_load_order: tl.constexpr, cache_meta: tl.constexpr,
+    A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
 ):
     """
     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1
@@ -122,15 +125,9 @@ def gemv_A16fWnO16f_int32packing_kernel(
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
     
-    if(cache_meta == 0):
-        k_m    = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
-        scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta)
-        zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta) 
-
-    if(cache_meta == 1):
-        k_m    = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
-        scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta, eviction_policy='evict_last')
-        zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta, eviction_policy='evict_last')
+    k_m    = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
+    scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta, eviction_policy=meta_evict_policy)
+    zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta, eviction_policy=meta_evict_policy)
 
     if(A_load_order == 2):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
@@ -149,12 +146,14 @@ def gemv_A16fWnO16f_int32packing_kernel(
     #acc = tl.sum(a[:, None] * b, axis=0)
 
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
-    tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem="relaxed") #Force cta scope via scope="cta"
+    tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem=atomic_mode) #Force cta scope via scope="cta"
 
 
 @torch.library.custom_op("gemlite::gemv_A16fWnO16f_int32packing_forward", mutates_args=())
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
-                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, acc_dtype: str = 'fp16') -> Tensor:
+                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                         acc_dtype: int,
+                                         ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
@@ -172,14 +171,16 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0),
-        tl.dtype(acc_dtype),
+        tl.float16 if (acc_dtype == 1) else tl.float32,
     )
 
     return output
 
 @torch.library.register_fake("gemlite::gemv_A16fWnO16f_int32packing_forward")
 def gemv_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
-                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, acc_dtype: str = 'fp16') -> Tensor:
+                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                              acc_dtype: int,
+                                              ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)

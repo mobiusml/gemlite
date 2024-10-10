@@ -176,6 +176,8 @@ GEMLITE_TRITON_CACHE = {}
 GEMLITE_TRITON_MAPPING = {
     ("fp16", "GEMV"): gemv_A16fWnO16f_int32packing,
     ("fp16", "GEMM"): gemm_A16fWnO16f_int32packing,
+    #("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f_int32packing,
+
     ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
@@ -191,9 +193,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         group_size,
         in_features,
         out_features,
-        input_dtype=DType.FP16,
-        output_dtype=DType.FP16,
-        acc_dtype=None,
+        input_dtype = DType.FP16,
+        output_dtype = DType.FP16,
+        acc_dtype = DType.FP32,
     ):
         self._SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
 
@@ -217,7 +219,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.compute_dtype = None
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
-            self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing]
+            self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing] #gemm_splitK_A16fWnO16f_int32packing
             self.compute_dtype = torch.float16
 
         if input_dtype == DType.BF16 and output_dtype == DType.BF16:
@@ -230,10 +232,9 @@ class GemLiteLinearTriton(torch.nn.Module):
                 (self.input_dtype, self.output_dtype, self.W_nbits),
             )
 
-        if acc_dtype is None:
-            acc_dtype = DType.FP16 if (self.compute_dtype == torch.float16) else DType.FP32
-
-        self.acc_dtype = DType.FP16.value
+        #self.acc_dtype = acc_dtype.value
+        #Temporary fix for torch nightly
+        self.acc_dtype = 0 if (acc_dtype == DType.FP32) else 1 #0 for fp32, 1 for fp16
 
         with torch.device("meta"):
             self.register_buffer(
@@ -262,28 +263,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.forward = self.forward_auto
 
-    # Pack data: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    # def pack(self, W_q, scales, zeros, bias=None):
-    #     W_q      = W_q.reshape(self.orig_shape).t().contiguous().to(torch.int32)
-    #     self.W_q = torch.zeros((W_q.shape[0] // 32 * self.W_nbits, W_q.shape[1]), dtype=torch.int32, device=W_q.device)
-
-    #     step = 32 // self.W_nbits
-    #     i, row = 0, 0
-    #     while row < self.W_q.shape[0]:
-    #         shift = 0
-    #         for j in range(i, i + step):
-    #             self.W_q[row] |= W_q[j] << shift
-    #             shift += self.W_nbits
-    #         i += step
-    #         row += 1
-
-    #     self.W_q    = self.W_q.contiguous()
-    #     self.scales = scales.reshape((self.out_features, -1)).t().contiguous()
-    #     self.zeros  = zeros.reshape((self.out_features, -1)).t().contiguous()
-    #     self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
-    #     self.device = self.W_q.device
-    #     return self
-
+    # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
     def pack(self, W_q, scales, zeros, bias=None):
         W_q      = W_q.view(self.orig_shape).to(torch.int32) 
         self.W_q = torch.zeros((W_q.shape[0], W_q.shape[1] // 32 * self.W_nbits), dtype=torch.int32, device=W_q.device) 
@@ -321,7 +301,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             "time": t[indx],
         }
 
-    # Main forward pass
+    ################################################################################
+    #Main forward pass
     def forward_auto(self, x):
         global GEMLITE_TRITON_CACHE
         out_shape = x.shape[:-1] + (self.out_features,)
@@ -347,6 +328,13 @@ class GemLiteLinearTriton(torch.nn.Module):
         if self.bias is not None:
             out += self.bias
         return out
+
+    # def forward_auto(self, x):
+    #     if(x.view(-1, x.shape[-1]).shape[0] == 1):
+    #         return self.forward_manual(x, matmul_type='GEMV') #GEMV / GEMM_SPLITK 
+    #     else:
+    #         return self.forward_manual(x, matmul_type='GEMM')
+    #############################################################
 
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)
