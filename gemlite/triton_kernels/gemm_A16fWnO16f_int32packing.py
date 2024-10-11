@@ -8,8 +8,8 @@ import triton.language as tl
 # code based https://github.com/fpgaminer/GPTQ-triton
 def kernel_config_pruner(configs, nargs, **kwargs):
     m = max(2 ** int(math.ceil(math.log2(nargs['M']))), 16) #Need at least 16 here for tl.dot
-    n = max(2 ** int(math.ceil(math.log2(nargs['N']))), 16)
-    k = max(2 ** int(math.ceil(math.log2(nargs['K']))), 16)
+    n = nargs['N'] 
+    k = nargs['K'] 
     g = nargs['group_size']
 
     used = set()
@@ -18,6 +18,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
         block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
         block_size_k      = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
+
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -36,6 +37,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
+
                 'A_load_order': A_load_order,
                 'meta_evict_policy': meta_evict_policy,
             },
@@ -82,7 +84,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    stride_meta, 
+    stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
     ######### tuning params #########
     CLOSEST_M: tl.constexpr,
@@ -103,6 +105,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     """
 
     pid       = tl.program_id(axis=0)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
@@ -115,26 +118,23 @@ def gemm_A16fWnO16f_int32packing_kernel(
     pid_n            = (pid % num_pid_in_group) // group_size_m
 
     #Offsets
-    offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_m  = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n  = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_k  = tl.arange(0, BLOCK_SIZE_K)
 
     #Vectorized coalesced load
-    offs_am = tl.max_contiguous(tl.multiple_of(offs_am, BLOCK_SIZE_M), BLOCK_SIZE_M)
-    offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
 
     #Inputs
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)  
     a_mask  = (offs_am[:, None] < M)
     b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
 
-    #Output
-    c_ptrs = c_ptr + stride_cm * offs_am[:, None] + stride_cn * offs_bn[None, :]
-
     #Meta data stuff
     q_shifts    = ((offs_k  % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
-    scales_ptrs = scales_ptr + offs_bn[None, :]
-    zeros_ptrs  = zeros_ptr  + offs_bn[None, :]
+    scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
+    zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
     stride_mul  = BLOCK_SIZE_K / group_size 
 
     ####################################################################################
@@ -149,15 +149,15 @@ def gemm_A16fWnO16f_int32packing_kernel(
                 a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
                 
             k_m    = (k * stride_mul).to(tl.int32)
-            scales = tl.load(scales_ptrs + k_m * stride_meta, eviction_policy=meta_evict_policy)
-            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta, eviction_policy=meta_evict_policy)
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
 
             if(A_load_order == 2): #Mid load
                 a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
 
             # Unpack and dequantize
-            b = ((b >> q_shifts) & unpack_mask)
-            b = (b - zeros) * scales
+            b = (b >> q_shifts) & unpack_mask
+            b = (b.to(scales.dtype) - zeros) * scales
 
             if(A_load_order == 3): #Late load 
                 a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
@@ -166,10 +166,16 @@ def gemm_A16fWnO16f_int32packing_kernel(
             acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
 
             #Advance
-            a_ptrs += BLOCK_SIZE_K
+            a_ptrs += BLOCK_SIZE_K * stride_ak
             b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
 
-    tl.store(c_ptrs, acc, mask=(offs_am[:, None] < M) & (offs_bn[None, :] < N))
+    #tl.store(c_ptrs, acc, mask=(offs_am[:, None] < M) & (offs_bn[None, :] < N))
+    #Output
+    #if(acc_dtype == tl.float32): acc.to(tl.float16) 
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
+    tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N)) 
 
 
 
@@ -195,7 +201,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
-        scales.stride(0),
+        scales.stride(0), scales.stride(1),
         tl.float16 if (acc_dtype == 1) else tl.float32,
     )
 

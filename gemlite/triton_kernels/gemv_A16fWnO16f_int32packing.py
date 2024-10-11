@@ -9,14 +9,14 @@ def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 
 def kernel_config_pruner(configs, nargs, **kwargs):
-    m = nargs['M'] # < 16
-    n = max(2 ** int(math.ceil(math.log2(nargs['N']))), 16)
-    k = max(2 ** int(math.ceil(math.log2(nargs['K']))), 16)
+    m = nargs['M'] 
+    n = nargs['N'] 
+    k = nargs['K']
     g = nargs['group_size']
 
     used = set()
     for config in configs:
-        block_size_m      = 1
+        block_size_m      = min(m, config.kwargs['BLOCK_SIZE_M']) 
         block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
         block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
         block_size_k      = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
@@ -24,7 +24,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         meta_evict_policy = config.kwargs['meta_evict_policy']
         atomic_mode       = config.kwargs['atomic_mode']
 
-        _key  = (block_size_m, block_size_n, block_size_k, A_load_order, meta_evict_policy, atomic_mode, config.num_stages, config.num_warps)
+        _key  = (block_size_m, block_size_n, block_size_k, 
+                A_load_order, meta_evict_policy, atomic_mode, 
+                config.num_stages, config.num_warps
+                )
 
         if _key in used:
             continue
@@ -35,6 +38,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_M': block_size_m,
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
+                
                 'A_load_order': A_load_order,
                 'meta_evict_policy': meta_evict_policy,
                 'atomic_mode': atomic_mode,
@@ -85,7 +89,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    stride_meta, 
+    stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
@@ -126,8 +130,8 @@ def gemv_A16fWnO16f_int32packing_kernel(
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
     
     k_m    = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
-    scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta, eviction_policy=meta_evict_policy)
-    zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta, eviction_policy=meta_evict_policy)
+    scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+    zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
 
     if(A_load_order == 2):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
@@ -170,7 +174,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
-        scales.stride(0),
+        scales.stride(0), scales.stride(1),
         tl.float16 if (acc_dtype == 1) else tl.float32,
     )
 
