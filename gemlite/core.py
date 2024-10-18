@@ -152,23 +152,10 @@ class GemLiteLinearCUDA(torch.nn.Module):
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
-def eval_time(fct, params, warmup=25, rep=200, fast_flush=True, return_mode="min"):
-    if isinstance(params, dict):
-        return do_bench(
-            lambda: fct(**params),
-            warmup=warmup,
-            rep=rep,
-            fast_flush=fast_flush,
-            return_mode=return_mode,
-        )
-    if isinstance(params, list):
-        return do_bench(
-            lambda: fct(*params),
-            warmup=warmup,
-            rep=rep,
-            fast_flush=fast_flush,
-            return_mode=return_mode,
-        )
+def eval_time_for_auto_mode(fct, params):
+    for _ in range(5):
+        _ = fct(*params) #Run first to kick-off Triton autotune
+    return do_bench(lambda: fct(*params), warmup=200, rep=50, fast_flush=True, return_mode='mean')
 
 
 GEMLITE_TRITON_CACHE = {}
@@ -176,13 +163,11 @@ GEMLITE_TRITON_CACHE = {}
 GEMLITE_TRITON_MAPPING = {
     ("fp16", "GEMV"): gemv_A16fWnO16f_int32packing,
     ("fp16", "GEMM"): gemm_A16fWnO16f_int32packing,
-    #("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f_int32packing,
-
+    ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f_int32packing,
     ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
 }
 
 def get_closest_m(M):
-    #return M if M <= 8 else 2 ** int(math.ceil(math.log2(M)))
     return 2 ** int(math.ceil(math.log2(M)))
 
 # Triton
@@ -196,6 +181,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         input_dtype = DType.FP16,
         output_dtype = DType.FP16,
         acc_dtype = DType.FP32,
+        exhaustive=False
     ):
         self._SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
 
@@ -219,7 +205,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.compute_dtype = None
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
-            self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing] #gemm_splitK_A16fWnO16f_int32packing
+            self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing, gemm_splitK_A16fWnO16f_int32packing] 
             self.compute_dtype = torch.float16
 
         if input_dtype == DType.BF16 and output_dtype == DType.BF16:
@@ -261,7 +247,10 @@ class GemLiteLinearTriton(torch.nn.Module):
                 ),
             )
 
-        self.forward = self.forward_auto
+        if(exhaustive):
+            self.forward = self.forward_auto_with_warmup
+        else:
+            self.forward = self.forward_auto_no_warmup
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
     def pack(self, W_q, scales, zeros, bias=None):
@@ -290,20 +279,24 @@ class GemLiteLinearTriton(torch.nn.Module):
         global GEMLITE_TRITON_CACHE
         t = [np.inf] * len(self.kernels)
         for i, _kernel in enumerate(self.kernels):
-            if signature[0] >= 8 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes
+            if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes
                 pass 
+            if signature[0] > 32 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
+                pass
+            if signature[0] < 16  and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
+                pass  
             else:
-                t[i] = eval_time(_kernel.forward, args)
+                t[i] = eval_time_for_auto_mode(_kernel.forward, args)
 
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
             "forward": self.kernels[indx].forward,
             "time": t[indx],
+            "time_all": list(zip([k.matmul_type for k in self.kernels] , t))
         }
 
-    ################################################################################
-    #Main forward pass
-    def forward_auto(self, x):
+    #Exhaustive search 
+    def forward_auto_with_warmup(self, x):
         global GEMLITE_TRITON_CACHE
         out_shape = x.shape[:-1] + (self.out_features,)
         x_input = x.view(-1, x.shape[-1])
@@ -329,13 +322,13 @@ class GemLiteLinearTriton(torch.nn.Module):
             out += self.bias
         return out
 
-    # def forward_auto(self, x):
-    #     if(x.view(-1, x.shape[-1]).shape[0] == 1):
-    #         return self.forward_manual(x, matmul_type='GEMV') #GEMV / GEMM_SPLITK 
-    #     else:
-    #         return self.forward_manual(x, matmul_type='GEMM')
-    #############################################################
-
+    def forward_auto_no_warmup(self, x):
+        if(x.view(-1, x.shape[-1]).shape[0] <= 16):
+            out = self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMV / GEMM_SPLITK 
+        else:
+            out = self.forward_manual(x, matmul_type='GEMM')
+        return out
+    
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)
 

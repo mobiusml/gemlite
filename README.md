@@ -66,7 +66,9 @@ We implement two versions of the Triton kernels:
 
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemm_A16fWnO16f_int32packing.py">GEMM</a></b>: This GEMM kernel is implemented similarly to <a href="https://github.com/fpgaminer/GPTQ-triton">GPTQ-triton</a>. Since it uses tensor cores, activations must be padded with zeros along the batch dimension to fit at least 16 rows. It supports both float32 and float16 accumulation for fp16 inputs, but only float32 accumulation for bfloat16.
 
-Both kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions.
+* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemm_splitK_A16fWnO16f_int32packing.py">Split-K</a></b>: This Split-KGEMM kernel is implemented similarly to <a href="https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py">the gptq Split-K version</a>. We build on the gemm version above and add another dimension in the grid which splits the K dimension into multiple jobs that calculate partial sums, which are atomically added and finally stored. Split-K performs very well for batch-sizes between 1 and 32, which is great for LLM decoding. 
+
+All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions.
 
 To achieve optimal performance, it’s crucial to configure the eviction policy correctly. This is especially important in memory-bound scenarios, where we aim to cache activations by setting `eviction_policy="evict_last"`. Float16 accumulation further improves performance in compute-bound scenarios. 
 
