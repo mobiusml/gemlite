@@ -330,7 +330,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK')
         else:
             return self.forward_manual(x, matmul_type='GEMV')
-        return out
+
     
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)
