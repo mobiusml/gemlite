@@ -92,15 +92,20 @@ def get_exhaustive_config():
 
 compute_capability = torch.cuda.get_device_capability(0)
 
-#4090 RTX
 #Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
 def get_default_config():
+    #4090: default
     config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
                            'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
         config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
+                             'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+
+    if(compute_capability == (9, 0)): #H100
+        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
                              'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                              num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
