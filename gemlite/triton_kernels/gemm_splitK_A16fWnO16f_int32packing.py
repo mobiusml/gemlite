@@ -1,6 +1,6 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
-import torch, math
+import torch, math, random
 from torch import Tensor
 import triton
 import triton.language as tl
@@ -90,12 +90,21 @@ def get_exhaustive_config():
     return _configs
 
 
+compute_capability = torch.cuda.get_device_capability(0)
+
 #4090 RTX
 #Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
 def get_default_config():
-    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
+    config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
                            'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr")),]
+                            num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr"))
+
+    if(compute_capability == (8, 0)): #A100
+        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
+                             'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+
+    return [config]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
 
@@ -214,7 +223,9 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     tl.atomic_add(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N), sem=atomic_mode) #release / relaxed
 
 
-@torch.library.custom_op("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward", mutates_args=())
+_costum_op_id = '_' + str(int(random.random()*10000))
+
+@torch.library.custom_op("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                                 W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
                                                 acc_dtype: int,
@@ -242,7 +253,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
 
     return output
 
-@torch.library.register_fake("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward")
+@torch.library.register_fake("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               acc_dtype: int,

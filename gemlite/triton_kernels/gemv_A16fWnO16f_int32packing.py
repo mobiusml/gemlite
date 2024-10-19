@@ -1,6 +1,6 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
-import torch, math
+import torch, math, random
 from torch import Tensor
 import triton
 import triton.language as tl
@@ -73,10 +73,17 @@ def get_exhaustive_config():
     return _configs
 
 
-#4090 RTX
+compute_capability = torch.cuda.get_device_capability(0)
+
 def get_default_config():
-    return [triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr")),]
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+
+    if(compute_capability == (8, 0)): #A100
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+
+    return [config]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV
 
@@ -157,7 +164,10 @@ def gemv_A16fWnO16f_int32packing_kernel(
     tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem=atomic_mode) #Force cta scope via scope="cta"
 
 
-@torch.library.custom_op("gemlite::gemv_A16fWnO16f_int32packing_forward", mutates_args=())
+
+_costum_op_id = '_' + str(int(random.random()*10000))
+
+@torch.library.custom_op("gemlite::gemv_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          acc_dtype: int,
@@ -184,7 +194,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     return output
 
-@torch.library.register_fake("gemlite::gemv_A16fWnO16f_int32packing_forward")
+@torch.library.register_fake("gemlite::gemv_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemv_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               acc_dtype: int,

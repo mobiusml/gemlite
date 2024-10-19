@@ -1,6 +1,6 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
-import torch, math
+import torch, math, random
 from torch import Tensor
 import triton
 import triton.language as tl
@@ -184,8 +184,9 @@ def gemm_A16fWnO16f_int32packing_kernel(
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N)) 
 
 
+_costum_op_id = '_' + str(int(random.random()*10000))
 
-@torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward", mutates_args=())
+@torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          acc_dtype: int,
@@ -213,7 +214,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     return output
 
-@torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward")
+@torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               acc_dtype: int,
