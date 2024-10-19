@@ -280,13 +280,14 @@ class GemLiteLinearTriton(torch.nn.Module):
         t = [np.inf] * len(self.kernels)
         for i, _kernel in enumerate(self.kernels):
             if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes
-                pass 
+                continue 
             if signature[0] > 16 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
-                pass
+                continue
             if signature[0] < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
-                pass  
-            else:
-                t[i] = eval_time_for_auto_mode(_kernel.forward, args)
+                continue  
+            
+            print(signature, _kernel.matmul_type)
+            t[i] = eval_time_for_auto_mode(_kernel.forward, args)
 
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
