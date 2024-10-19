@@ -5,6 +5,8 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
+from .config import AUTOTUNE_ENABLE
+
 def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 
@@ -63,7 +65,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-def get_gemm_config():
+def get_exhaustive_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16]: #This is fixed to 16 for skinny matrices
@@ -88,16 +90,46 @@ def get_gemm_config():
     return _configs
 
 
+def get_gemm_config():
+    #Tuned on 4090 RTX
+    _configs = []
+    for _M in [16]: #This is fixed to 16 for skinny matrices
+        for _N in [32]:
+            for _K in [32, 64, 128]: #[128], group_size >= 128
+                for _w in [4]: #[4] 
+                    for _s in [2]: #[2, 3] #
+                        for _sK in [2, 4, 8]: #[2, 4, 8]
+                            for _a_load_order in [2]: #[1, 2, 3] - [1]: default 4090
+                                for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                                    for _atomic_mode in ['release', 'relaxed']: #['release', 'relaxed']:
+                                        _configs.append(
+                                                triton.Config(
+                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+                                                    'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+                                                    'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+                                                    }, 
+                                                    num_stages=_s, num_warps=_w,
+                                                    pre_hook=init_to_zero("c_ptr"),
+                                                    )
+                                                )
+    return _configs
 
-#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
+
+#4090 RTX
+#Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
+def get_default_config():
+    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
+                           'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr")),]
+
+ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
+
 @triton.autotune(
-    configs = get_gemm_config(),
+    configs=get_exhaustive_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={
-        'early_config_prune': kernel_config_pruner,
-    },
+    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup=200, 
-    rep=50, #20 for faster tuning 
+    rep=50, 
 )
 
 @triton.jit
@@ -112,7 +144,6 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
     ######### tuning params #########
-    #CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr, atomic_mode: tl.constexpr,
@@ -182,7 +213,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
         scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
         zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-
+        
         if(A_load_order == 2): #Mid load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
@@ -218,7 +249,6 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     #assert group_size >= 128, "Only group_size >= 128 is currently supported"
-
     output = torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
@@ -247,9 +277,9 @@ def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, sca
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
 
 
-class gemm_splitK_A16fWnO16f_int32packing:
+class gemm_splitK_A16fWnO16f:
     kernel = gemm_splitK_A16fWnO16f_int32packing_kernel
     forward = gemm_splitK_A16fWnO16f_int32packing_forward
     matmul_type = "GEMM_SPLITK"
 
-__all__ = ["gemm_splitK_A16fWnO16f_int32packing"]
+__all__ = ["gemm_splitK_A16fWnO16f"]

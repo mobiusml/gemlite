@@ -155,16 +155,16 @@ class GemLiteLinearCUDA(torch.nn.Module):
 def eval_time_for_auto_mode(fct, params):
     for _ in range(5):
         _ = fct(*params) #Run first to kick-off Triton autotune
-    return do_bench(lambda: fct(*params), warmup=200, rep=50, fast_flush=True, return_mode='mean')
+    return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
 
 
 GEMLITE_TRITON_CACHE = {}
 
 GEMLITE_TRITON_MAPPING = {
-    ("fp16", "GEMV"): gemv_A16fWnO16f_int32packing,
-    ("fp16", "GEMM"): gemm_A16fWnO16f_int32packing,
-    ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f_int32packing,
-    ("bf16", "GEMM"): gemm_A16fWnO16f_int32packing,
+    ("fp16", "GEMV"): gemv_A16fWnO16f,
+    ("fp16", "GEMM"): gemm_A16fWnO16f,
+    ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f,
+    ("bf16", "GEMM"): gemm_A16fWnO16f,
 }
 
 def get_closest_m(M):
@@ -205,11 +205,11 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.compute_dtype = None
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
-            self.kernels = [gemm_A16fWnO16f_int32packing, gemv_A16fWnO16f_int32packing, gemm_splitK_A16fWnO16f_int32packing] 
+            self.kernels = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f] 
             self.compute_dtype = torch.float16
 
         if input_dtype == DType.BF16 and output_dtype == DType.BF16:
-            self.kernels = [gemm_A16fWnO16f_int32packing]
+            self.kernels = [gemm_A16fWnO16f]
             self.compute_dtype = torch.bfloat16
 
         if self.compute_dtype is None:
@@ -330,7 +330,6 @@ class GemLiteLinearTriton(torch.nn.Module):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK')
         else:
             return self.forward_manual(x, matmul_type='GEMV')
-
     
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)

@@ -5,6 +5,8 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
+from .config import AUTOTUNE_ENABLE
+
 # code based https://github.com/fpgaminer/GPTQ-triton
 def kernel_config_pruner(configs, nargs, **kwargs):
     m = max(2 ** int(math.ceil(math.log2(nargs['M']))), 16) #Need at least 16 here for tl.dot
@@ -46,7 +48,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-def get_gemm_config():
+def get_exhaustive_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16, 32, 64, 128]: #+ [256] #might need higher values for larger batch-sizes
@@ -64,15 +66,21 @@ def get_gemm_config():
                                         )
     return _configs
 
-@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
+
+#4090 RTX
+def get_default_config():
+    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
+                            num_warps=4, num_stages=2),]
+
+ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
+
+#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
-    configs = get_gemm_config(),
-    key=['CLOSEST_M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={
-        'early_config_prune': kernel_config_pruner,
-    },
+    configs=get_exhaustive_config() if ENABLE_AUTOTUNE else get_default_config(),
+    key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup=200, 
-    rep=50, #20 for faster tuning 
+    rep=50, 
 )
 
 @triton.jit
@@ -87,7 +95,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
     ######### tuning params #########
-    CLOSEST_M: tl.constexpr,
+    #CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,
@@ -140,38 +148,36 @@ def gemm_A16fWnO16f_int32packing_kernel(
     ####################################################################################
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype) 
 
-    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
-    for k in range(num_pid_k):
-        if(k < num_pid_k):
-            b = tl.load(b_ptrs, eviction_policy='evict_first') #(BLOCK_SIZE_K, BLOCK_SIZE_N) - repeated over K dim
+    for k in tl.range(0, num_pid_k, 1, num_stages=1):
+        
+        b = tl.load(b_ptrs, eviction_policy='evict_first') #(BLOCK_SIZE_K, BLOCK_SIZE_N) - repeated over K dim
 
-            if(A_load_order == 1): #Early load
-                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
-                
-            k_m    = (k * stride_mul).to(tl.int32)
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-            zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-
-            if(A_load_order == 2): #Mid load
-                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
-
-            # Unpack and dequantize
-            b = (b >> q_shifts) & unpack_mask
-            b = (b.to(scales.dtype) - zeros) * scales
-
-            if(A_load_order == 3): #Late load 
-                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
+        if(A_load_order == 1): #Early load
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
             
-            #Dot
-            acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
+        k_m    = (k * stride_mul).to(tl.int32)
+        scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+        zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
 
-            #Advance
-            a_ptrs += BLOCK_SIZE_K * stride_ak
-            b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
+        if(A_load_order == 2): #Mid load
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
 
-    #tl.store(c_ptrs, acc, mask=(offs_am[:, None] < M) & (offs_bn[None, :] < N))
+        # Unpack and dequantize
+        b = (b >> q_shifts) & unpack_mask
+        b = (b.to(scales.dtype) - zeros) * scales
+
+        if(A_load_order == 3): #Late load 
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
+        
+        #Dot
+        acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
+
+        #Advance
+        a_ptrs += BLOCK_SIZE_K * stride_ak
+        b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
+
     #Output
-    #if(acc_dtype == tl.float32): acc.to(tl.float16) 
+    #acc = acc.to(tl.float16) 
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
@@ -217,9 +223,9 @@ def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Te
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
 
 
-class gemm_A16fWnO16f_int32packing:
+class gemm_A16fWnO16f:
     kernel = gemm_A16fWnO16f_int32packing_kernel
     forward = gemm_A16fWnO16f_int32packing_forward
     matmul_type = "GEMM"
 
-__all__ = ["gemm_A16fWnO16f_int32packing"]
+__all__ = ["gemm_A16fWnO16f"]

@@ -1,5 +1,7 @@
-from .gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f_int32packing
-from .gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f_int32packing
-from .gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f_int32packing
+from .gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f
+from .gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f
+from .gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f
 
-__all__ = ["gemm_A16fWnO16f_int32packing", "gemv_A16fWnO16f_int32packing", "gemm_splitK_A16fWnO16f_int32packing"]
+from gemlite.triton_kernels.config import set_autotune
+
+__all__ = ["gemm_A16fWnO16f", "gemv_A16fWnO16f", "gemm_splitK_A16fWnO16f", "set_autotune"]

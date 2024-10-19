@@ -5,6 +5,8 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
+from .config import AUTOTUNE_ENABLE
+
 def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 
@@ -48,7 +50,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             pre_hook=config.pre_hook,
         )
 
-def get_gemv_config():
+def get_exhaustive_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
@@ -70,14 +72,20 @@ def get_gemv_config():
 
     return _configs
 
+
+#4090 RTX
+def get_default_config():
+    return [triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr")),]
+
+ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV
+
 @triton.autotune(
-    configs = get_gemv_config(),
+    configs = get_exhaustive_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={
-        'early_config_prune': kernel_config_pruner,
-    },
-    warmup=200, #200
-    rep=50, #50
+    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+    warmup=200, 
+    rep=50,
 )
 
 @triton.jit
@@ -111,20 +119,18 @@ def gemv_A16fWnO16f_int32packing_kernel(
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
     #Vectorized coalesced load
-    offs_am = tl.max_contiguous(tl.multiple_of(offs_am, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_k  = tl.max_contiguous(tl.multiple_of(offs_k,  BLOCK_SIZE_K), BLOCK_SIZE_K)
     offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
-    #a_ptrs  = a_ptr + offs_am * stride_am + offs_k * stride_ak
-
-    b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
+    b_ptrs  = b_ptr + (offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn
 
     ####################################################################
     #Load
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
 
-    b = tl.load(b_ptrs, eviction_policy='evict_first') 
+    b = tl.load(b_ptrs, eviction_policy='evict_first')
 
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
@@ -132,22 +138,20 @@ def gemv_A16fWnO16f_int32packing_kernel(
     k_m    = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
     scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
     zeros  = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-
+    
     if(A_load_order == 2):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
 
-    ######################################################
+    ####################################################################
     # Unpack and dequantize
     b = (b >> ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]) & unpack_mask
     b = ((b.to(scales.dtype) - zeros) * scales).to(acc_dtype) 
-    #b = ((b - zeros) * scales).to(acc_dtype)
-
+   
     if(A_load_order == 3):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
 
     #Dot product
     acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b, axis=0) #Don't set this to True
-    #acc = tl.sum(a[:, None] * b, axis=0)
 
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
     tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem=atomic_mode) #Force cta scope via scope="cta"
@@ -163,7 +167,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
-
+    
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(K, meta['BLOCK_SIZE_K']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
 
     gemv_A16fWnO16f_int32packing_kernel[grid](
@@ -190,9 +194,9 @@ def gemv_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Te
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
 
 
-class gemv_A16fWnO16f_int32packing:
-    kernel = gemv_A16fWnO16f_int32packing_kernel
-    forward = gemv_A16fWnO16f_int32packing_forward
+class gemv_A16fWnO16f:
+    kernel      = gemv_A16fWnO16f_int32packing_kernel
+    forward     = gemv_A16fWnO16f_int32packing_forward
     matmul_type = "GEMV"
 
-__all__ = ["gemv_A16fWnO16f_int32packing"]
+__all__ = ["gemv_A16fWnO16f"]
