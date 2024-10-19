@@ -157,7 +157,6 @@ def eval_time_for_auto_mode(fct, params):
         _ = fct(*params) #Run first to kick-off Triton autotune
     return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
 
-
 GEMLITE_TRITON_CACHE = {}
 
 GEMLITE_TRITON_MAPPING = {

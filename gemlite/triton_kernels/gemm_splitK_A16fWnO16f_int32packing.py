@@ -65,18 +65,18 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-def get_exhaustive_config():
+def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16]: #This is fixed to 16 for skinny matrices
         for _N in [32, 64]:
             for _K in [32, 64, 128]: #[128], group_size >= 128
                 for _w in [4]: #[4] 
-                    for _s in [2, 3]: #[2, 3] #
+                    for _s in [2, 3]: #[2, 3]
                         for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [1, 2, 3]: #[1, 2, 3] - [1]: default 4090
+                            for _a_load_order in [2]: #[1, 2, 3] - [1]: default 4090
                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-                                    for _atomic_mode in ['release', 'relaxed']: #['release', 'relaxed']:
+                                    for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(
                                                 triton.Config(
                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
@@ -114,7 +114,7 @@ def get_default_config():
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
 
 @triton.autotune(
-    configs=get_exhaustive_config() if ENABLE_AUTOTUNE else get_default_config(),
+    configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup=200, 

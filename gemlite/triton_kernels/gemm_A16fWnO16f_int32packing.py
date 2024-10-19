@@ -48,14 +48,14 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-def get_exhaustive_config():
+def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16, 32, 64, 128]: #+ [256] #might need higher values for larger batch-sizes
         for _N in [32, 64, 128]: 
             for _K in [32, 64, 128]: #[32, 64, 128], 32 <= block_size
-                for _w in [2, 4]: 
-                    for _s in [2, 4]:
+                for _w in [4]: #[2, 4]
+                    for _s in [4]: #[2, 4]
                         for _A_load_order in [2]: #[1, 2, 3] - [2]: default 4090
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
@@ -76,7 +76,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
 #@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
-    configs=get_exhaustive_config() if ENABLE_AUTOTUNE else get_default_config(),
+    configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup=200, 

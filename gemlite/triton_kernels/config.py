@@ -3,7 +3,7 @@
 import imp 
 
 class AUTOTUNE_ENABLE:
-	GEMV        = False
+	GEMV        = True
 	GEMM        = False
 	GEMM_SPLITK = True
 
