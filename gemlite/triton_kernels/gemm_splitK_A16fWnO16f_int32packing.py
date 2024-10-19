@@ -90,31 +90,6 @@ def get_exhaustive_config():
     return _configs
 
 
-def get_gemm_config():
-    #Tuned on 4090 RTX
-    _configs = []
-    for _M in [16]: #This is fixed to 16 for skinny matrices
-        for _N in [32]:
-            for _K in [32, 64, 128]: #[128], group_size >= 128
-                for _w in [4]: #[4] 
-                    for _s in [2]: #[2, 3] #
-                        for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [2]: #[1, 2, 3] - [1]: default 4090
-                                for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-                                    for _atomic_mode in ['release', 'relaxed']: #['release', 'relaxed']:
-                                        _configs.append(
-                                                triton.Config(
-                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                                    'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-                                                    'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-                                                    }, 
-                                                    num_stages=_s, num_warps=_w,
-                                                    pre_hook=init_to_zero("c_ptr"),
-                                                    )
-                                                )
-    return _configs
-
-
 #4090 RTX
 #Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
 def get_default_config():
@@ -196,7 +171,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
 
-    stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size 
+    stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size
     BLOCK_SIZE_K_P: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
     ####################################################################################
     
@@ -204,7 +179,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     for k in tl.range(0, num_pid_k, 1, num_stages=1):
 
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        b = tl.load(b_ptrs) #, eviction_policy='evict_first'
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
@@ -218,7 +193,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
-        b = (b >> q_shifts) & unpack_mask
+        b = ((b >> q_shifts) & unpack_mask)
         b = (b.to(scales.dtype) - zeros) * scales
 
         if(A_load_order == 3): #Late load 
@@ -272,7 +247,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, sca
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               acc_dtype: int,
                                               ) -> Tensor:
-
+    
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
 
