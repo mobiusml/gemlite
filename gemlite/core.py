@@ -285,8 +285,6 @@ class GemLiteLinearTriton(torch.nn.Module):
                 continue
             if signature[0] < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
                 continue  
-            
-            print(signature, _kernel.matmul_type)
             t[i] = eval_time_for_auto_mode(_kernel.forward, args)
 
         indx = np.argmin(t)
