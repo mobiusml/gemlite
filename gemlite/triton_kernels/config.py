@@ -5,7 +5,7 @@ import imp
 class AUTOTUNE_ENABLE:
 	GEMV        = False
 	GEMM        = False
-	GEMM_SPLITK = False
+	GEMM_SPLITK = True
 
 def reload_all_modules():
 	#Avoid circular imports
