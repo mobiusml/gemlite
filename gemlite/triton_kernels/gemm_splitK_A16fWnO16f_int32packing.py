@@ -69,7 +69,7 @@ def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16]: #This is fixed to 16 for skinny matrices
-        for _N in [32, 64]:
+        for _N in [32]:
             for _K in [32, 64, 128]: #[128], group_size >= 128
                 for _w in [4]: #[4] 
                     for _s in [2, 3]: #[2, 3]
@@ -88,7 +88,6 @@ def get_autotune_config():
                                                     )
                                                 )
     return _configs
-
 
 compute_capability = torch.cuda.get_device_capability(0)
 
@@ -117,8 +116,9 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
     configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=200, 
-    rep=50, 
+    warmup=50, 
+    rep=50,
+    use_cuda_graph=False,
 )
 
 @triton.jit
@@ -193,7 +193,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     for k in tl.range(0, num_pid_k, 1, num_stages=1):
 
-        b = tl.load(b_ptrs) #, eviction_policy='evict_first'
+        b = tl.load(b_ptrs, eviction_policy='evict_first')
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 

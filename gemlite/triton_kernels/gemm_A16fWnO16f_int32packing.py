@@ -74,13 +74,14 @@ def get_default_config():
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
-#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
+@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=200, 
-    rep=50, 
+    warmup=50, 
+    rep=50,
+    use_cuda_graph=False,
 )
 
 @triton.jit
@@ -95,7 +96,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
     ######### tuning params #########
-    #CLOSEST_M: tl.constexpr,
+    CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,

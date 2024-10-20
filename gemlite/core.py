@@ -10,7 +10,7 @@ import gemlite_lib
 
 # Triton
 import triton.language as tl
-from triton.testing import do_bench
+from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 
 class DType(Enum):
@@ -153,9 +153,11 @@ class GemLiteLinearCUDA(torch.nn.Module):
 # Triton backend
 ###################################################################################################################################
 def eval_time_for_auto_mode(fct, params):
-    for _ in range(5):
-        _ = fct(*params) #Run first to kick-off Triton autotune
-    return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
+    for _ in range(5): fct(*params) #Run first to kick-off Triton autotune
+    #return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
+    stream = torch.cuda.Stream()
+    torch.cuda.set_stream(stream)
+    return do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
 
 GEMLITE_TRITON_CACHE = {}
 
@@ -280,7 +282,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         global GEMLITE_TRITON_CACHE
         t = [np.inf] * len(self.kernels)
         for i, _kernel in enumerate(self.kernels):
-            if signature[0] > 1 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV / GEMV_REVSPLITK
+            if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
+                continue 
+            if signature[0] > 4 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
                 continue 
             if signature[0] > 16 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
                 continue
@@ -325,11 +329,11 @@ class GemLiteLinearTriton(torch.nn.Module):
     def forward_auto_no_warmup(self, x):
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
         if(_batch_size >= 16):
-            return self.forward_manual(x, matmul_type='GEMM')
+            return self.forward_manual(x, matmul_type='GEMM') #GEMM
         if(_batch_size > 1):
-            return self.forward_manual(x, matmul_type='GEMM_SPLITK')
+            return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
         else:
-            return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK / GEMM_SPLITK
+            return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK
     
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)

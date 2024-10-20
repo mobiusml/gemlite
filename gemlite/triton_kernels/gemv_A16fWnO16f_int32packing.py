@@ -96,8 +96,9 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=200, 
+    warmup=50, 
     rep=50,
+    use_cuda_graph=True,
 )
 
 @triton.jit
