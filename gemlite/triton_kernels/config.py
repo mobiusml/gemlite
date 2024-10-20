@@ -3,18 +3,22 @@
 import imp 
 
 class AUTOTUNE_ENABLE:
-	GEMV        = True
-	GEMM        = False
-	GEMM_SPLITK = True
+	GEMV           = True
+	GEMV_REVSPLITK = True
+	GEMM_SPLITK    = True
+	GEMM           = False
 
 def reload_all_modules():
 	#Avoid circular imports
 	from . import gemv_A16fWnO16f_int32packing
 	from . import gemm_A16fWnO16f_int32packing
 	from . import gemm_splitK_A16fWnO16f_int32packing
+	from . import gemv_revsplitK_A16fWnO16f_int32packing
+
 	MODULES = {'GEMV':[gemv_A16fWnO16f_int32packing], 
 			   'GEMM': [gemm_A16fWnO16f_int32packing], 
-			   'GEMM_SPLITK':[gemm_splitK_A16fWnO16f_int32packing]
+			   'GEMM_SPLITK':[gemm_splitK_A16fWnO16f_int32packing],
+			   'GEMV_REVSPLITK':[gemv_revsplitK_A16fWnO16f_int32packing]
 			   }
 
 	for matmul_dtype in MODULES:

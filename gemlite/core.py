@@ -163,6 +163,8 @@ GEMLITE_TRITON_MAPPING = {
     ("fp16", "GEMV"): gemv_A16fWnO16f,
     ("fp16", "GEMM"): gemm_A16fWnO16f,
     ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f,
+    ("fp16", "GEMV_REVSPLITK"): gemv_revsplitK_A16fWnO16f,
+
     ("bf16", "GEMM"): gemm_A16fWnO16f,
 }
 
@@ -204,7 +206,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.compute_dtype = None
         if input_dtype == DType.FP16 and output_dtype == DType.FP16:
-            self.kernels = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f] 
+            self.kernels = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f, gemv_revsplitK_A16fWnO16f] 
             self.compute_dtype = torch.float16
 
         if input_dtype == DType.BF16 and output_dtype == DType.BF16:
@@ -278,7 +280,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         global GEMLITE_TRITON_CACHE
         t = [np.inf] * len(self.kernels)
         for i, _kernel in enumerate(self.kernels):
-            if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes
+            if signature[0] > 1 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV / GEMV_REVSPLITK
                 continue 
             if signature[0] > 16 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
                 continue
@@ -327,7 +329,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(_batch_size > 1):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK')
         else:
-            return self.forward_manual(x, matmul_type='GEMV') #GEMV / GEMM_SPLITK
+            return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK / GEMM_SPLITK
     
     def forward_manual(self, x, matmul_type="GEMM"):
         out_shape = x.shape[:-1] + (self.out_features,)
