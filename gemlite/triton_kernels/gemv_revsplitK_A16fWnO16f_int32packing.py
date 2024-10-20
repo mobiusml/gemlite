@@ -231,6 +231,6 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, 
 class gemv_revsplitK_A16fWnO16f:
     kernel      = gemv_revsplitK_A16fWnO16f_int32packing_kernel
     forward     = gemv_revsplitK_A16fWnO16f_int32packing_forward
-    matmul_type = "GEMV_REVSLITK"
+    matmul_type = "GEMV_REVSPLITK"
 
 __all__ = ["gemv_revsplitK_A16fWnO16f"]
