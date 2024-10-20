@@ -18,7 +18,7 @@ extra_args = [
 
 setup(
     name='gemlite',
-    version="0.2.0",
+    version="0.3.0",
     url="https://github.com/mobiusml/gemlite/",
     author="Dr. Hicham Badri",
     author_email="hicham@mobiuslabs.com",
