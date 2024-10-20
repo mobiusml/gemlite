@@ -31,8 +31,6 @@ While <a href="https://github.com/mobiusml/gemlite/">GemLite</a> can outperform 
 # Getting Started
 ## Installation
 ```
-#Install the nightly or your own version
-pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu121;
 pip install git+https://github.com/mobiusml/gemlite/
 ```
 
