@@ -7,6 +7,7 @@ class AUTOTUNE_ENABLE:
 	GEMV_REVSPLITK = True
 	GEMM_SPLITK    = True
 	GEMM           = False
+	EXHAUSTIVE     = False
 
 def reload_all_modules():
 	#Avoid circular imports
@@ -25,7 +26,10 @@ def reload_all_modules():
 		for module in MODULES[matmul_dtype]:
 			imp.reload(module)
 
-def set_autotune(matmul_dtypes: dict):
+def set_autotune(matmul_dtypes: dict, **kwargs):
 	for key in matmul_dtypes:
 		setattr(AUTOTUNE_ENABLE, key, matmul_dtypes[key])
 	reload_all_modules()
+
+	if('exhaustive' in kwargs):
+		AUTOTUNE_ENABLE.EXHAUSTIVE: bool = kwargs['exhaustive']

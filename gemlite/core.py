@@ -184,7 +184,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         input_dtype = DType.FP16,
         output_dtype = DType.FP16,
         acc_dtype = DType.FP32,
-        exhaustive=False
     ):
         self._SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
 
@@ -250,7 +249,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 ),
             )
 
-        if(exhaustive):
+        if(AUTOTUNE_ENABLE.EXHAUSTIVE):
             self.forward = self.forward_auto_with_warmup
         else:
             self.forward = self.forward_auto_no_warmup

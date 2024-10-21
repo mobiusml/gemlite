@@ -39,18 +39,17 @@ pip install git+https://github.com/mobiusml/gemlite/
 from gemlite.core import DType, GemLiteLinear, set_autotune
 
 #Set autotuner: by default autotuning is disabled for faster kernel launch
-#set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':False})
+#set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True)
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(
     W_nbits, #supported: [8, 4, 2, 1]
-    group_size=group_size, # any group_size divisible by 32
+    group_size=group_size, # any group_size divisible by 32 - enable autotune for group_size < 128 (!)
     in_features=in_features, # input size
     out_features=out_features, #ouput size
-    input_dtype=DType.FP16, #FP16 or BF16
-    output_dtype=DType.FP16, #FP16 or BF16
+    input_dtype=DType.FP16, #FP16
+    output_dtype=DType.FP16, #FP16
     acc_dtype=DType.FP16, #FP16 or FP32 
-    exhaustive=False, #True or False, will pick the fastest kernel
 )
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
