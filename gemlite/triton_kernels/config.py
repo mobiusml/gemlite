@@ -3,9 +3,9 @@
 import imp 
 
 class AUTOTUNE_ENABLE:
-	GEMV           = True
-	GEMV_REVSPLITK = True
-	GEMM_SPLITK    = True
+	GEMV           = False
+	GEMV_REVSPLITK = False
+	GEMM_SPLITK    = False
 	GEMM           = False
 	EXHAUSTIVE     = False
 
