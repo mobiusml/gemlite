@@ -88,7 +88,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 @triton.jit
 def gemm_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
-    scales_ptr, zeros_ptr,
+    scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
     W_nbits: tl.constexpr, group_size: tl.constexpr, unpack_mask: tl.constexpr, elements_per_sample: tl.constexpr, 
     stride_am, stride_ak,
@@ -96,6 +96,8 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_cm, stride_cn,
     stride_meta_g, stride_meta_n,
     acc_dtype: tl.constexpr,
+    meta_dtype: tl.constexpr,
+    channel_scale_mode: tl.constexpr,
     ######### tuning params #########
     CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
@@ -149,37 +151,54 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
     for k in tl.range(0, num_pid_k, 1, num_stages=1):
         
-        b = tl.load(b_ptrs, eviction_policy='evict_first') #(BLOCK_SIZE_K, BLOCK_SIZE_N) - repeated over K dim
+        b = tl.load(b_ptrs, eviction_policy='evict_first')
 
         if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #(BLOCK_SIZE_M, BLOCK_SIZE_K)
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
             
         k_m    = (k * stride_mul).to(tl.int32)
         scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
         zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
 
         if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 4090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
         b = (b >> q_shifts) & unpack_mask
-        b = (b.to(scales.dtype) - zeros) * scales
+        b = (b.to(meta_dtype) - zeros) * scales
 
         if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') #Best for 3090! (BLOCK_SIZE_M, BLOCK_SIZE_K)
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee") #(BLOCK_SIZE_M, BLOCK_SIZE_N)
+        acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee")
 
         #Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak
         b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
 
+    ##################################################################
+    #Channel-wise scaling
+    if(channel_scale_mode == 1): #weight-only
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        acc      = acc.to(meta_dtype) * scales_b[None, :]
+
+    if(channel_scale_mode == 2): #activation-only
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
+        scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
+        acc      = acc.to(meta_dtype)  * (scales_a[:, None] * scales_b[None, :])
+
+    if(channel_scale_mode == 3): #weight + activation
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
+
+    ##################################################################
     #Output
-    #acc = acc.to(tl.float16) 
-    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    c_ptrs = c_ptr + (offs_m[:, None] * stride_cm + offs_n[None, :] * stride_cn)
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N)) 
 
 
@@ -201,16 +220,17 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     gemm_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
-        scales, zeros, 
+        scales, zeros, None,
         M, N, K,
         W_nbits, group_size, unpack_mask, elements_per_sample,  
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        tl.float16 if (acc_dtype == 1) else tl.float32,
+        acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
+        meta_dtype=tl.float16,
+        channel_scale_mode=0, #1 + zeros-only for channel-wise
     )
-
     return output
 
 @torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id)
