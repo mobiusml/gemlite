@@ -6,9 +6,7 @@ import triton
 import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
-
-def init_to_zero(name):
-    return lambda nargs: nargs[name].zero_()
+from .utils import *
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     m = nargs['M'] 
@@ -18,7 +16,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     used = set()
     for config in configs:
-        block_size_m      = min(m, config.kwargs['BLOCK_SIZE_M']) 
+        block_size_m      = 1 #Only 1 allowed
         block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
         block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
         block_size_k      = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
@@ -123,18 +121,20 @@ def gemv_A16fWnO16f_int32packing_kernel(
     C is of shape (M, N): float16 or bfloat16 depending on the input A
     scales and zeros is of shape (group_size, N): float16 or bfloat16
     """    
-    pid_m   = tl.program_id(axis=0)
-    pid_k   = tl.program_id(axis=1)
-    pid_n   = tl.program_id(axis=2)
 
+    pid   = tl.program_id(axis=0)
+    pid_k = tl.program_id(axis=1) 
+
+    #Swizzle?
+    #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, 8)
+    
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M) 
     offs_k  = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
     #Vectorized coalesced load
-    offs_k  = tl.max_contiguous(tl.multiple_of(offs_k,  BLOCK_SIZE_K), BLOCK_SIZE_K)
-    offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
-    
+    offs_k  = tl.max_contiguous(tl.multiple_of(offs_k,  BLOCK_SIZE_K), BLOCK_SIZE_K)    
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
     b_ptrs  = b_ptr + (offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn
 
@@ -166,8 +166,11 @@ def gemv_A16fWnO16f_int32packing_kernel(
     #Dot product
     acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b, axis=0) #Don't set this to True
 
+    ####################################################################
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
-    tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem=atomic_mode) #Force cta scope via scope="cta"
+    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    tl.atomic_add(c_ptr + offs_bn + pid_m*N, acc, sem=atomic_mode) #Force cta scope
 
 
 
@@ -184,7 +187,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
     
-    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']), triton.cdiv(K, meta['BLOCK_SIZE_K']), triton.cdiv(N, meta['BLOCK_SIZE_N']))
+    grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
 
     gemv_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,

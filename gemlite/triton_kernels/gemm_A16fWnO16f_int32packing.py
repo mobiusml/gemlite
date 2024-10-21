@@ -6,6 +6,7 @@ import triton
 import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
+from .utils import *
 
 # code based https://github.com/fpgaminer/GPTQ-triton
 def kernel_config_pruner(configs, nargs, **kwargs):
@@ -113,18 +114,15 @@ def gemm_A16fWnO16f_int32packing_kernel(
     BLOCK_SIZE_K <= group_size
     """
 
-    pid       = tl.program_id(axis=0)
+    pid = tl.program_id(axis=0)
+    
+    #Swizzle?
+    #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
-
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id         = pid // num_pid_in_group
-    first_pid_m      = group_id * GROUP_SIZE_M
-    group_size_m     = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m            = first_pid_m + (pid % group_size_m)
-    pid_n            = (pid % num_pid_in_group) // group_size_m
 
     #Offsets
     offs_m  = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)

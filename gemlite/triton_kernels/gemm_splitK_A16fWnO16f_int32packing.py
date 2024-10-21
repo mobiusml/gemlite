@@ -6,12 +6,7 @@ import triton
 import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
-
-def init_to_zero(name):
-    return lambda nargs: nargs[name].zero_()
-
-def is_divisible(dividend, divisor):
-    return dividend % divisor == 0
+from .utils import *
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     m = nargs['M'] 
@@ -152,18 +147,14 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
- 
+
+    #Swizzle?
+    #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
-
-    #Swizzle
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-    group_id         = pid // num_pid_in_group
-    first_pid_m      = group_id * GROUP_SIZE_M
-    group_size_m     = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-    pid_m            = first_pid_m + (pid % group_size_m)
-    pid_n            = (pid % num_pid_in_group) // group_size_m
 
     #Offsets
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
