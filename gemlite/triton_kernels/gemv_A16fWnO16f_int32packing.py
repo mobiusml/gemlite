@@ -104,7 +104,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
-    W_nbits, group_size, unpack_mask, elements_per_sample, 
+    W_nbits, group_size, unpack_mask, elements_per_sample: tl.constexpr, 
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
@@ -112,6 +112,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
     channel_scale_mode: tl.constexpr,
+    W_group_mode: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
@@ -159,8 +160,8 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
     ####################################################################
     # Unpack and dequantize
-    b = (b >> ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]) & unpack_mask
-    b = ((b.to(meta_dtype) - zeros) * scales).to(acc_dtype) 
+    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode).to(acc_dtype)
 
     if(A_load_order == 3):
         a = tl.load(a_ptrs, eviction_policy='evict_last').to(acc_dtype)
@@ -220,6 +221,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
         meta_dtype=tl.float16,
         channel_scale_mode=0, #1 + zeros-only for channel-wise
+        W_group_mode=2,
     )
 
     return output

@@ -129,6 +129,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
     channel_scale_mode: tl.constexpr,
+    W_group_mode: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
@@ -173,7 +174,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
 
     #Meta data stuff
-    q_shifts    = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
 
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
@@ -200,8 +201,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
-        b = ((b >> q_shifts) & unpack_mask)
-        b = (b.to(meta_dtype) - zeros) * scales
+        b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode)
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
@@ -266,6 +266,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
         acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
         meta_dtype=tl.float16,
         channel_scale_mode=0, #1 + zeros-only for channel-wise
+        W_group_mode=2,
     )
 
     return output

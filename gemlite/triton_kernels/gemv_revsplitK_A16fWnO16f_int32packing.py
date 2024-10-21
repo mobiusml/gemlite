@@ -116,7 +116,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
-    W_nbits, group_size, unpack_mask, elements_per_sample, 
+    W_nbits, group_size, unpack_mask, elements_per_sample: tl.constexpr, 
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
@@ -124,6 +124,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
     channel_scale_mode: tl.constexpr,
+    W_group_mode: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
@@ -162,12 +163,11 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     b = tl.load(b_ptrs, eviction_policy='evict_first') 
     a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype)
 
-    # Unpack and dequantize
-    b = (b >> q_shift) & unpack_mask
-    b = ((b.to(meta_dtype) - zeros) * scales).to(acc_dtype)
+    # Unpack and dequantize    
+    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode).to(acc_dtype)
 
     #Dot product
-    acc = tl.sum(a * b, axis=0, keep_dims=True) 
+    acc = tl.sum(a * b, axis=0, keep_dims=True)
 
     #Advance and load next chunk
     a_ptrs += BLOCK_SIZE_K * stride_ak
@@ -176,9 +176,8 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     b = tl.load(b_ptrs, eviction_policy='evict_first') 
     a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype)
 
-    # Unpack and dequantize
-    b = (b >> q_shift) & unpack_mask
-    b = ((b.to(meta_dtype) - zeros) * scales).to(acc_dtype)
+    # Unpack and dequantize    
+    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode).to(acc_dtype)
 
     #Dot product
     acc += tl.sum(a * b, axis=0, keep_dims=True) 
@@ -235,6 +234,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
         acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
         meta_dtype=tl.float16,
         channel_scale_mode=0,
+        W_group_mode=2,
     )
 
     return output
