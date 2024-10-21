@@ -249,6 +249,9 @@ class GemLiteLinearTriton(torch.nn.Module):
                 ),
             )
 
+        #Scales activations
+        self.scales_x = None
+
         if(AUTOTUNE_ENABLE.EXHAUSTIVE):
             self.forward = self.forward_auto_with_warmup
         else:
@@ -308,6 +311,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q,
             self.scales,
             self.zeros,
+            self.scales_x,
             self.W_nbits,
             self.group_size,
             self.unpack_mask,
@@ -344,6 +348,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 self.W_q,
                 self.scales,
                 self.zeros,
+                self.scales_x,
                 self.W_nbits,
                 self.group_size,
                 self.unpack_mask,

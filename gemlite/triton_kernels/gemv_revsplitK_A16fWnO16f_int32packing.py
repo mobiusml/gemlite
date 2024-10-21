@@ -211,7 +211,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
 _costum_op_id = '_' + str(int(random.random()*10000))
 
 @torch.library.custom_op("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
-def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
+def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          acc_dtype: int,
                                          ) -> Tensor:
@@ -225,7 +225,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
 
     gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
-        scales, zeros, None,
+        scales, zeros, scales_x,
         M, N, K, 
         W_nbits, group_size, unpack_mask, elements_per_sample,
         x.stride(0), x.stride(1),
@@ -240,7 +240,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     return output
 
 @torch.library.register_fake("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id)
-def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, 
+def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               acc_dtype: int,
                                               ) -> Tensor:
