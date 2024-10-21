@@ -167,7 +167,7 @@ GEMLITE_TRITON_MAPPING = {
     ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f,
     ("fp16", "GEMV_REVSPLITK"): gemv_revsplitK_A16fWnO16f,
 
-    ("bf16", "GEMM"): gemm_A16fWnO16f,
+    #("bf16", "GEMM"): gemm_A16fWnO16f,
 }
 
 def get_closest_m(M):
