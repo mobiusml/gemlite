@@ -258,7 +258,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.forward = self.forward_auto_no_warmup
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    def pack(self, W_q, scales, zeros, bias=None):
+    def pack(self, W_q, scales, zeros, bias=None, fma_mode=False):
         W_q      = W_q.view(self.orig_shape).to(torch.int32) 
         self.W_q = torch.zeros((W_q.shape[0], W_q.shape[1] // 32 * self.W_nbits), dtype=torch.int32, device=W_q.device) 
 
@@ -272,9 +272,29 @@ class GemLiteLinearTriton(torch.nn.Module):
             i += step
             col += 1
 
-        self.W_q    = self.W_q.t().contiguous() #row-major contiguous()
-        self.scales = scales.view((self.out_features, -1)).t().contiguous() 
-        self.zeros  = zeros.view((self.out_features, -1)).t().contiguous() 
+        self.W_q = self.W_q.t().contiguous() #row-major contiguous()
+        
+        if(scales is not None):
+            self.scales = scales.view((self.out_features, -1)).t().contiguous()
+        else:
+            self.scales = None
+
+        #Symmetric
+        if(zeros is None):   
+            self.W_group_mode = 1
+        else:
+            #Asymmetric
+            if(isinstance(zeros, torch.Tensor)):
+                if(fma_mode): #W ~ Wq * scales + zeros
+                    self.zeros = (-zeros.float()*scales.float()).to(zeros.dtype).view((self.out_features, -1)).t().contiguous()
+                    self.W_group_mode = 3
+                else: #W ~ (Wq - zeros) * scales
+                    self.zeros  = zeros.view((self.out_features, -1)).t().contiguous() 
+                    self.W_group_mode = 2 
+            else:
+                self.zeros = zeros
+                self.W_group_mode = 0 #Shift only with integer
+
         self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
         self.device = self.W_q.device
         return self
@@ -317,6 +337,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.unpack_mask,
             self.elements_per_sample,
             self.acc_dtype,
+            self.W_group_mode,
         ]
 
         _signature = (get_closest_m(x_input.shape[0]),) + self.signature
@@ -354,6 +375,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 self.unpack_mask,
                 self.elements_per_sample,
                 self.acc_dtype,
+                self.W_group_mode,
             )
             .view(out_shape)
         )
