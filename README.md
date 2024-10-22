@@ -38,12 +38,13 @@ pip install git+https://github.com/mobiusml/gemlite/
 ```Python
 from gemlite.core import DType, GemLiteLinear, set_autotune
 
-#Set autotuner: by default autotuning is disabled for faster kernel launch
+#Set autotuner: by default autotuning is disabled for faster kernel launch.
+#exhaustive=True iterates through all the kernels for each shape to pick the best one.
 #set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True)
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(
-    W_nbits, #supported: [8, 4, 2, 1]
+    W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]
     group_size=group_size, # any group_size divisible by 32 - enable autotune for group_size < 128 (!)
     in_features=in_features, # input size
     out_features=out_features, #ouput size
@@ -54,6 +55,9 @@ gemlite_linear = GemLiteLinear(
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
 gemlite_linear.pack(W_q, scales, zeros, bias)
+
+#For activation quantization you need to override this function which should return the activation scales:
+#gemlite_linear.get_activation_scales = lambda x: ...
 
 #Forward
 out = gemlite_linear(x)
