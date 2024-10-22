@@ -5,7 +5,7 @@ from torch import Tensor
 import numpy as np
 from enum import Enum
 import math
-from typing import Union
+from typing import Union, Tuple
 
 #Dtypes
 from .dtypes import *
@@ -221,8 +221,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.forward = self.forward_auto_no_warmup
 
     #Override this function to perform dynamic activation quantization
-    def get_activation_scales(self, x: Tensor) -> Tensor:
-        return self.scales_x
+    def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        return x, self.scales_x
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
     #Make sure to feed UINT8 W_q for packing
@@ -336,6 +336,7 @@ class GemLiteLinearTriton(torch.nn.Module):
     #Exhaustive search 
     def forward_auto_with_warmup(self, x: Tensor) -> Tensor:
         global GEMLITE_TRITON_CACHE
+        x, scaled_x = self.scale_activations(x)
         out_shape = x.shape[:-1] + (self.out_features,)
         x_input = x.view(-1, x.shape[-1])
         args = [
@@ -343,7 +344,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q,
             self.scales,
             self.zeros,
-            self.get_activation_scales(x),
+            scaled_x,
             self.W_nbits,
             self.group_size,
             self.unpack_mask,
@@ -375,6 +376,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK
     
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
+        x, scaled_x = self.scale_activations(x)
         out_shape = x.shape[:-1] + (self.out_features,)
 
         out = (
@@ -384,7 +386,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 self.W_q,
                 self.scales,
                 self.zeros,
-                self.get_activation_scales(x),
+                scaled_x,
                 self.W_nbits,
                 self.group_size,
                 self.unpack_mask,

@@ -57,7 +57,7 @@ gemlite_linear = GemLiteLinear(
 gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #For activation quantization you need to override this function which should return the activation scales:
-#gemlite_linear.get_activation_scales = lambda x: ...
+#gemlite_linear.scale_activations = lambda x: x_scaled, scales
 
 #Forward
 out = gemlite_linear(x)
