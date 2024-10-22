@@ -165,7 +165,7 @@ def get_closest_m(M):
 
 GEMLITE_ACC_DTYPE      = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f, gemv_revsplitK_A16fWnO16f] 
-GEMLITE_TRITON_MAPPING = {kernel.matmul_type :kernel for kernel in GEMLITE_TRITON_KERNELS}
+GEMLITE_TRITON_MAPPING = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CACHE   = {}
 
 # Triton
@@ -328,7 +328,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
-            "forward": self.kernels[indx].forward,
+            "matmul_type": self.kernels[indx].matmul_type,
             "time": t[indx],
             "time_all": list(zip([k.matmul_type for k in self.kernels] , t))
         }
@@ -338,6 +338,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         global GEMLITE_TRITON_CACHE
         x, scaled_x = self.scale_activations(x)
         out_shape = x.shape[:-1] + (self.out_features,)
+
         x_input = x.view(-1, x.shape[-1])
         args = [
             x_input,
@@ -360,7 +361,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         if _signature not in GEMLITE_TRITON_CACHE:
             self.warmup(_signature, args)
 
-        out = GEMLITE_TRITON_CACHE[_signature]["forward"](*args).view(out_shape)
+        matmul_type = GEMLITE_TRITON_CACHE[_signature]["matmul_type"]
+        out         = GEMLITE_TRITON_MAPPING[matmul_type].forward(*args).view(out_shape)
 
         if self.bias is not None:
             out += self.bias
