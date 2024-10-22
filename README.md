@@ -47,9 +47,9 @@ gemlite_linear = GemLiteLinear(
     group_size=group_size, # any group_size divisible by 32 - enable autotune for group_size < 128 (!)
     in_features=in_features, # input size
     out_features=out_features, #ouput size
-    input_dtype=DType.FP16, #FP16
-    output_dtype=DType.FP16, #FP16
-    acc_dtype=DType.FP16, #FP16 or FP32 
+    input_dtype=DType.FP16, #FP16, FP8, INT8
+    output_dtype=DType.FP16, #FP16, FP32, FP8, INT32
+    scaled_activations=False, #If the activations are scaled or not
 )
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)

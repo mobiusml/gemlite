@@ -95,10 +95,15 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_bk, stride_bn,
     stride_cm, stride_cn,
     stride_meta_g, stride_meta_n,
+    ######### Dtypes #########
+    input_dtype: tl.constexpr,
+    output_dtype: tl.constexpr,
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
+    ######### Meta-data mode #########
     channel_scale_mode: tl.constexpr,
     W_group_mode: tl.constexpr,
+    zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
@@ -116,7 +121,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     BLOCK_SIZE_M >=16
     BLOCK_SIZE_K <= group_size
     """
-
+    
     pid = tl.program_id(axis=0)
     
     #Swizzle?
@@ -156,22 +161,34 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
-            
-        k_m    = (k * stride_mul).to(tl.int32)
-        scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-        zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+        
+        #Load meta-data            
+        k_m = (k * stride_mul).to(tl.int32)
+
+        if(W_group_mode >= 2): #[2, 3, 4]
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        else:
+            scales = None
+
+        if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
+            if(zero_is_scalar):
+                zeros = zeros_ptr
+            else:
+                zeros = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        else:
+            zeros = None
 
         if(A_load_order == 2): #Mid load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
-        b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode)
+        b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(a.dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee")
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee")
 
         #Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak
@@ -180,17 +197,17 @@ def gemm_A16fWnO16f_int32packing_kernel(
     ##################################################################
     #Channel-wise scaling
     if(channel_scale_mode == 1): #weight-only
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * scales_b[None, :]
 
     if(channel_scale_mode == 2): #activation-only
         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
-        acc      = acc.to(meta_dtype)  * (scales_a[:, None] * scales_b[None, :])
+        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     if(channel_scale_mode == 3): #weight + activation
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N,   other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     ##################################################################
@@ -207,14 +224,15 @@ _costum_op_id = '_' + str(int(random.random()*10000))
 @torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                         acc_dtype: int, W_group_mode: int,
+                                         input_dtype:int, output_dtype:int, acc_dtype: int, 
+                                         channel_scale_mode:int, W_group_mode: int,
                                         ) -> Tensor:
     
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
-    output = torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
+    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
@@ -227,21 +245,28 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
-        meta_dtype=tl.float16,
-        channel_scale_mode=0, #1 + zeros-only for channel-wise
-        W_group_mode=W_group_mode,
+        ########################
+        input_dtype  = DTYPE_TO_TRITON[input_dtype],
+        output_dtype = DTYPE_TO_TRITON[output_dtype],
+        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+        meta_dtype   = tl.float16,
+        ########################
+        channel_scale_mode = channel_scale_mode,
+        W_group_mode       = W_group_mode,
+        zero_is_scalar     = isinstance(zeros, int),
     )
+
     return output
 
 @torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                              acc_dtype: int, W_group_mode: int,
+                                              input_dtype:int, output_dtype:int, acc_dtype: int, 
+                                              channel_scale_mode:int, W_group_mode: int,
                                               ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-    return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
+    return torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
 
 class gemm_A16fWnO16f:

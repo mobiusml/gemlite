@@ -121,10 +121,15 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     stride_bk, stride_bn,
     stride_cm, stride_cn,
     stride_meta_g, stride_meta_n,
+    ######### Dtypes #########
+    input_dtype: tl.constexpr,
+    output_dtype: tl.constexpr,
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
+    ######### Meta-data mode #########
     channel_scale_mode: tl.constexpr,
     W_group_mode: tl.constexpr,
+    zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
@@ -152,23 +157,35 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     offs_k  = tl.max_contiguous(tl.multiple_of(offs_k,  BLOCK_SIZE_K), BLOCK_SIZE_K)
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
     b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
+    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
 
     ####################################################################
-    k_m     = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)    
-    scales  = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-    zeros   = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+    #Load meta data first, for two passes
+    k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
+
+    if(W_group_mode >= 2): #[2, 3, 4]
+        scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+    else:
+        scales = None
+    
+    if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
+        if(zero_is_scalar):
+            zeros = zeros_ptr 
+        else:
+            zeros = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+    else:
+        zeros = None
 
     #Load
     b = tl.load(b_ptrs, eviction_policy='evict_first') 
     a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype)
 
     # Unpack and dequantize    
-    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode).to(acc_dtype)
+    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar).to(acc_dtype)
 
     #Dot product
     acc = tl.sum(a * b, axis=0, keep_dims=True)
-
+    
     #Advance and load next chunk
     a_ptrs += BLOCK_SIZE_K * stride_ak
     b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
@@ -177,25 +194,25 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype)
 
     # Unpack and dequantize    
-    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode).to(acc_dtype)
-
+    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar).to(acc_dtype)
+    
     #Dot product
     acc += tl.sum(a * b, axis=0, keep_dims=True) 
 
     ##################################################################
     #Channel-wise scaling
     if(channel_scale_mode == 1): #weight-only
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * scales_b[None, :]
 
     if(channel_scale_mode == 2): #activation-only
         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
-        acc      = acc.to(meta_dtype)  * (scales_a[:, None] * scales_b[None, :])
+        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     if(channel_scale_mode == 3): #weight + activation
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1)
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N,   other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     ####################################################################
@@ -211,16 +228,21 @@ _costum_op_id = '_' + str(int(random.random()*10000))
 
 @torch.library.custom_op("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                         acc_dtype: int, W_group_mode: int,
-                                         ) -> Tensor:
+                                                   W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                                   input_dtype:int, output_dtype:int, acc_dtype: int, 
+                                                   channel_scale_mode:int, W_group_mode: int,
+                                                   ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
-    output = torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
+    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
+
+    #faster to do channel-wise like this for this kernel
+    if(channel_scale_mode == 1 and W_group_mode == 1):
+        channel_scale_mode, W_group_mode = 0, 3 
 
     gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
@@ -231,22 +253,28 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        acc_dtype=tl.float16 if (acc_dtype == 1) else tl.float32, 
-        meta_dtype=tl.float16,
-        channel_scale_mode=0,
-        W_group_mode=W_group_mode,
+        ########################
+        input_dtype  = DTYPE_TO_TRITON[input_dtype],
+        output_dtype = DTYPE_TO_TRITON[output_dtype],
+        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+        meta_dtype   = tl.float16,
+        ########################
+        channel_scale_mode = channel_scale_mode,
+        W_group_mode       = W_group_mode,
+        zero_is_scalar     = isinstance(zeros, int),
     )
 
     return output
 
 @torch.library.register_fake("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                              acc_dtype: int, W_group_mode: int,
-                                              ) -> Tensor:
+                                                        W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                                                        input_dtype:int, output_dtype:int, acc_dtype: int, 
+                                                        channel_scale_mode:int, W_group_mode: int,
+                                                        ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-    return torch.empty((M, N), device=W_q.device, dtype=scales.dtype)
+    return torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
 
 class gemv_revsplitK_A16fWnO16f:

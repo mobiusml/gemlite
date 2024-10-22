@@ -1,29 +1,30 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 # ********************************************************
 import torch
+from torch import Tensor
 import numpy as np
 from enum import Enum
 import math
+from typing import Union
 
-# CUDA extension
-import gemlite_lib
+#Dtypes
+from .dtypes import *
 
 # Triton
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 
-class DType(Enum):
-    FP16 = "fp16"
-    BF16 = "bf16"
-    FP32 = "fp32"
-    INT8 = "int8"
-    INT32 = "int32"
-    #FP16D8 = "fp16d8i"  # todo: dynamic quantization
-
 ###################################################################################################################################
 # CUDA backend
 ###################################################################################################################################
+# CUDA extension
+try:
+    import gemlite_lib
+except:
+    gemlite_lib = None
+    print('Failed to import gemlite_lib (CUDA backend)')
+
 GEMLITE_GEMV_FP16_INPUT_FP16_OUTPUT = {
     8: gemlite_lib.gemv_A16fW8iO16f,  # (x, W, w_shift, w_scale)
     4: gemlite_lib.gemv_A16fW4iO16f,
@@ -94,7 +95,7 @@ class GemLiteLinearCUDA(torch.nn.Module):
         self.acc_dtype = None
 
     # Universal bitpacking with int32
-    def pack(self, W_q, scales=1, zeros=0, bias=None):
+    def pack(self, W_q, scales: torch.Tensor, zeros=0, bias=None):
         tile_size = self.threads_per_group
 
         step = 32 // self.W_nbits
@@ -159,22 +160,19 @@ def eval_time_for_auto_mode(fct, params):
     torch.cuda.set_stream(stream)
     return do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
 
-GEMLITE_TRITON_CACHE = {}
-
-GEMLITE_TRITON_MAPPING = {
-    ("fp16", "GEMV"): gemv_A16fWnO16f,
-    ("fp16", "GEMM"): gemm_A16fWnO16f,
-    ("fp16", "GEMM_SPLITK"): gemm_splitK_A16fWnO16f,
-    ("fp16", "GEMV_REVSPLITK"): gemv_revsplitK_A16fWnO16f,
-
-    #("bf16", "GEMM"): gemm_A16fWnO16f,
-}
-
 def get_closest_m(M):
     return 2 ** int(math.ceil(math.log2(M)))
 
+GEMLITE_ACC_DTYPE      = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_TRITON_KERNELS = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f, gemv_revsplitK_A16fWnO16f] 
+GEMLITE_TRITON_MAPPING = {kernel.matmul_type :kernel for kernel in GEMLITE_TRITON_KERNELS}
+GEMLITE_TRITON_CACHE   = {}
+
 # Triton
 class GemLiteLinearTriton(torch.nn.Module):
+    SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.INT8]
+
     def __init__(
         self,
         W_nbits,
@@ -183,13 +181,11 @@ class GemLiteLinearTriton(torch.nn.Module):
         out_features,
         input_dtype = DType.FP16,
         output_dtype = DType.FP16,
-        acc_dtype = DType.FP32,
+        scaled_activations = False,
     ):
-        self._SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
-
         super().__init__()
-        if W_nbits not in self._SUPPORTED_BITS_TRITON:
-            raise NotImplementedError("Only " + str(self._SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
+        if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
+            raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
         if in_features % 128 != 0 or out_features % 128 != 0:
             raise NotImplementedError("Invalid input shapes")
 
@@ -202,54 +198,21 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.elements_per_sample = 32 // self.W_nbits
         self.signature = (in_features, out_features, W_nbits, group_size)
 
-        self.input_dtype  = input_dtype
-        self.output_dtype = output_dtype
+        self.input_dtype   = input_dtype
+        self.output_dtype  = output_dtype
+        self.meta_dtype    = torch.float16
+        self.compute_dtype = torch.float16
+        self.kernels       = GEMLITE_TRITON_KERNELS
 
-        self.compute_dtype = None
-        if input_dtype == DType.FP16 and output_dtype == DType.FP16:
-            self.kernels = [gemm_A16fWnO16f, gemv_A16fWnO16f, gemm_splitK_A16fWnO16f, gemv_revsplitK_A16fWnO16f] 
-            self.compute_dtype = torch.float16
+        #Warning: Input dtype should be the same as dequantize() weights dtype.
+        if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
+            raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
 
-        if input_dtype == DType.BF16 and output_dtype == DType.BF16:
-            self.kernels = [gemm_A16fWnO16f]
-            self.compute_dtype = torch.bfloat16
-
-        if self.compute_dtype is None:
-            raise NotImplementedError(
-                "Unsupport settings: ",
-                (self.input_dtype, self.output_dtype, self.W_nbits),
-            )
-
-        #self.acc_dtype = acc_dtype.value
-        #Temporary fix for torch nightly
-        self.acc_dtype = 0 if (acc_dtype == DType.FP32) else 1 #0 for fp32, 1 for fp16
-
-        with torch.device("meta"):
-            self.register_buffer(
-                "W_q",
-                torch.zeros(
-                    (self.in_features // 32 * self.W_nbits, self.out_features),
-                    dtype=torch.int32,
-                ),
-            )
-            self.register_buffer(
-                "scales",
-                torch.zeros(
-                    int(np.ceil(self.in_features / self.group_size)),
-                    self.out_features,
-                    dtype=self.compute_dtype,
-                ),
-            )
-            self.register_buffer(
-                "zeros",
-                torch.zeros(
-                    int(np.ceil(self.in_features / self.group_size)),
-                    self.out_features,
-                    dtype=self.compute_dtype,
-                ),
-            )
+        #Accumulation
+        self.acc_dtype = GEMLITE_ACC_DTYPE[self.input_dtype]
 
         #Scales activations
+        self.scaled_activations = scaled_activations
         self.scales_x = None
 
         if(AUTOTUNE_ENABLE.EXHAUSTIVE):
@@ -257,46 +220,95 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.forward = self.forward_auto_no_warmup
 
+    #Override this function to perform dynamic activation quantization
+    def get_activation_scales(self, x: Tensor) -> Tensor:
+        return self.scales_x
+
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    def pack(self, W_q, scales, zeros, bias=None, fma_mode=False):
-        W_q      = W_q.view(self.orig_shape).to(torch.int32) 
-        self.W_q = torch.zeros((W_q.shape[0], W_q.shape[1] // 32 * self.W_nbits), dtype=torch.int32, device=W_q.device) 
+    #Make sure to feed UINT8 W_q for packing
+    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False):
 
-        step = 32 // self.W_nbits
-        i, col = 0, 0
-        while col <  self.W_q.shape[1]: 
-            shift = 0
-            for j in range(i, i + step):
-                self.W_q[:, col] |= (W_q[:, j] << shift)
-                shift += self.W_nbits
-            i += step
-            col += 1
+        #Unpacked weights
+        if(W_q.dtype in [torch.float16, torch.float8_e4m3fn, torch.float8_e5m2]):
+            self.W_q = W_q.t().contiguous() #row-major contiguous()
+            self.elements_per_sample = 1
 
-        self.W_q = self.W_q.t().contiguous() #row-major contiguous()
+        else: #Packed weigths
+            W_q      = W_q.view(self.orig_shape).to(torch.int32) 
+            self.W_q = torch.zeros((W_q.shape[0], W_q.shape[1] // 32 * self.W_nbits), dtype=torch.int32, device=W_q.device) 
+
+            step = 32 // self.W_nbits
+            i, col = 0, 0
+            while col <  self.W_q.shape[1]: 
+                shift = 0
+                for j in range(i, i + step):
+                    self.W_q[:, col] |= (W_q[:, j] << shift)
+                    shift += self.W_nbits
+                i += step
+                col += 1
+
+            self.W_q = self.W_q.t().contiguous() #row-major contiguous()
         
         if(scales is not None):
+            assert scales.dtype == self.meta_dtype, "Unsupported scales/zeros dtype. Only FP16 is supported."
             self.scales = scales.view((self.out_features, -1)).t().contiguous()
         else:
             self.scales = None
 
-        #Symmetric
-        if(zeros is None):   
-            self.W_group_mode = 1
+        #Default: for checking validity
+        self.W_group_mode = -1
+
+        #Symmetric no shift
+        if(zeros is None):  
+            assert self.scales is not None, "Zeros and scales and can't be both None for W_group_mode = 2." 
+            self.W_group_mode = 2
         else:
-            #Asymmetric
+            #Asymmetric or Symmetric with shift
             if(isinstance(zeros, torch.Tensor)):
                 if(fma_mode): #W ~ Wq * scales + zeros
                     self.zeros = (-zeros.float()*scales.float()).to(zeros.dtype).view((self.out_features, -1)).t().contiguous()
-                    self.W_group_mode = 3
+                    self.W_group_mode = 4
                 else: #W ~ (Wq - zeros) * scales
-                    self.zeros  = zeros.view((self.out_features, -1)).t().contiguous() 
-                    self.W_group_mode = 2 
-            else:
-                self.zeros = zeros
-                self.W_group_mode = 0 #Shift only with integer
+                    self.zeros = zeros.view((self.out_features, -1)).t().contiguous() 
+                    self.W_group_mode = 3 
+            else: #Integer
+                self.zeros = int(zeros)
+                if(self.scales is not None):
+                    self.W_group_mode = 3 #Symmetric with shift
+                else:
+                    self.W_group_mode = 1 #Shift only with integer
+
+        assert self.W_group_mode > -1, "Invalid scales/zeros settings."
+
+        #channel-wise scaling 
+        self.channel_scale_mode  = 0
+        self.meta_is_chanenlwise = self.scales.numel() == self.out_features
+
+        #weight-only
+        if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
+            self.channel_scale_mode = 1
+            self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+
+        #activation-only
+        if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
+            self.channel_scale_mode = 2
+
+        #weight + activation mode
+        if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
+             self.channel_scale_mode = 3
+             self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+
+        if(self.channel_scale_mode in [1, 3]):
+            assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."
+
+        if(self.input_dtype == DType.INT8):
+            assert self.W_group_mode in [1], "Only channel-wise symmetric quantization is supported for INT8 inputs."
 
         self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
         self.device = self.W_q.device
+
+        #TODO: Register buffers
+
         return self
 
     # Warm up all the selected kernels
@@ -322,7 +334,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         }
 
     #Exhaustive search 
-    def forward_auto_with_warmup(self, x):
+    def forward_auto_with_warmup(self, x: Tensor) -> Tensor:
         global GEMLITE_TRITON_CACHE
         out_shape = x.shape[:-1] + (self.out_features,)
         x_input = x.view(-1, x.shape[-1])
@@ -331,12 +343,15 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q,
             self.scales,
             self.zeros,
-            self.scales_x,
+            self.get_activation_scales(x),
             self.W_nbits,
             self.group_size,
             self.unpack_mask,
             self.elements_per_sample,
-            self.acc_dtype,
+            self.input_dtype.value,
+            self.output_dtype.value,
+            self.acc_dtype.value,
+            self.channel_scale_mode,
             self.W_group_mode,
         ]
 
@@ -350,7 +365,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             out += self.bias
         return out
 
-    def forward_auto_no_warmup(self, x):
+    def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
         if(_batch_size >= 16):
             return self.forward_manual(x, matmul_type='GEMM') #GEMM
@@ -359,22 +374,25 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK
     
-    def forward_manual(self, x, matmul_type="GEMM"):
+    def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
         out_shape = x.shape[:-1] + (self.out_features,)
 
         out = (
-            GEMLITE_TRITON_MAPPING[(self.input_dtype.value, matmul_type)]
+            GEMLITE_TRITON_MAPPING[matmul_type]
             .forward(
                 x.view(-1, x.shape[-1]),
                 self.W_q,
                 self.scales,
                 self.zeros,
-                self.scales_x,
+                self.get_activation_scales(x),
                 self.W_nbits,
                 self.group_size,
                 self.unpack_mask,
                 self.elements_per_sample,
-                self.acc_dtype,
+                self.input_dtype.value,
+                self.output_dtype.value,
+                self.acc_dtype.value,
+                self.channel_scale_mode,
                 self.W_group_mode,
             )
             .view(out_shape)
