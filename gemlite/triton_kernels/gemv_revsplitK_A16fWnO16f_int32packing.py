@@ -61,13 +61,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 def get_autotune_config():
-    #Tuned on 4090 RTX
+    #Tuned on 4090 RTX / A100 SXM4
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
         for _N in [128, 256]:
             for _K in [16, 32, 64]: #block_size >=32 
-                for _w in [4]: #Changing this makes autotune act weird
-                    for _s in [2, 4]: 
+                for _w in [2, 4]: #[4]
+                    for _s in [1, 2]: #[2, 4]
                         for _A_load_order in [2]: #2 - default 4090: [1, 2, 3]
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
@@ -91,11 +91,11 @@ def get_default_config():
                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=4, num_stages=4, pre_hook=init_to_zero("c_ptr"))
 
     return [config]

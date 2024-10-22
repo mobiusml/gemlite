@@ -94,7 +94,7 @@ def get_default_config():
                             num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
+        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 
                              'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                              num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
