@@ -194,9 +194,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             raise NotImplementedError("Invalid input shapes")
 
         if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
-            warnings.warn("Warning: Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
+            warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
             _GROUP_SIZE_WARNED = True
-            
+
         self.in_features  = in_features
         self.out_features = out_features
         self.orig_shape   = (out_features, in_features)
