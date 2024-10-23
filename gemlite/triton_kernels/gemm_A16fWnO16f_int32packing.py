@@ -224,8 +224,8 @@ _costum_op_id = '_' + str(int(random.random()*10000))
 @torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                         input_dtype:int, output_dtype:int, acc_dtype: int, 
-                                         channel_scale_mode:int, W_group_mode: int,
+                                         input_dtype: int, output_dtype: int, acc_dtype: int, 
+                                         channel_scale_mode: int, W_group_mode: int,
                                         ) -> Tensor:
     
 
@@ -261,8 +261,8 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 @torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                              input_dtype:int, output_dtype:int, acc_dtype: int, 
-                                              channel_scale_mode:int, W_group_mode: int,
+                                              input_dtype: int, output_dtype: int, acc_dtype: int, 
+                                              channel_scale_mode: int, W_group_mode: int,
                                               ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]

@@ -70,7 +70,6 @@ def get_autotune_config():
 
     return _configs
 
-
 compute_capability = torch.cuda.get_device_capability(0)
 
 def get_default_config():
@@ -83,8 +82,8 @@ def get_default_config():
                             num_warps=2, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=4, pre_hook=init_to_zero("c_ptr"))
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':3, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     return [config]
 
@@ -215,8 +214,8 @@ _costum_op_id = '_' + str(int(random.random()*10000))
 @torch.library.custom_op("gemlite::gemv_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                         input_dtype:int, output_dtype:int, acc_dtype: int,  
-                                         channel_scale_mode:int, W_group_mode: int,
+                                         input_dtype: int, output_dtype: int, acc_dtype: int,  
+                                         channel_scale_mode: int, W_group_mode: int,
                                          ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
@@ -255,8 +254,8 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 @torch.library.register_fake("gemlite::gemv_A16fWnO16f_int32packing_forward" + _costum_op_id)
 def gemv_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                              input_dtype:int, output_dtype:int, acc_dtype: int, 
-                                              channel_scale_mode:int, W_group_mode: int,
+                                              input_dtype: int, output_dtype: int, acc_dtype: int, 
+                                              channel_scale_mode: int, W_group_mode: int,
                                               ) -> Tensor:
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
