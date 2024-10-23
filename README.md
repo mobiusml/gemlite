@@ -40,7 +40,8 @@ from gemlite.core import DType, GemLiteLinear, set_autotune
 
 #Set autotuner: by default autotuning is disabled for faster kernel launch.
 #exhaustive=True iterates through all the kernels for each shape to pick the best one.
-#set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True)
+#Make sure to enable autotuning for group_size < 128. By default, all these optioned are turned-off.
+set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True)
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(

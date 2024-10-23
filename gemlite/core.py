@@ -5,6 +5,7 @@ from torch import Tensor
 import numpy as np
 from enum import Enum
 import math
+import warnings
 from typing import Union, Tuple
 
 #Dtypes
@@ -169,6 +170,7 @@ GEMLITE_TRITON_MAPPING = {kernel.matmul_type : kernel for kernel in GEMLITE_TRIT
 GEMLITE_TRITON_CACHE   = {}
 
 # Triton
+_GROUP_SIZE_WARNED = False;
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.INT8]
@@ -183,12 +185,18 @@ class GemLiteLinearTriton(torch.nn.Module):
         output_dtype = DType.FP16,
         scaled_activations = False,
     ):
+        global _GROUP_SIZE_WARNED
+
         super().__init__()
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
         if in_features % 128 != 0 or out_features % 128 != 0:
             raise NotImplementedError("Invalid input shapes")
 
+        if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
+            warnings.warn("Warning: Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
+            _GROUP_SIZE_WARNED = True
+            
         self.in_features  = in_features
         self.out_features = out_features
         self.orig_shape   = (out_features, in_features)
@@ -248,7 +256,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 col += 1
 
             self.W_q = self.W_q.t().contiguous() #row-major contiguous()
-        
+            
         if(scales is not None):
             assert scales.dtype == self.meta_dtype, "Unsupported scales/zeros dtype. Only FP16 is supported."
             self.scales = scales.view((self.out_features, -1)).t().contiguous()
