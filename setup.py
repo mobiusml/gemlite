@@ -42,7 +42,7 @@ setup(
     },
     include_package_data=True,
     cmdclass={'build_ext': BuildExtension},
-    install_requires=["numpy", "ninja", "triton>=3.0.0"], #3.0.0+dedb7bdf33
+    install_requires=["numpy", "ninja", "triton>=3.1.0"],
 )
 
 # python3 setup.py install
