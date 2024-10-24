@@ -90,7 +90,7 @@ For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, whic
 * Performance has been mainly optimized for the 4090 RTX (see the autotune configs in the kernel files).
 
 ### Performance
-We present performance results across various batch sizes on the RTX 4096. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
+We present performance results across various batch sizes on the RTX 4090. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
 
 <details>
 <summary>8-bit Weights</summary>
