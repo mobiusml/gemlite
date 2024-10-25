@@ -41,7 +41,8 @@ from gemlite.core import DType, GemLiteLinear, set_autotune
 #Set autotuner: by default autotuning is disabled for faster kernel launch.
 #Make sure to enable autotuning for group_size < 128. By default, all these optioned are turned-off.
 set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True},
-              exhaustive=True) #If True, iterates through all the kernels for each shape to pick the best one.
+              exhaustive=True, #If True, iterates through all the kernels for each shape to pick the best one.
+              use_cuda_graph=True) #If True, uses CUDA Graphs for benchmarking (autotune and exhaustive mode).
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(

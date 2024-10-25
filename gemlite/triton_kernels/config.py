@@ -8,6 +8,7 @@ class AUTOTUNE_ENABLE:
 	GEMM_SPLITK    = False
 	GEMM           = False
 	EXHAUSTIVE     = False
+	USE_CUDA_GRAPH = False
 
 def reload_all_modules():
 	#Avoid circular imports
@@ -33,3 +34,6 @@ def set_autotune(matmul_dtypes: dict, **kwargs):
 
 	if('exhaustive' in kwargs):
 		AUTOTUNE_ENABLE.EXHAUSTIVE: bool = kwargs['exhaustive']
+
+	if('use_cuda_graph' in kwargs):
+		AUTOTUNE_ENABLE.CUDA_GRAPH: bool = kwargs['use_cuda_graph']

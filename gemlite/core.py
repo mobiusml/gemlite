@@ -156,10 +156,13 @@ class GemLiteLinearCUDA(torch.nn.Module):
 ###################################################################################################################################
 def eval_time_for_auto_mode(fct, params):
     for _ in range(5): fct(*params) #Run first to kick-off Triton autotune
-    #return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
-    stream = torch.cuda.Stream()
-    torch.cuda.set_stream(stream)
-    return do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
+    if(AUTOTUNE_ENABLE.USE_CUDA_GRAPH):
+        stream = torch.cuda.Stream()
+        torch.cuda.set_stream(stream)
+        out = do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
+    else:
+        out = do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
+    return out
 
 def get_closest_m(M):
     return 2 ** int(math.ceil(math.log2(M)))

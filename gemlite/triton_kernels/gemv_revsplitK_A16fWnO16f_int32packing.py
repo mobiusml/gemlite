@@ -107,7 +107,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV_REVSPLITK
     prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup=50, 
     rep=50,
-    use_cuda_graph=True,
+    use_cuda_graph=AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
 )
 
 @triton.jit
