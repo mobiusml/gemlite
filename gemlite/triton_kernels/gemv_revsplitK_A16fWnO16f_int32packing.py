@@ -85,9 +85,12 @@ def get_autotune_config():
 compute_capability = torch.cuda.get_device_capability(0)
 
 def get_default_config():
-    #4090: default
+    # #4090: default
     config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+
+    #4090: default
+    #config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32}, num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
         config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
@@ -157,13 +160,12 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
     b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
     q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
-
     ####################################################################
     #Load meta data first, for two passes
     k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
 
     if(W_group_mode >= 2): #[2, 3, 4]
-        scales = tl.load(scales_ptr + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        scales = tl.load(scales_ptr + offs_bn[None, :] * stride_meta_n + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
     else:
         scales = None
     
@@ -171,7 +173,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
         if(zero_is_scalar):
             zeros = zeros_ptr 
         else:
-            zeros = tl.load(zeros_ptr  + offs_bn[None, :] + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+            zeros = tl.load(zeros_ptr  + offs_bn[None, :] * stride_meta_n + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
     else:
         zeros = None
 
@@ -236,12 +238,9 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
+    zeros  = zeros.item() if (zeros.numel()==1) else zeros
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
-
-    #faster to do channel-wise like this for this kernel
-    if(channel_scale_mode == 1 and W_group_mode == 1):
-        channel_scale_mode, W_group_mode = 0, 3 
 
     gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,

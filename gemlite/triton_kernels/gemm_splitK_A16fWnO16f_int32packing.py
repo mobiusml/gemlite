@@ -268,6 +268,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     #assert group_size >= 128, "Only group_size >= 128 is currently supported"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
+    zeros  = zeros.item() if (zeros.numel()==1) else zeros
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 

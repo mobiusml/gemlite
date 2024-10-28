@@ -222,12 +222,9 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
+    zeros  = zeros.item() if (zeros.numel()==1) else zeros
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
-
-    #faster to do channel-wise like this for this kernel
-    if(channel_scale_mode == 1 and W_group_mode == 1):
-        channel_scale_mode, W_group_mode = 0, 3 
 
     gemv_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,

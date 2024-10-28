@@ -175,7 +175,7 @@ GEMLITE_TRITON_CACHE   = {}
 # Triton
 _GROUP_SIZE_WARNED = False;
 class GemLiteLinearTriton(torch.nn.Module):
-    SUPPORTED_BITS_TRITON = [1, 2, 4, 8]
+    SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.INT8]
 
     def __init__(
@@ -196,15 +196,18 @@ class GemLiteLinearTriton(torch.nn.Module):
         if in_features % 128 != 0 or out_features % 128 != 0:
             raise NotImplementedError("Invalid input shapes")
 
+        group_size = 1 if (group_size is None) else group_size
+
         if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
             warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
             _GROUP_SIZE_WARNED = True
+
 
         self.in_features  = in_features
         self.out_features = out_features
         self.orig_shape   = (out_features, in_features)
         self.W_nbits      = W_nbits
-        self.group_size   = group_size if group_size != -1 else in_features
+        self.group_size   = group_size
         self.unpack_mask  = 2**self.W_nbits - 1
         self.elements_per_sample = 32 // self.W_nbits
         self.signature = (in_features, out_features, W_nbits, group_size)
@@ -259,6 +262,20 @@ class GemLiteLinearTriton(torch.nn.Module):
                 col += 1
 
             self.W_q = self.W_q.t().contiguous() #row-major contiguous()
+        
+        #Bias / device
+        self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
+        self.device = self.W_q.device
+
+        #FP16 x FP16 / FP8 x FP8 / INT8 x INT8 - no meta-data case 
+        if((scales is None) and (zeros is None)):
+            self.zeros = torch.tensor([[0,]]).cuda()
+            self.scales = torch.tensor([[1,]]).cuda()
+            self.W_group_mode = 0
+            self.channel_scale_mode = 2 if self.scaled_activations else 0 
+            return 
+
+        #The rest of the use-cases require some kind of meta-data
             
         if(scales is not None):
             assert scales.dtype == self.meta_dtype, "Unsupported scales/zeros dtype. Only FP16 is supported."
@@ -270,8 +287,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.W_group_mode = -1
 
         #Symmetric no shift
-        if(zeros is None):  
+        if(zeros is None and self.group_size > 1):  
             assert self.scales is not None, "Zeros and scales and can't be both None for W_group_mode = 2." 
+            self.zeros = zeros
             self.W_group_mode = 2
         else:
             #Asymmetric or Symmetric with shift
@@ -283,7 +301,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                     self.zeros = zeros.view((self.out_features, -1)).t().contiguous() 
                     self.W_group_mode = 3 
             else: #Integer
-                self.zeros = int(zeros)
+                self.zeros = int(zeros) if(zeros is not None) else None
                 if(self.scales is not None):
                     self.W_group_mode = 3 #Symmetric with shift
                 else:
@@ -293,7 +311,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #channel-wise scaling 
         self.channel_scale_mode  = 0
-        self.meta_is_chanenlwise = self.scales.numel() == self.out_features
+        self.meta_is_chanenlwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
@@ -309,14 +327,20 @@ class GemLiteLinearTriton(torch.nn.Module):
              self.channel_scale_mode = 3
              self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
+        if(isinstance(self.zeros, int)): #Union[Tensor, int] not supported by custom op
+            self.zeros = torch.tensor(self.zeros, dtype=torch.int32)
+
         if(self.channel_scale_mode in [1, 3]):
             assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."
 
         if(self.input_dtype == DType.INT8):
             assert self.W_group_mode in [1], "Only channel-wise symmetric quantization is supported for INT8 inputs."
 
-        self.bias   = None if (bias is None) else torch.nn.Parameter(bias.to(device=self.W_q.device, dtype=self.compute_dtype))
-        self.device = self.W_q.device
+        #Dummy values 
+        if(self.zeros is None):
+            self.zeros = torch.tensor([[0,]]).cuda()
+        if(self.scales is None):
+            self.scales = torch.tensor([[1,]]).cuda()
 
         #TODO: Register buffers
 
