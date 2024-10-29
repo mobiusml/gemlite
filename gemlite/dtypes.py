@@ -8,7 +8,7 @@ class DType(Enum):
     BF16   = 2
     FP8    = 3
     INT8   = 4
-    uint8  = 5
+    UINT8  = 5
     INT32  = 6
     UINT32 = 7
 
