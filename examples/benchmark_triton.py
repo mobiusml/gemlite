@@ -1,23 +1,37 @@
 #OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 ipython3 benchmark_triton.py #select the right number of threads based on your machine
-#You can change the matmul_dtype: GEMM, GEMV or AUTO
-#Note: bfloat16 only supported in GEMM mode with float32 accumulation
 #################################################################################################################################
 import torch
 import numpy as np
 
+#HQQ
+from hqq.core.quantize import *
+from hqq.backends.torchao import patch_hqq_to_aoint4
+
+try:
+    from hqq.backends.bitblas import patch_hqq_to_bitblas, HQQLinearBitBlas
+    HQQLinearBitBlas.check = lambda hqq_layer: True
+    HQQLinearBitBlas.BIT_TO_DTYPE = {8:"uint8", 4: "uint4", 2: "uint2", 1: "uint1"}
+except:
+    HQQLinearBitBlas = None
+    pass
+
+#GemLite
+from gemlite.core import GemLiteLinearTriton, DType, set_autotune
+set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True, use_cuda_graph=False)
+
 device = 'cuda:0'
 compute_dtype = torch.float16
 
-#in_features, out_features = 4096, 4096
+in_features, out_features = 4096, 4096
 #in_features, out_features = 4096*2, 4096*2
 #in_features, out_features = 4096*4, 4096*4 
-in_features, out_features = 4096*8, 4096*8 
+#in_features, out_features = 4096*8, 4096*8 
 
 #W_nbits, group_size = 8, in_features 
 W_nbits, group_size = 4, 128 
 #W_nbits, group_size = 2, 128
 
-matmul_type = "AUTO" #GEMM, GEMV, "AUTO"
+matmul_type = "AUTO" #GEMM, GEMV, GEMV_REVSPLITK, GEMM_SPLITK | AUTO
 
 #################################################################################################################################
 from triton.testing import do_bench
@@ -60,17 +74,6 @@ class Torch_A16W8SYM(torch.nn.Module):
             out += self.bias
         return out
 
-#HQQ
-from hqq.core.quantize import *
-from hqq.backends.bitblas import patch_hqq_to_bitblas, HQQLinearBitBlas
-from hqq.backends.torchao import patch_hqq_to_aoint4
-
-HQQLinearBitBlas.check = lambda hqq_layer: True
-HQQLinearBitBlas.BIT_TO_DTYPE = {8:"uint8", 4: "uint4", 2: "uint2", 1: "uint1"}
-
-#GemLite
-from gemlite.core import GemLiteLinearTriton, DType
-
 class empty_linear(torch.nn.Module):
     def __init__(self, in_features, out_features, compute_dtype, device):
         super().__init__()
@@ -94,21 +97,11 @@ def gen_data(in_features, out_features, W_nbits, group_size, device=device):
     #GemLite
     if(W_nbits in [8, 4, 2, 1]):
 
-        input_dtype, output_dtype, acc_dtype = None, None, None
-        if(compute_dtype == torch.float16):
-            input_dtype, output_dtype, acc_dtype = DType.FP16, DType.FP16, DType.FP16
-
-        if(compute_dtype == torch.bfloat16):
-            input_dtype, output_dtype, acc_dtype = DType.BF16, DType.BF16, DType.FP32 #FP16 acc not supported with bfloat16
-
-        if(None in (input_dtype, output_dtype, acc_dtype)):
-            raise Exception('Unsupported compute config', (input_dtype, output_dtype, acc_dtype))
-
         gemlite_linear = GemLiteLinearTriton(W_nbits=W_nbits, 
                                             group_size=group_size, in_features=in_features, out_features=out_features, 
-                                            input_dtype=input_dtype, output_dtype=output_dtype, acc_dtype=acc_dtype)
+                                            input_dtype=DType.FP16, output_dtype=DType.FP16)
 
-        gemlite_linear.pack(hqq_layer.unpack().view(orig_shape), hqq_layer.meta['scale'], hqq_layer.meta['zero'], None);
+        gemlite_linear.pack(hqq_layer.unpack(dtype=torch.uint8).view(orig_shape), hqq_layer.meta['scale'].clone(), hqq_layer.meta['zero'].clone(), bias=None);
 
     # #TorchAO
     # if(W_nbits==8):
@@ -162,10 +155,21 @@ W, gemlite_linear, torchao_linear, bitblas_linear, marlin_linear = gen_data(in_f
 if(matmul_type == "AUTO"):
     BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
     HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1, 16]
+    gemlite_linear.forward = gemlite_linear.forward_auto_with_warmup
 
 if(matmul_type == "GEMV"):
     BATCH_SIZES = [1, 2, 4, 8]
     gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV")
+    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+
+if(matmul_type == "GEMV_REVSPLITK"):
+    BATCH_SIZES = [1, 2, 4, 8]
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV_REVSPLITK")
+    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+
+if(matmul_type == "GEMM_SPLITK"):
+    BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64]
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMM_SPLITK")
     HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMM"):

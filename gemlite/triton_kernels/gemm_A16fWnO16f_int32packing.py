@@ -17,11 +17,14 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     used = set()
     for config in configs:
-        block_size_m      = min(m, config.kwargs['BLOCK_SIZE_M'])
-        block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
-        block_size_k      = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
+        block_size_m = config.kwargs['BLOCK_SIZE_M']
+        block_size_n = config.kwargs['BLOCK_SIZE_N']
+        block_size_k = config.kwargs['BLOCK_SIZE_K']
+        block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
+        #Makes autotune faster a bit faster
+        block_size_m = 16 if (m <= 16) else max(block_size_m, 32)
+            
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -52,12 +55,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
-    for _M in [16, 32, 64, 128]: #+ [256] #might need higher values for larger batch-sizes
+    for _M in [16, 32, 64, 128]: #+ [128, 256] #might need higher values for larger batch-sizes
         for _N in [32, 64, 128]: 
             for _K in [32, 64, 128]: #[32, 64, 128], 32 <= block_size
-                for _w in [4]: #[2, 4]
-                    for _s in [4]: #[2, 4]
-                        for _A_load_order in [2]: #[1, 2, 3] - [2]: default 4090
+                for _w in [2, 4]: #[2, 4]
+                    for _s in [2, 4]: #[2, 4]
+                        for _A_load_order in [1, 2]: #[1, 2, 3] - [2]: default 4090
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
                                         triton.Config(
@@ -70,6 +73,7 @@ def get_autotune_config():
 
 #4090 RTX
 def get_default_config():
+    #small batch, not sure what is the right default cnnfig here.
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
                             num_warps=4, num_stages=2),]
 

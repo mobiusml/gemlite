@@ -22,6 +22,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K'] #min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
+        #Makes autotuning faster: mainly for batch-size 1 .. 32
+        block_size_m = 16 if (m <= 16) else 32
+
         #Constraints
         #BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
@@ -60,16 +63,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
+#These autotunes are optimized for batch-size 1 to 32 (!)
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
-    for _M in [16]: #This is fixed to 16 for skinny matrices
-        for _N in [32]:
+    for _M in [16, 32]: #Use [16, 32] for better performance at batch-sizes 32,64
+        for _N in [32, 64]:
             for _K in [32, 64, 128]: #[128], group_size >= 128
-                for _w in [4]: #[4] 
-                    for _s in [2, 3]: #[2, 3]
+                for _w in [2, 4]: #[4] 
+                    for _s in [1, 2]: #[2, 3]
                         for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [2]: #[1, 2, 3] - [1]: default 4090
+                            for _a_load_order in [1, 2]: #[1, 2, 3] - [1]: default 4090
                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(
