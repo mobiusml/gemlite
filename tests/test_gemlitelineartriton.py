@@ -70,10 +70,14 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		gemlite_linear.pack(W_q, scales, zeros, None, fma_mode=False);
 
-		#Weights are unpacked() then shifted by 7
-		self.assertTrue(gemlite_linear.W_group_mode == 1) 
-		#Since the scales are channel-wise, we perform scaling post K-sum
-		self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		if(group_size == in_features):
+			#Weights are unpacked() then shift only if group_size == in_features (1) otherwise (3)
+			self.assertTrue(gemlite_linear.W_group_mode == 1) 
+			#Since the scales are channel-wise, we perform scaling post K-sum
+			self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		else:
+			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 0) 
 
 		tol = 1e-3
 
@@ -99,16 +103,21 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		gemlite_linear.pack(W_q, scales=scales, zeros=7, bias=None);
 
-		#Weights are unpacked() then shifted by 7
-		self.assertTrue(gemlite_linear.W_group_mode == 1) 
-		#Since the scales are channel-wise, we perform scaling post K-sum
-		self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		if(group_size == in_features):
+			#Weights are unpacked() then shifted by 7
+			self.assertTrue(gemlite_linear.W_group_mode == 1) 
+			#Since the scales are channel-wise, we perform scaling post K-sum
+			self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		else:
+			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 0)
 
 		x = (torch.randint(-10, 10, (1, in_features), device=device)).to(torch.int8)
 
 		tol = 1e-3
 
-		y_ref = torch.matmul(x.half(), (W_q.half() - 7).T) * scales
+		shape = W_q.shape
+		y_ref = torch.matmul(x.half(), ((W_q.half().reshape([-1, group_size]) - 7) * scales).reshape(shape).T) 
 		for matmul_type in matmul_types:
 			y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
 			err   = (y_ref - y_gem).abs().mean().item()
@@ -119,7 +128,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		#INT8 x Wn - activation scaling only
 
 		gemlite_linear = GemLiteLinearTriton(W_nbits=8, 
-						group_size=in_features, 
+						group_size=group_size, 
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.INT8, 
@@ -134,7 +143,6 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		def scaled_activations(x):
 			return x, scales_x
 		gemlite_linear.scale_activations = scaled_activations
-
 
 		#Weights are unpacked() then shifted by 7
 		self.assertTrue(gemlite_linear.W_group_mode == 1) 
@@ -155,7 +163,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		#INT8 x Wn - activation scaling only
 
 		gemlite_linear = GemLiteLinearTriton(W_nbits=8, 
-						group_size=in_features, 
+						group_size=group_size, 
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.INT8, 
@@ -171,16 +179,20 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 			return x, scales_x
 		gemlite_linear.scale_activations = scaled_activations
 
-
-		#Weights are unpacked() then shifted by 7
-		self.assertTrue(gemlite_linear.W_group_mode == 1) 
-		#Activations only are scaled
-		self.assertTrue(gemlite_linear.channel_scale_mode == 3)
+		if(group_size == in_features):
+			#Weights are unpacked() then shifted by 7 if group_size == in_features (1), otherwise (3)
+			self.assertTrue(gemlite_linear.W_group_mode == 1) 
+			#Activations only are scaled if group_size != in_features (2) otherwise bot are scales merged (3)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 3)
+		else:
+			self.assertTrue(gemlite_linear.W_group_mode == 3) 
+			self.assertTrue(gemlite_linear.channel_scale_mode == 2)
 
 		tol = 1e-3
 
+		shape = W_q.shape
 		x = (torch.randint(-10, 10, (1, in_features), device=device)).to(torch.int8)
-		y_ref = torch.matmul(x.half(), (W_q.half() - 7).T) * (scales * scales_x)
+		y_ref = torch.matmul(x.half(), ((W_q.half().reshape([-1, group_size]) - 7) * scales).reshape(shape).T) * scales_x
 		for matmul_type in matmul_types:
 			y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
 			err   = (y_ref - y_gem).abs().mean().item()
@@ -236,7 +248,6 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 			return x, scales_x
 		gemlite_linear.scale_activations = scaled_activations
 
-
 		#No weight unpacking / dequant
 		self.assertTrue(gemlite_linear.W_group_mode == 0)
 		#Both activations and weights are scales
@@ -244,6 +255,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		tol = 5e-3 #needs higher tolerance with fp8
 
+		shape = W.shape
 		x = (torch.randn((1, in_features), dtype=torch.float16, device=device) / 10.).to(torch.float8_e4m3fn)
 		y_ref = torch.matmul(x.half(), W.T) * (scales * scales_x)
 		for matmul_type in matmul_types:
@@ -266,10 +278,14 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		gemlite_linear.pack(W_q, scales, zeros, None, fma_mode=False);
 
-		#weight unpacking and shift
-		self.assertTrue(gemlite_linear.W_group_mode == 1)
-		#activations and weights are scaled psot accumulation
-		self.assertTrue(gemlite_linear.channel_scale_mode == 3)
+		if(group_size == in_features):
+			#weight unpacking and shift if group_size == in_features else (3)
+			self.assertTrue(gemlite_linear.W_group_mode == 1)
+			#activations and weights are scaled psot accumulation if group_size==in_features else (2)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 3)
+		else:
+			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 2)
 
 		#Scaling activations
 		scales_x = torch.ones((1, 1), dtype=torch.float16, device='cuda:0') * 0.01
@@ -300,10 +316,14 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		gemlite_linear.pack(W_q, scales, zeros, None, fma_mode=False);
 
-		#Weight shift only
-		self.assertTrue(gemlite_linear.W_group_mode == 1)
-		#weight scaling only - post accumulator
-		self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		if(group_size == in_features):
+			#Weight shift only if group_size==in_features else (3)
+			self.assertTrue(gemlite_linear.W_group_mode == 1)
+			#weight scaling only - post accumulator if group_size==in_features else (0) 
+			self.assertTrue(gemlite_linear.channel_scale_mode == 1)
+		else:
+			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.channel_scale_mode == 0)
 
 		tol = 5e-3 #needs higher tolerance with fp8
 
