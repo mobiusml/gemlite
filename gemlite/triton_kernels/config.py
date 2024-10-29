@@ -3,9 +3,9 @@
 import imp 
 
 class AUTOTUNE_ENABLE:
-	GEMV           = False
-	GEMV_REVSPLITK = False
-	GEMM_SPLITK    = False
+	GEMV           = True
+	GEMV_REVSPLITK = True
+	GEMM_SPLITK    = True
 	GEMM           = False
 	EXHAUSTIVE     = False
 	USE_CUDA_GRAPH = False
