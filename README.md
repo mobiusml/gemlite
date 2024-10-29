@@ -41,8 +41,8 @@ from gemlite.core import DType, GemLiteLinear, set_autotune
 #Set autotuner: by default autotuning is disabled for faster kernel launch.
 #Make sure to enable autotuning for group_size < 128. By default, all these optioned are turned-off.
 set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True},
-              exhaustive=True, #If True, iterates through all the kernels for each shape to pick the best one.
-              use_cuda_graph=True) #If True, uses CUDA Graphs for benchmarking (autotune and exhaustive mode).
+              exhaustive=False, #If True, iterates through all the kernels for each shape to pick the best one.
+              use_cuda_graph=False) #If True, uses CUDA Graphs for benchmarking (autotune and exhaustive mode).
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(
@@ -59,7 +59,7 @@ gemlite_linear = GemLiteLinear(
 gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #For activation quantization you need to override this function which should return the activation scales:
-#gemlite_linear.scale_activations = lambda x: x_scaled, scales
+#gemlite_linear.scale_activations = f(x: torch.Tensor) -> x_scaled: torch.Tensor, scales: torch.Tensor # x ~ x_scaled * scaled
 
 #Forward
 out = gemlite_linear(x)
@@ -95,6 +95,9 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 
 <details>
 <summary>8-bit Weights</summary>
+
+<details>
+<summary>4090 RTX</summary>
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_4096x4096_4090RTX.svg" alt="8bit_gs=infeatures_4096x4096_4090RTX" style="width:98%">
@@ -124,9 +127,14 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 </div> 
 </details>
 
+</details>
+
 
 <details>
 <summary>4-bit Weights</summary>
+
+<details>
+<summary>4090 RTX</summary>
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_4090RTX.svg" alt="4bit_gs=128_4096x4096_4090RTX" style="width:98%">
@@ -156,8 +164,113 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 </div> 
 </details>
 
+
+<details>
+<summary>3090 RTX</summary>
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_3090RTX.svg" alt="4bit_gs=128_4096x4096_3090RTX" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_3090RTX.svg" alt="4bit_gs=128_8192x8192_3090RTX" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_3090RTX.svg" alt="4bit_gs=128_16384x16384_3090RTX" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_3090RTX.svg" alt="4bit_gs=128_32768x32768_3090RTX" style="width:98%">
+  </div>
+ </center>
+</div> 
+</details>
+
+
+<details>
+<summary>A100 SXM4</summary>
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_A100.svg" alt="4bit_gs=128_4096x4096_A100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_A100.svg" alt="4bit_gs=128_8192x8192_A100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_A100.svg" alt="4bit_gs=128_16384x16384_A100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_A100.svg" alt="4bit_gs=128_32768x32768_A100" style="width:98%">
+  </div>
+ </center>
+</div> 
+</details>
+
+
+<details>
+<summary>H100 SXM4</summary>
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_H100.svg" alt="4bit_gs=128_4096x4096_H100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_H100.svg" alt="4bit_gs=128_8192x8192_H100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_H100.svg" alt="4bit_gs=128_16384x16384_H100" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_H100.svg" alt="4bit_gs=128_32768x32768_H100" style="width:98%">
+  </div>
+ </center>
+</div> 
+</details>
+
+
+
+</details>
+
+
+
 <details>
 <summary>2-bit Weights</summary>
+
+<details>
+<summary>4090 RTX</summary>
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_4096x4096_4090RTX.svg" alt="2bit_gs=128_4096x4096_4090RTX" style="width:98%">
@@ -185,6 +298,10 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
   </div>
  </center>
 </div> 
+</details>
+
+
+
 </details>
 
 ## CUDA
