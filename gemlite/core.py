@@ -353,9 +353,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         for i, _kernel in enumerate(self.kernels):
             if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
                 continue 
-            if signature[0] > 4 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
+            if signature[0] > 2 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
                 continue 
-            if signature[0] > 16 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
+            if signature[0] > 32 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
                 continue
             if signature[0] < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
                 continue  
@@ -405,7 +405,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
-        if(_batch_size >= 16):
+        if(_batch_size > 32):
             return self.forward_manual(x, matmul_type='GEMM') #GEMM
         if(_batch_size > 1):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
