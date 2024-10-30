@@ -56,7 +56,7 @@ def get_autotune_config():
             for _K in [32, 64]: #[32, 64], block_size >=32 
                 for _w in [2, 4]: #[4]
                     for _s in [1, 2]: #[2, 4]
-                        for _A_load_order in [1, 2]: #2 - default 4090: [1, 2, 3]
+                        for _A_load_order in [1, 2]:  #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
                                     _configs.append(
@@ -91,11 +91,11 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV
 
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=50, 
-    rep=50,
-    use_cuda_graph=AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    key = ['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+    warmup = 50, 
+    rep = 50,
+    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
 )
 
 @triton.jit
@@ -103,7 +103,12 @@ def gemv_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
-    W_nbits, group_size, unpack_mask, elements_per_sample: tl.constexpr, 
+    ######### Quant parms #########
+    W_nbits: tl.constexpr, 
+    group_size: tl.constexpr, 
+    unpack_mask: tl.constexpr, 
+    elements_per_sample: tl.constexpr, 
+    ######### Strides #########
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,

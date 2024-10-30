@@ -19,10 +19,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_m      = 1 #Only 1 allowed here
         block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
         block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
-        A_load_order      = config.kwargs['A_load_order']
+
         meta_evict_policy = config.kwargs['meta_evict_policy']
         atomic_mode       = config.kwargs['atomic_mode']
         split_k           = 2
+
+        #Faster autotune
+        if(m > 1): block_size_k = min(block_size_k, 32)
 
         #Constraints
         #BLOCK_SIZE_K <= group_size
@@ -37,7 +40,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             continue
 
         _key  = (block_size_m, block_size_n, block_size_k, 
-                A_load_order, meta_evict_policy, atomic_mode, 
+                meta_evict_policy, atomic_mode, 
                 config.num_stages, config.num_warps
                 )
 
@@ -51,7 +54,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
                 
-                'A_load_order': A_load_order,
                 'meta_evict_policy': meta_evict_policy,
                 'atomic_mode': atomic_mode,
             },
@@ -65,39 +67,36 @@ def get_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
         for _N in [128, 256]:
-            for _K in [16, 32, 64]: #block_size >=32 
+            for _K in [16, 32, 64]: #[8, 16, 32, 64]
                 for _w in [2, 4]: #[4]
-                    for _s in [1, 2]: #[2, 4]
-                        for _A_load_order in [2]: #2 - default 4090: [1, 2, 3]
-                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-                                for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
-                                    _configs.append(
-                                            triton.Config(
-                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                                'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode}, 
-                                                num_stages=_s, num_warps=_w, 
-                                                pre_hook=init_to_zero("c_ptr"),
-                                                )
+                    for _s in [1, 2]: #[1, 2]
+                        for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                            for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+                                _configs.append(
+                                        triton.Config(
+                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+                                            'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode}, 
+                                            num_stages=_s, num_warps=_w, 
+                                            pre_hook=init_to_zero("c_ptr"),
                                             )
+                                        )
 
     return _configs
+
 
 compute_capability = torch.cuda.get_device_capability(0)
 
 def get_default_config():
     # #4090: default
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
-    #4090: default
-    #config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32}, num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
-
     if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                             num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     return [config]
@@ -106,11 +105,11 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV_REVSPLITK
 
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=50, 
-    rep=50,
-    use_cuda_graph=AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    key = ['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+    warmup = 50, 
+    rep = 50,
+    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
 )
 
 @triton.jit
@@ -118,7 +117,12 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
-    W_nbits, group_size, unpack_mask, elements_per_sample: tl.constexpr, 
+    ######### Quant parms #########
+    W_nbits: tl.constexpr, 
+    group_size: tl.constexpr, 
+    unpack_mask: tl.constexpr, 
+    elements_per_sample: tl.constexpr, 
+    ######### Strides #########
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
@@ -134,7 +138,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
+    meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr,
 ):
     """
     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1

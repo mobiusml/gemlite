@@ -198,6 +198,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         group_size = 1 if (group_size is None) else group_size
 
+        assert group_size >= 32, "Only group_size >= 32 is supported."
+
         if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
             warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
             _GROUP_SIZE_WARNED = True
@@ -411,6 +413,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
         else:
             return self.forward_manual(x, matmul_type='GEMV_REVSPLITK') #GEMV / GEMV_REVSPLITK
+
     
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
         x, scaled_x = self.scale_activations(x)

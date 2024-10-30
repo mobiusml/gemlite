@@ -22,9 +22,14 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K']
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
-        #Makes autotune faster a bit faster
-        block_size_m = 16 if (m <= 16) else max(block_size_m, 32)
-            
+        #Makes autotune a bit faster
+        if(m <= 16) : block_size_m = 16
+        if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32)   #[16, 32]
+        if(m >= 64) : block_size_m = min(max(block_size_m, 32), 64)   #[32, 64]
+        if(m >= 128): block_size_m = min(max(block_size_m, 64), 128)  #[64, 128]
+        if(m >= 256): block_size_m = min(max(block_size_m, 64), 128)  #[64, 128]
+        if(m >= 512): block_size_m = min(max(block_size_m, 128), 256) #[128, 256]
+
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -55,12 +60,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
-    for _M in [16, 32, 64, 128]: #+ [128, 256] #might need higher values for larger batch-sizes
+    for _M in [16, 32, 64, 128, 256]: #+ [128, 256] #might need higher values for larger batch-sizes
         for _N in [32, 64, 128]: 
             for _K in [32, 64, 128]: #[32, 64, 128], 32 <= block_size
-                for _w in [2, 4]: #[2, 4]
+                for _w in [4]: #[2, 4]
                     for _s in [2, 4]: #[2, 4]
-                        for _A_load_order in [1, 2]: #[1, 2, 3] - [2]: default 4090
+                        for _A_load_order in [2]: #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
                                         triton.Config(
@@ -81,12 +86,12 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
 @triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
-    configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key=['M', 'N', 'K', 'group_size', 'elements_per_sample'],
-    prune_configs_by={'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup=50, 
-    rep=50,
-    use_cuda_graph=AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
+    key = ['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+    warmup = 50, 
+    rep = 50,
+    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
 )
 
 @triton.jit
@@ -94,7 +99,12 @@ def gemm_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
-    W_nbits: tl.constexpr, group_size: tl.constexpr, unpack_mask: tl.constexpr, elements_per_sample: tl.constexpr, 
+    ######### Quant parms #########
+    W_nbits: tl.constexpr, 
+    group_size: tl.constexpr, 
+    unpack_mask: tl.constexpr, 
+    elements_per_sample: tl.constexpr, 
+    ######### Strides #########
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,

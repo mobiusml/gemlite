@@ -6,7 +6,7 @@ class AUTOTUNE_ENABLE:
 	GEMV           = True
 	GEMV_REVSPLITK = True
 	GEMM_SPLITK    = True
-	GEMM           = False
+	GEMM           = True
 	EXHAUSTIVE     = False
 	USE_CUDA_GRAPH = False
 
