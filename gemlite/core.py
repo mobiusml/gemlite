@@ -235,6 +235,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.forward = self.forward_auto_with_warmup
         else:
             self.forward = self.forward_auto_no_warmup
+            
+       	#Set torch flags
+        torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
 
     #Override this function to perform dynamic activation quantization
     def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
