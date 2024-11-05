@@ -26,10 +26,7 @@ def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_
         b = (b >> q_shift) & unpack_mask # int32 -> int32
 
     if(W_group_mode == 1): #Shift
-        if(zero_is_scalar):
-            b -= zeros #int32
-        else:
-            b = b.to(meta_dtype) - zeros 
+        b = b.to(meta_dtype) - zeros 
 
     if(W_group_mode == 2):
         b = b.to(meta_dtype) * scales #Symmetric no shift (Grouped)
