@@ -212,7 +212,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.W_nbits      = W_nbits
         self.group_size   = group_size
         self.unpack_mask  = 2**self.W_nbits - 1
-        self.elements_per_sample = 32 // self.W_nbits
+        self.elements_per_sample = None
         self.signature = (in_features, out_features, W_nbits, group_size)
 
         self.input_dtype   = input_dtype
@@ -248,6 +248,33 @@ class GemLiteLinearTriton(torch.nn.Module):
         return x, self.scales_x
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
+    def pack_weights_rows(self, W_q, W_nbits, bitwdith=32):
+        elements_per_sample = bitwdith // W_nbits
+
+        W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32, device=W_q.device) 
+        i, row = 0, 0
+        while row < W_q_out.shape[0]:
+            for j in range(i, i + (bitwdith // W_nbits)):
+                W_q_out[row] |= W_q[j] << (W_nbits * (j - i))
+            i += elements_per_sample
+            row += 1
+
+        return W_q_out, elements_per_sample
+
+    def pack_weights_col(self, W_q, W_nbits, bitwdith=32):
+        elements_per_sample = bitwdith // W_nbits
+
+        i, col = 0, 0
+        while col <  W_q_out.shape[1]: 
+            shift = 0
+            for j in range(i, i + elements_per_sample):
+                W_q_out[:, col] |= (W_q[:, j] << shift)
+                shift += W_nbits
+            i += elements_per_sample
+            col += 1
+
+        return W_q_out, elements_per_sample
+
     #Make sure to feed UINT8 W_q for packing
     def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: bool=True):
 
@@ -275,6 +302,10 @@ class GemLiteLinearTriton(torch.nn.Module):
                 col += 1
 
             self.W_q = self.W_q.t() #row-major 
+            self.elements_per_sample = 32 // self.W_nbits
+
+            #self.W_q, self.elements_per_sample = self.pack_weights_col(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() # Over-K
+            #self.W_q, self.elements_per_sample = self.pack_weights_row(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() #Over-N
         
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
@@ -444,12 +475,12 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
-        if(_batch_size > 32):
+        if(_batch_size > 64):
             return self.forward_manual(x, matmul_type='GEMM') #GEMM
         if(_batch_size > 1):
             return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
         else:
-            return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMV / GEMV_REVSPLITK / GEMV_SPLITK
+            return self.forward_manual(x, matmul_type=self.default_gemv) #GEMV / GEMV_REVSPLITK / GEMV_SPLITK
 
     
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:

@@ -22,12 +22,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K']
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
-        #Makes autotune a bit faster
+        #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
         if(m <= 16) : block_size_m = 16
         if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32)   #[16, 32]
         if(m >= 64) : block_size_m = min(max(block_size_m, 32), 64)   #[32, 64]
         if(m >= 128): block_size_m = min(max(block_size_m, 64), 128)  #[64, 128]
-        if(m >= 256): block_size_m = min(max(block_size_m, 64), 128)  #[64, 128]
+        if(m >= 256): block_size_m = min(max(block_size_m, 64), 256)  #[64, 256]
         if(m >= 512): block_size_m = min(max(block_size_m, 128), 256) #[128, 256]
 
         #Filter 
@@ -67,7 +67,7 @@ def get_autotune_config():
     _configs = []
     for _M in [16, 32, 64, 128, 256]: #+ [128, 256] #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
-            for _K in [32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
+            for _K in [16, 32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
                 for _w in [4, 8]: #[2, 4]
                     for _s in [2, 4]: #[2, 4]
                         for _A_load_order in [0]: #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
@@ -180,13 +180,13 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_mul  = BLOCK_SIZE_K / group_size 
 
     if(zero_is_scalar):
-        zero_scalar = tl.load(zeros_ptr, eviction_policy=meta_evict_policy)
+        zero_scalar = tl.load(zeros_ptr, eviction_policy='evict_last')
 
     ####################################################################################
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype) 
 
-    for k in tl.range(0, num_pid_k, 1, num_stages=1):
-    #for k in range(num_pid_k):
+    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
+    for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
@@ -218,12 +218,13 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
+        #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0. 
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="ieee")
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")
 
         #Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak

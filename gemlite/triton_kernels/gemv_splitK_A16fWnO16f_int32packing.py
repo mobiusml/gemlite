@@ -27,7 +27,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         
         #Skip blocks that are either too large or too small
         block_area = (block_size_k // split_k) * block_size_n
-        if(block_area < 1024 or block_area > 4096 * 2): #128 * 8 * num_warps 
+        if(block_area < 1024 or block_area > 4096 * 8): #128 * 8 * num_warps 
             continue
 
         #Constraints
@@ -76,14 +76,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 
 #These autotunes are optimized for batch-size 1 to 32 (!)
+#ONLY USE THIS WITH: contiguous=False
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [1]: 
         for _N in [1, 2, 4, 8, 16, 32, 64]: 
             for _K in [64, 128, 256, 512, 1024, 2048, 4096]: 
-                for _w in [4, 8]: #[4, 8] 
-                    for _s in [2, 4]: #[1, 2, 4]
+                for _w in [4]: #[4, 8] 
+                    for _s in [2]: #[1, 2, 4]
                         for _sK in [1]: #[1, 2, 4, 8]
                             for _A_load_order in [0]: #[0, 1, 2]:
                                 for _dot_prod_mode in [0]: #[0, 1]
@@ -206,12 +207,8 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     offs_am = offs_m
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
-    if(data_contiguous):
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    else:
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
+    offs_bn = offs_n
+    offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs
@@ -238,8 +235,8 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     if(dot_prod_mode == 1):
         acc = tl.zeros((1, BLOCK_SIZE_N), dtype=acc_dtype)
 
-    for k in tl.range(0, num_pid_k, 1, num_stages=1):
-    #for k in range(num_pid_k):
+    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
+    for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
