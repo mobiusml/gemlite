@@ -75,16 +75,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-#These autotunes are optimized for batch-size 1 to 32 (!)
 #ONLY USE THIS WITH: contiguous=False
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [1]: 
-        for _N in [1, 2, 4, 8, 16, 32, 64]: 
-            for _K in [64, 128, 256, 512, 1024, 2048, 4096]: 
-                for _w in [4]: #[4, 8] 
-                    for _s in [2]: #[1, 2, 4]
+        for _N in [1, 2, 4, 8, 16, 32, 64]:  #[2, 4, 8]
+            for _K in [64, 128, 256, 512, 1024, 2048, 4096]: #[256, 256, 512, 1024, 2048]
+                for _w in [4, 8]: #[4, 8] 
+                    for _s in [1, 2]: #[1, 2, 4]
                         for _sK in [1]: #[1, 2, 4, 8]
                             for _A_load_order in [0]: #[0, 1, 2]:
                                 for _dot_prod_mode in [0]: #[0, 1]
@@ -102,6 +101,7 @@ def get_autotune_config():
                                                         )
                                                     )
     return _configs
+
 
 
 compute_capability = torch.cuda.get_device_capability(0)
@@ -207,8 +207,12 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     offs_am = offs_m
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
-    offs_bn = offs_n
-    offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    if(data_contiguous):
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+        offs_bk = offs_k
+    else:
+        offs_bn = offs_n
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs

@@ -464,15 +464,6 @@ class GemLiteLinearTriton(torch.nn.Module):
             out += self.bias
         return out
 
-    # def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
-    #     _batch_size = x.view(-1, x.shape[-1]).shape[0]
-    #     if(_batch_size > 32):
-    #         return self.forward_manual(x, matmul_type='GEMM') #GEMM
-    #     if(_batch_size > 1):
-    #         return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
-    #     else:
-    #         return self.forward_manual(x, matmul_type=self.default_gemv) #GEMV / GEMV_REVSPLITK
-
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
         if(_batch_size > 64):

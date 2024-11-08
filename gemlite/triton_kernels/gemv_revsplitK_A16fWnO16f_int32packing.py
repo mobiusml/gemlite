@@ -27,7 +27,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         split_k           = 2
 
         #Faster autotune
-        #if(m > 1): block_size_k = min(block_size_k, 32)
         block_area = block_size_k * block_size_n
         if(block_area < 1024 or block_area > 4096 * 8): 
             continue
@@ -69,42 +68,19 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             pre_hook=config.pre_hook,
         )
 
-# def get_autotune_config():
-#     #Tuned on 4090 RTX / A100 SXM4
-#     _configs = []
-#     for _M in [1]: #ONLY 1 allowed here
-#         for _N in [128, 256]:
-#             for _K in [16, 32, 64]: #[8, 16, 32, 64]
-#                 for _w in [2, 4]: #[4]
-#                     for _s in [1, 2]: #[1, 2]
-#                         for _A_load_order in [0, 1]: 
-#                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-#                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
-#                                     for _dot_prod_mode in [0]: #[0] - [0, 1]
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
-#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
-#                                                     num_stages=_s, num_warps=_w, 
-#                                                     pre_hook=init_to_zero("c_ptr"),
-#                                                     )
-#                                                 )
-
-#     return _configs
-
+#contiguous = True
 def get_autotune_config():
-    #Tuned on 4090 RTX
+    #Tuned on 4090 RTX / A100 SXM4
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256]: #[128, 256]
-            for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]: #[32, 64], block_size >=32 
-                for _w in [2, 4]: #[4]
-                    for _s in [1, 2]: #[2, 4]
-                        for _A_load_order in [0]:  #[0, 1, 2] - using [2] for faster warm-up, for best results set to max
+        for _N in [128, 256, 512]: #[128, 256]
+            for _K in [8, 16, 32, 64]: #[16, 32, 64]
+                for _w in [2, 4]: #[2, 4]
+                    for _s in [1, 2]: #[1, 2]
+                        for _A_load_order in [0, 1]: 
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-                                for _dot_prod_mode in [0]: #[0, 1]
-                                    for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+                                for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+                                    for _dot_prod_mode in [0]: #[0] - [0, 1]
                                         _configs.append(
                                                 triton.Config(
                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
@@ -118,6 +94,32 @@ def get_autotune_config():
     return _configs
 
 
+#contiguous = False
+# def get_autotune_config():
+#     #Tuned on 4090 RTX
+#     _configs = []
+#     for _M in [1]: #ONLY 1 allowed here
+#         for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256]: #[128, 256]
+#             for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]: #[32, 64], block_size >=32 
+#                 for _w in [2, 4]: #[4]
+#                     for _s in [1, 2]: #[2, 4]
+#                         for _A_load_order in [0, 1]:  #[0, 1] - using [1] for faster warm-up, for best results set to max
+#                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+#                                 for _dot_prod_mode in [0]: #[0, 1]
+#                                     for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
+#                                                     num_stages=_s, num_warps=_w, 
+#                                                     pre_hook=init_to_zero("c_ptr"),
+#                                                     )
+#                                                 )
+
+#     return _configs
+
+
 
 compute_capability = torch.cuda.get_device_capability(0)
 
@@ -127,8 +129,8 @@ def get_default_config():
                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
+        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=2, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
         config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
@@ -202,11 +204,11 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
     if(data_contiguous):
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    else:
         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
         offs_bk = offs_k
+    else:
+        offs_bn = offs_n
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
@@ -245,6 +247,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
 
     #Dot product
     if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
+
     if(dot_prod_mode == 0):
         acc = tl.sum(a.to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True)
     if(dot_prod_mode == 1):
@@ -270,7 +273,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     if(dot_prod_mode == 0):
         acc += tl.sum(a.to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
     if(dot_prod_mode == 1):
-        acc += tl.sum((a * b.to(input_dtype)).to(acc_dtype), axis=0, keep_dims=True)
+        acc += tl.sum(a * b.to(input_dtype), axis=0, keep_dims=True).to(acc_dtype)
 
     if(dump_b_val > 0): acc /= dump_b_val
     ##################################################################

@@ -13,6 +13,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
+    e = nargs['elements_per_sample']
     
     used = set()
     for config in configs:
@@ -29,7 +30,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Filter 
         block_area = block_size_k * block_size_n
-        if(block_area > 4096 * 8): 
+        if(block_area > 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
         #Constraints
@@ -39,6 +40,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
         if(not is_divisible(k, block_size_k * split_k)):
             continue
+
+        num_warps  = config.num_warps
+        num_stages = config.num_stages
+
+        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
+        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -71,49 +78,22 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-# #These autotunes are optimized for batch-size 1 to 32 (!)
-# def get_autotune_config():
-#     #Tuned on 4090 RTX
-#     _configs = []
-#     for _M in [16, 32]: #Use [16, 32] for better performance at batch-sizes 32,64
-#         for _N in [32, 64]:
-#             for _K in [32, 64, 128]: #[128], group_size >= 128
-#                 for _w in [2, 4]: #[4] 
-#                     for _s in [1, 2]: #[1, 2, 3]
-#                         for _sK in [2, 4, 8]: #[2, 4, 8]
-#                             for _a_load_order in [0, 2]: #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
-#                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-#                                                     'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-#                                                     }, 
-#                                                     num_stages=_s, num_warps=_w,
-#                                                     pre_hook=init_to_zero("c_ptr"),
-#                                                     )
-#                                                 )
-#     return _configs
-
-
-#These autotunes are optimized for batch-size 1 to 32 (!)
+#These autotunes are optimized for batch-size 1 to 64 (!)
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16, 32, 64]: #Use [16, 32] for better performance at batch-sizes 32,64
-        for _N in [16, 32, 64, 128]: #[128, 256]
-            for _K in [32, 64, 128, 256]: #[32, 64], block_size >=32 
-                for _w in [4, 8]: #[4] 
-                    for _s in [2, 4]: #[1, 2, 3]
+        for _N in [16, 32, 64, 128]: #
+            for _K in [16, 32, 64, 128, 256]: #[16, 32, 64] 
+                for _w in [4, 8]: #[2, 4, 8] #A100/H100, [2, 4] #3090 / 4090 
+                    for _s in [1, 2, 4, 5]: #[1, 2, 4, 5]
                         for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [0]: #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
+                            for _a_load_order in [0]: #[0, 1, 2, 3] - 0 for A100, 2 for 4090
                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(
                                                 triton.Config(
-                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                                    'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
                                                     }, 
                                                     num_stages=_s, num_warps=_w,
@@ -123,8 +103,6 @@ def get_autotune_config():
     return _configs
 
 
-
-
 compute_capability = torch.cuda.get_device_capability(0)
 
 #Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
@@ -132,15 +110,15 @@ def get_default_config():
     #4090: default
     config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                            'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=3, pre_hook=init_to_zero("c_ptr"))
+                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
+        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                              'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                              num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
+        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                              'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                              num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
@@ -223,11 +201,11 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
     if(data_contiguous):
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    else:
         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
         offs_bk = offs_k
+    else:
+        offs_bn = offs_n
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs
@@ -251,7 +229,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
-    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
+    #for k in tl.range(0, num_pid_k, 1): #num_stages=1
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load

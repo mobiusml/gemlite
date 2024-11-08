@@ -14,6 +14,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
+    e = nargs['elements_per_sample']
 
     used = set()
     for config in configs:
@@ -32,8 +33,14 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Filter 
         block_area = block_size_k * block_size_n
-        if(block_area > 4096 * 8): 
+        if(block_area > 4096 * 4): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
+
+        num_warps  = config.num_warps
+        num_stages = config.num_stages
+
+        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
+        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
@@ -41,7 +48,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         _key = (block_size_m, block_size_n, block_size_k, group_size_m, 
                 A_load_order, meta_evict_policy, 
-                config.num_stages, config.num_warps)
+                num_stages, num_warps)
         
         if _key in used:
             continue
@@ -57,9 +64,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'A_load_order': A_load_order,
                 'meta_evict_policy': meta_evict_policy,
             },
-            num_stages=config.num_stages,
-            num_warps=config.num_warps
+            num_stages=num_stages,
+            num_warps=num_warps
         )
+
 
 
 def get_autotune_config():
@@ -69,8 +77,8 @@ def get_autotune_config():
         for _N in [32, 64, 128, 256]: 
             for _K in [16, 32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
                 for _w in [4, 8]: #[2, 4]
-                    for _s in [2, 4]: #[2, 4]
-                        for _A_load_order in [0]: #[1, 2, 3] - using [2] for faster warm-up, for best results set to max
+                    for _s in [1, 4, 5]: #[1, 2, 4, 5] - KEEP num_stages=1 for packed data
+                        for _A_load_order in [0]: #[0, 1, 2, 3] - using [2] for faster warm-up, for best results set to max
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
                                         triton.Config(
@@ -78,6 +86,7 @@ def get_autotune_config():
                                             'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy}, 
                                             num_stages=_s, num_warps=_w)
                                         )
+
     return _configs
 
 
@@ -161,11 +170,11 @@ def gemm_A16fWnO16f_int32packing_kernel(
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
     if(data_contiguous):
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    else:
         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
         offs_bk = offs_k
+    else:
+        offs_bn = offs_n
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs
@@ -185,7 +194,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     ####################################################################################
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype) 
 
-    #for k in tl.range(0, num_pid_k, 1, num_stages=1):
+    #for k in tl.range(0, num_pid_k, 1): #num_stages=1
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
@@ -218,7 +227,6 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
-        #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0. 
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
