@@ -237,8 +237,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.forward = self.forward_auto_no_warmup
 
-
-        self.default_gemv = 'GEMV_REVSPLITK'
+        #Default GEMV for packed vs. non-packed data
+        self.default_gemv = 'GEMV_REVSPLITK' if (self.W_nbits < 8) else 'GEMV_SPLITK'
             
         #Set torch flags
         torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
@@ -357,10 +357,27 @@ class GemLiteLinearTriton(torch.nn.Module):
         #channel-wise scaling 
         self.meta_is_chanenlwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
+        ###########################################
+        # #weight-only
+        # if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
+        #     self.channel_scale_mode = 1
+        #     self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+
+        # #activation-only
+        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
+        #     self.channel_scale_mode = 2
+
+        # #weight + activation mode
+        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
+        #      self.channel_scale_mode = 3
+        #      self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+        ###########################################
+            
+        #Keep meta pre-processing even with channel-wise scales/zeros
+
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
-            self.channel_scale_mode = 1
-            self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+            pass
 
         #activation-only
         if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
@@ -368,8 +385,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #weight + activation mode
         if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
-             self.channel_scale_mode = 3
-             self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+            self.channel_scale_mode = 2
+        ###########################################
 
         if(self.channel_scale_mode in [1, 3]):
             assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."
