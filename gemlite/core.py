@@ -358,26 +358,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.meta_is_chanenlwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
         ###########################################
-        # #weight-only
-        # if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
-        #     self.channel_scale_mode = 1
-        #     self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
-
-        # #activation-only
-        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
-        #     self.channel_scale_mode = 2
-
-        # #weight + activation mode
-        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
-        #      self.channel_scale_mode = 3
-        #      self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
-        ###########################################
-            
-        #Keep meta pre-processing even with channel-wise scales/zeros
-
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
-            pass
+            self.channel_scale_mode = 1
+            self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
         #activation-only
         if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
@@ -385,7 +369,23 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #weight + activation mode
         if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
-            self.channel_scale_mode = 2
+             self.channel_scale_mode = 3
+             self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+        ##########################################
+            
+        #Keep meta pre-processing even with channel-wise scales/zeros
+
+        # #weight-only
+        # if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
+        #     pass
+
+        # #activation-only
+        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
+        #     self.channel_scale_mode = 2
+
+        # #weight + activation mode
+        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
+        #     self.channel_scale_mode = 2
         ###########################################
 
         if(self.channel_scale_mode in [1, 3]):

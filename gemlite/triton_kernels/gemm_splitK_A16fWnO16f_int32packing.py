@@ -88,7 +88,7 @@ def get_autotune_config():
                 for _w in [4, 8]: #[2, 4, 8] #A100/H100, [2, 4] #3090 / 4090 
                     for _s in [1, 2, 4, 5]: #[1, 2, 4, 5]
                         for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [0, 2]: #[0, 1, 2, 3] - 0 for A100, 2 for 4090
+                            for _a_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(

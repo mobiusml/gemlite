@@ -78,7 +78,7 @@ def get_autotune_config():
             for _K in [16, 32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
                 for _w in [4, 8]: #[2, 4]
                     for _s in [1, 4, 5]: #[1, 2, 4, 5] - KEEP num_stages=1 for packed data
-                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - using [2] for faster warm-up, for best results set to max
+                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
                                         triton.Config(
