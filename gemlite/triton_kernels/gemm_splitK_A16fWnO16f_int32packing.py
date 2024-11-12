@@ -28,6 +28,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32) #[16, 32]
         if(m >= 64) : block_size_m = min(max(block_size_m, 32), 64) #[32, 64]
 
+        #Only use higher split_k values for smaller m
+        if(m >= 32) : split_k = min(split_k, 8) 
+
         #Filter 
         block_area = block_size_k * block_size_n
         if(block_area > 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
@@ -87,8 +90,8 @@ def get_autotune_config():
             for _K in [16, 32, 64, 128, 256]: #[16, 32, 64] 
                 for _w in [4, 8]: #[2, 4, 8] #A100/H100, [2, 4] #3090 / 4090 
                     for _s in [1, 2, 4, 5]: #[1, 2, 4, 5]
-                        for _sK in [2, 4, 8]: #[2, 4, 8]
-                            for _a_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
+                        for _sK in [2, 4, 8, 16]: #[2, 4, 8, 16]
+                            for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(
@@ -119,7 +122,7 @@ def get_default_config():
 
     if(compute_capability == (9, 0)): #H100
         config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
-                             'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                             'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
                              num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     return [config]

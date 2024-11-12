@@ -201,10 +201,9 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         assert group_size >= 32, "Only group_size >= 32 is supported."
 
-        if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
-            warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
-            _GROUP_SIZE_WARNED = True
-
+        # if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
+        #     warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
+        #     _GROUP_SIZE_WARNED = True
 
         self.in_features  = in_features
         self.out_features = out_features
@@ -248,7 +247,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         return x, self.scales_x
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    def pack_weights_rows(self, W_q, W_nbits, bitwdith=32):
+    def pack_weights_over_rows(self, W_q, W_nbits, bitwdith=32):
         elements_per_sample = bitwdith // W_nbits
 
         W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32, device=W_q.device) 
@@ -261,7 +260,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         return W_q_out, elements_per_sample
 
-    def pack_weights_col(self, W_q, W_nbits, bitwdith=32):
+    def pack_weights_over_cols(self, W_q, W_nbits, bitwdith=32):
         elements_per_sample = bitwdith // W_nbits
 
         i, col = 0, 0
@@ -304,8 +303,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q = self.W_q.t() #row-major 
             self.elements_per_sample = 32 // self.W_nbits
 
-            #self.W_q, self.elements_per_sample = self.pack_weights_col(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() # Over-K
-            #self.W_q, self.elements_per_sample = self.pack_weights_row(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() #Over-N
+            #self.W_q, self.elements_per_sample = self.pack_weights_over_cols(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() #Over-K
+            #self.W_q, self.elements_per_sample = self.pack_weights_over_rows(W_q.view(self.orig_shape).to(torch.int32), W_nbits=self.W_nbits, bitwdith=32).t() #Over-N
         
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
