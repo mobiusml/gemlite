@@ -105,6 +105,31 @@ def get_autotune_config():
                                                 )
     return _configs
 
+####################################################################
+# def get_autotune_config():
+#     #Tuned on 4090 RTX
+#     _configs = []
+#     for _M in [16]: #Use [16, 32] for better performance at batch-sizes 32,64
+#         for _N in [64]: #
+#             for _K in [64]: #[16, 32, 64] 
+#                 for _w in [4]: #[2, 4, 8] #A100/H100, [2, 4] #3090 / 4090 
+#                     for _s in [1, 4]: #[1, 2, 4, 5]
+#                         for _sK in [4, 8, 16]: #[2, 4, 8, 16]
+#                             for _a_load_order in [2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
+#                                 for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+#                                                     }, 
+#                                                     num_stages=_s, num_warps=_w,
+#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+#                                                     )
+#                                                 )
+#     return _configs
+####################################################################
+
 
 compute_capability = torch.cuda.get_device_capability(0)
 
@@ -209,21 +234,36 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     else:
         offs_bn = offs_n
         offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
     ###############################
+
+    b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
+    q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
+
+    # q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.uint8)[:, None]
+    # unpack_mask = tl.full((1,), value=unpack_mask, dtype=tl.uint8)
+    ############################## via tl.join() with int8-packing
+    # q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.uint8)[:, None] #int32/int8: 383.80, int8/int8: 381.16, int32/int32: 381.80
+    # q_shift1, q_shift2 = tl.split(q_shift.reshape((BLOCK_SIZE_K //2, 2), can_reorder=False))
+    # q_shift1, q_shift2 = q_shift1[:, None], q_shift2[:, None]
+    # unpack_mask = tl.full((1,), value=unpack_mask, dtype=tl.uint8)
+
+    # BLOCK_SIZE_K_B: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+    # offs_bk = pid_k * BLOCK_SIZE_K_B + tl.arange(0, BLOCK_SIZE_K_B) 
+    # offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_B), BLOCK_SIZE_K_B)
+    # b_ptrs  = b_ptr + ((offs_bk[:, None]) * stride_bk + offs_bn[None, :] * stride_bn) 
+    ##############################
 
     #Inputs
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
     a_mask  = offs_am[:, None] < M
-    b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
-
+    
     #Meta data stuff
-    q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
-
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
 
     stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size
-    BLOCK_SIZE_K_U: tl.constexpr = (BLOCK_SIZE_K) * SPLIT_K
+    BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K   * SPLIT_K
     BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
 
     if(zero_is_scalar):
@@ -266,6 +306,12 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
         #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
+        ################################################### via tl.join()
+        # _b0 = ((b >> q_shift1) & unpack_mask).to(input_dtype)
+        # _b1 = ((b >> q_shift2) & unpack_mask).to(input_dtype)
+        # b   = tl.join(_b0, _b1).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
+        # b   = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, 0, W_group_mode, zero_is_scalar)
+        
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
