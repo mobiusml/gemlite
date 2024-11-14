@@ -247,29 +247,29 @@ class GemLiteLinearTriton(torch.nn.Module):
         return x, self.scales_x
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    def pack_weights_over_rows(self, W_q, W_nbits, bitwdith=32, transpose=True):
-        elements_per_sample = bitwdith // W_nbits
+    def pack_weights_over_rows(self, W_q, W_nbits, packing_bitwidth=32, transpose=True):
+        elements_per_sample = packing_bitwidth // W_nbits
 
         W_q     = W_q.to(torch.int32)
         W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32, device=W_q.device) 
 
         i, row = 0, 0
         while row < W_q_out.shape[0]:
-            for j in range(i, i + (bitwdith // W_nbits)):
+            for j in range(i, i + (packing_bitwidth // W_nbits)):
                 W_q_out[row] |= W_q[j] << (W_nbits * (j - i))
             i += elements_per_sample
             row += 1
 
-        if(bitwdith == 8) : W_q_out = W_q_out.to(torch.uint8)
-        if(bitwdith == 16): W_q_out = W_q_out.to(torch.int16)
-        if(bitwdith == 32): W_q_out = W_q_out.to(torch.int32)
+        if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
+        if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
+        if(packing_bitwidth == 32): W_q_out = W_q_out.to(torch.int32)
 
         if(transpose): W_q_out = W_q_out.t()
 
         return W_q_out, elements_per_sample
 
-    def pack_weights_over_cols(self, W_q, W_nbits, bitwdith=32, transpose=True):
-        elements_per_sample = bitwdith // W_nbits
+    def pack_weights_over_cols(self, W_q, W_nbits, packing_bitwidth=32, transpose=True):
+        elements_per_sample = packing_bitwidth // W_nbits
 
         W_q     = W_q.to(torch.int32)
         W_q_out = torch.zeros((W_q.shape[0], W_q.shape[1] // elements_per_sample), dtype=torch.int32, device=W_q.device) 
@@ -283,16 +283,16 @@ class GemLiteLinearTriton(torch.nn.Module):
             i += elements_per_sample
             col += 1
 
-        if(bitwdith == 8) : W_q_out = W_q_out.to(torch.uint8)
-        if(bitwdith == 16): W_q_out = W_q_out.to(torch.int16)
-        if(bitwdith == 32): W_q_out = W_q_out.to(torch.int32)
+        if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
+        if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
+        if(packing_bitwidth == 32): W_q_out = W_q_out.to(torch.int32)
 
         if(transpose): W_q_out = W_q_out.t()
 
         return W_q_out, elements_per_sample
 
     #Make sure to feed UINT8 W_q for packing
-    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: bool=True):
+    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: bool=True, packing_bitwidth: int=32):
 
         #Unpacked weights
         self.W_q = None
@@ -306,11 +306,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.elements_per_sample = 1
 
         if(W_q.dtype == torch.uint8): #Packed weigths
-            #self.W_q, self.elements_per_sample = self.pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, bitwdith=32, transpose=True) #Over-K
-            #self.W_q, self.elements_per_sample = self.pack_weights_over_rows(W_q.view(self.orig_shape), W_nbits=self.W_nbits, bitwdith=32, transpose=True) #Over-N
-            
-            self.W_q, self.elements_per_sample = self.pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, bitwdith=8, transpose=True) #Over-K
-
+            self.W_q, self.elements_per_sample = self.pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-K
+            #self.W_q, self.elements_per_sample = self.pack_weights_over_rows(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-N
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
