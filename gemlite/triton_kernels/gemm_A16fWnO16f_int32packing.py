@@ -8,13 +8,35 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
+KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+MATMUL_TYPE = "GEMM"
+
 # code based https://github.com/fpgaminer/GPTQ-triton
 def kernel_config_pruner(configs, nargs, **kwargs):
+    global KEYS
+    from ..core import GEMLITE_TRITON_CONFIG_CACHE
+
     m = max(2 ** int(math.ceil(math.log2(nargs['M']))), 16) #Need at least 16 here for tl.dot
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
     e = nargs['elements_per_sample']
+
+    #Check cache
+    if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
+        _signature = str((m, n, k, g, e))
+        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
+            _num_stages = _config.pop('num_stages')
+            _num_warps  = _config.pop('num_warps')
+            _num_ctas   = _config.pop('num_ctas')
+
+            yield triton.Config(_config,
+                num_stages=_num_stages,
+                num_warps=_num_warps,
+            )
+
+            return
 
     used = set()
     for config in configs:
@@ -98,10 +120,10 @@ def get_default_config():
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
-@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
+#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = ['CLOSEST_M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    key = KEYS, #['CLOSEST_M', 'N', 'K', 'group_size', 'elements_per_sample'],
     prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup = 50, 
     rep = 50,
@@ -133,7 +155,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     W_group_mode: tl.constexpr,
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
-    CLOSEST_M: tl.constexpr,
+    #CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,
@@ -320,6 +342,6 @@ def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Te
 class gemm_A16fWnO16f:
     kernel = gemm_A16fWnO16f_int32packing_kernel
     forward = gemm_A16fWnO16f_int32packing_forward
-    matmul_type = "GEMM"
+    matmul_type = MATMUL_TYPE
 
 __all__ = ["gemm_A16fWnO16f"]

@@ -1,6 +1,6 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
-import torch, math, random
+import torch, math, random, copy
 from torch import Tensor
 import triton
 import triton.language as tl
@@ -8,13 +8,36 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
+KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+MATMUL_TYPE = "GEMM_SPLITK"
+
 def kernel_config_pruner(configs, nargs, **kwargs):
+    global KEYS
+    from ..core import GEMLITE_TRITON_CONFIG_CACHE
+
     m = nargs['M'] 
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
     e = nargs['elements_per_sample']
-    
+
+    #Check cache
+    if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
+        _signature = str((m, n, k, g, e))
+        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
+            _num_stages = _config.pop('num_stages')
+            _num_warps  = _config.pop('num_warps')
+            _num_ctas   = _config.pop('num_ctas')
+
+            yield triton.Config(_config,
+                num_stages=_num_stages,
+                num_warps=_num_warps,
+                pre_hook=init_to_zero("c_ptr") if (_config['SPLIT_K'] > 1) else None,
+            )
+
+            return
+
     used = set()
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
@@ -156,7 +179,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
 
 @triton.autotune(
     configs=get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = ['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    key = KEYS,
     prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup = 50, 
     rep = 50,
@@ -408,6 +431,6 @@ def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, sca
 class gemm_splitK_A16fWnO16f:
     kernel = gemm_splitK_A16fWnO16f_int32packing_kernel
     forward = gemm_splitK_A16fWnO16f_int32packing_forward
-    matmul_type = "GEMM_SPLITK"
+    matmul_type = MATMUL_TYPE
 
 __all__ = ["gemm_splitK_A16fWnO16f"]

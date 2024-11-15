@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 import numpy as np
 from enum import Enum
-import math
+import math, json
 import warnings
 from typing import Union, Tuple
 
@@ -167,10 +167,19 @@ def eval_time_for_auto_mode(fct, params):
 def get_closest_m(M):
     return 2 ** int(math.ceil(math.log2(M)))
 
-GEMLITE_ACC_DTYPE      = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.INT8: DType.INT32}
-GEMLITE_TRITON_KERNELS = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
-GEMLITE_TRITON_MAPPING = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
-GEMLITE_TRITON_CACHE   = {}
+def cache_kernel_config(kernel, prune_keys, config={}):
+    kernel_cache = getattr(kernel, 'cache', None)
+    if(kernel_cache is not None):
+        for k in kernel_cache:
+            _k = k[:len(prune_keys)]
+            config[str(_k)] = kernel_cache[k].all_kwargs()
+    return config
+
+GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
+GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
+GEMLITE_TRITON_CONFIG_CACHE = {}
+GEMLITE_TRITON_CACHE        = {}
 
 # Triton
 _GROUP_SIZE_WARNED = False;
@@ -523,6 +532,52 @@ class GemLiteLinearTriton(torch.nn.Module):
         if self.bias is not None:
             out += self.bias
         return out
+
+    @staticmethod
+    def cache_config(filename, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
+        #global GEMLITE_TRITON_MAPPING
+        #_GEMLITE_TRITON_MAPPING = GEMLITE_TRITON_CACHE
+
+        config = {}
+
+        try: 
+            with open(filename) as json_file:
+                config = json.load(json_file)
+        except:
+            pass
+
+        #Can't use GEMLITE_TRITON_MAPPING for some reason kernel.cache is empty
+        _GEMLITE_TRITON_MAPPING = {}
+        from .triton_kernels.gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMV'] = gemv_A16fWnO16f
+
+        from .triton_kernels.gemv_revsplitK_A16fWnO16f_int32packing import gemv_revsplitK_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK_A16fWnO16f
+
+        from .triton_kernels.gemv_splitK_A16fWnO16f_int32packing import gemv_splitK_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK_A16fWnO16f
+
+        from .triton_kernels.gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK_A16fWnO16f
+
+        from .triton_kernels.gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMM'] = gemm_A16fWnO16f
+
+        for name in _GEMLITE_TRITON_MAPPING:
+            if(name not in config): config[name] = {}
+            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, prune_keys))
+
+        with open(filename, "w") as json_file: 
+            json.dump(config, json_file)
+
+    @staticmethod
+    def load_config(filename):
+        global GEMLITE_TRITON_CONFIG_CACHE
+        try:
+            with open(filename) as json_file:
+                GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
+        except:
+            pass
 
 ###################################################################################################################################
 ###################################################################################################################################

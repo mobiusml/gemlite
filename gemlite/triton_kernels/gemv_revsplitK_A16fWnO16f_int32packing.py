@@ -8,11 +8,35 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
+KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+MATMUL_TYPE = "GEMV_REVSPLITK"
+
 def kernel_config_pruner(configs, nargs, **kwargs):
+    global KEYS
+    from ..core import GEMLITE_TRITON_CONFIG_CACHE
+    
     m = nargs['M'] 
     n = nargs['N'] 
     k = nargs['K']
     g = nargs['group_size']
+    e = nargs['elements_per_sample']
+
+    #Check cache
+    if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
+        _signature = str(tuple([nargs[k] for k in KEYS]))
+        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
+            _num_stages = _config.pop('num_stages')
+            _num_warps  = _config.pop('num_warps')
+            _num_ctas   = _config.pop('num_ctas')
+
+            yield triton.Config(_config,
+                num_stages=_num_stages,
+                num_warps=_num_warps,
+                pre_hook=init_to_zero("c_ptr"),
+            )
+
+            return
 
     used = set()
     for config in configs:
@@ -142,7 +166,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV_REVSPLITK
 
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = ['M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    key = KEYS,
     prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup = 50, 
     rep = 50,
@@ -357,6 +381,6 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, 
 class gemv_revsplitK_A16fWnO16f:
     kernel      = gemv_revsplitK_A16fWnO16f_int32packing_kernel
     forward     = gemv_revsplitK_A16fWnO16f_int32packing_forward
-    matmul_type = "GEMV_REVSPLITK"
+    matmul_type = MATMUL_TYPE
 
 __all__ = ["gemv_revsplitK_A16fWnO16f"]
