@@ -402,8 +402,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(self.channel_scale_mode in [1, 3]):
             assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."
 
-        if(self.input_dtype == DType.INT8):
-            assert self.W_group_mode in [1], "Only channel-wise symmetric quantization is supported for INT8 inputs."
+        # if(self.input_dtype == DType.INT8):
+        #     assert self.W_group_mode in [1], "Only channel-wise symmetric quantization is supported for INT8 inputs."
 
         #Dummy values 
         if(isinstance(self.zeros, int)): #Union[Tensor, int] not supported by custom op

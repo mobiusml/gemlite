@@ -59,6 +59,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(block_area > 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
+        # #For INT8 use min size 32
+        # block_size_k = max(block_size_k, 32)
+        # block_size_n = max(block_size_n, 32)
+
         #Constraints
         #BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
@@ -341,7 +345,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         
         #Dot
         acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
-
+        
         #Advance
         a_ptrs += BLOCK_SIZE_K_U * stride_ak
         b_ptrs += BLOCK_SIZE_K_P * stride_bk

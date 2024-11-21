@@ -45,6 +45,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K']
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
+        # #For INT8 use min size 32
+        # block_size_k = max(block_size_k, 32)
+        # block_size_n = max(block_size_n, 32)
+
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
         if(m <= 16) : block_size_m = 16
         if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32)   #[16, 32]
