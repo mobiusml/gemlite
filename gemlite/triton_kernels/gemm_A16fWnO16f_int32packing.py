@@ -45,10 +45,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K']
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
-        # #For INT8 use min size 32
-        # block_size_k = max(block_size_k, 32)
-        # block_size_n = max(block_size_n, 32)
-
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
         if(m <= 16) : block_size_m = 16
         if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32)   #[16, 32]
@@ -95,13 +91,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
-
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [16, 32, 64, 128, 256]: #+ [128, 256] #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
-            for _K in [16, 32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
+            for _K in [32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
                 for _w in [4, 8]: #[2, 4]
                     for _s in [1, 4, 5]: #[1, 2, 4, 5] - KEEP num_stages=1 for packed data
                         for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
@@ -288,7 +283,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
-    tl.store(c_ptrs, acc, mask=(offs_m[:, None] < M) & (offs_n[None, :] < N)) 
+    tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
 
 
 _costum_op_id = '_' + str(int(random.random()*10000))
