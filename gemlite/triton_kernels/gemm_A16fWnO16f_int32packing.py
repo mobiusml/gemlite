@@ -266,7 +266,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
         acc      = acc.to(meta_dtype) * scales_b[None, :]
 
     if(channel_scale_mode == 2): #activation-only
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
