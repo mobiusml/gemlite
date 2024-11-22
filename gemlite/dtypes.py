@@ -11,6 +11,7 @@ class DType(Enum):
     UINT8  = 5
     INT32  = 6
     UINT32 = 7
+    FP8e5  = 8
 
 DTYPE_TO_TORCH = {
     0: torch.float32,
@@ -21,6 +22,7 @@ DTYPE_TO_TORCH = {
     5: torch.uint8,
     6: torch.int32,
     7: torch.uint32,
+    8: torch.float8_e5m2,
 }
 
 TORCH_DTYPE_TO_TRITON = {
