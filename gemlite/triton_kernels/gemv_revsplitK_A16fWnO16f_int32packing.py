@@ -14,16 +14,16 @@ MATMUL_TYPE = "GEMV_REVSPLITK"
 def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS
     from ..core import GEMLITE_TRITON_CONFIG_CACHE
-    
+
     m = nargs['M'] 
     n = nargs['N'] 
-    k = nargs['K']
+    k = nargs['K'] 
     g = nargs['group_size']
     e = nargs['elements_per_sample']
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([nargs[k] for k in KEYS]))
+        _signature = str((m, n, k, g, e))
         if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
             _num_stages = _config.pop('num_stages')
@@ -307,7 +307,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
         acc      = acc.to(meta_dtype) * scales_b[None, :]
 
     if(channel_scale_mode == 2): #activation-only
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1)
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
