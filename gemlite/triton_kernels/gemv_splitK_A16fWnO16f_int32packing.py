@@ -23,7 +23,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str((m, n, k, g, e))
+        _signature = str(tuple([nargs[i] for i in KEYS]))
         if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
             _num_stages = _config.pop('num_stages')
@@ -95,7 +95,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             },
             num_stages=config.num_stages,
             num_warps=config.num_warps,
-            pre_hook=config.pre_hook,
+            pre_hook=init_to_zero("c_ptr") if split_k > 1 else None,
         )
 
 
