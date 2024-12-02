@@ -410,18 +410,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.W_q      = torch.nn.Parameter(self.W_q,   requires_grad=False)
         self.scales   = torch.nn.Parameter(self.scales,requires_grad=False)
         self.zeros    = torch.nn.Parameter(self.zeros, requires_grad=False)
-        self.metadata = torch.nn.Parameter(torch.tensor([
-            self.W_nbits,
-            self.group_size,
-            self.unpack_mask,
-            self.elements_per_sample,
-            self.input_dtype.value,
-            self.output_dtype.value,
-            self.acc_dtype.value,
-            self.meta_dtype.value,
-            self.channel_scale_mode,
-            self.W_group_mode,
-            ], device='cpu', dtype=torch.int32), requires_grad=False)
+        self.metadata = torch.nn.Parameter(torch.tensor([self.W_nbits, self.group_size, self.unpack_mask, self.elements_per_sample, 
+                                                         self.input_dtype.value, self.output_dtype.value, self.acc_dtype.value, 
+                                                         self.meta_dtype.value, self.channel_scale_mode, self.W_group_mode], 
+                                                         device='cpu', dtype=torch.int32), requires_grad=False)
 
         return self
 
