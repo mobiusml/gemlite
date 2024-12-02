@@ -94,11 +94,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
-    for _M in [16, 32, 64, 128, 256]: #+ [128, 256] #might need higher values for larger batch-sizes
+    for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
-            for _K in [32, 64, 128, 256]: #[32, 64, 128], 32 <= block_size
-                for _w in [4, 8]: #[2, 4]
-                    for _s in [1, 4, 5]: #[1, 2, 4, 5] - KEEP num_stages=1 for packed data
+            for _K in [32, 64, 128, 256]:
+                for _w in [4, 8]:
+                    for _s in [1, 4, 5]:
                         for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 _configs.append(
@@ -300,7 +300,6 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
-    #zeros  = zeros.item() if (zeros.numel()==1) else zeros
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 

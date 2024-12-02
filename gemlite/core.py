@@ -210,10 +210,6 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         assert group_size >= 32, "Only group_size >= 32 is supported."
 
-        # if(group_size < 128 and (_GROUP_SIZE_WARNED is False)):
-        #     warnings.warn("Make sure to enable autotuning for group_size lower than 128: `set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True})`")
-        #     _GROUP_SIZE_WARNED = True
-
         self.in_features  = in_features
         self.out_features = out_features
         self.orig_shape   = (out_features, in_features)
@@ -368,7 +364,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         #channel-wise scaling 
         self.meta_is_chanenlwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
-        ###########################################
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
             self.channel_scale_mode = 1
@@ -382,22 +377,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
              self.channel_scale_mode = 3
              self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
-        ##########################################
-            
-        #Keep meta pre-processing even with channel-wise scales/zeros
-
-        # #weight-only
-        # if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
-        #     pass
-
-        # #activation-only
-        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
-        #     self.channel_scale_mode = 2
-
-        # #weight + activation mode
-        # if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
-        #     self.channel_scale_mode = 2
-        ###########################################
 
         if(self.channel_scale_mode in [1, 3]):
             assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."

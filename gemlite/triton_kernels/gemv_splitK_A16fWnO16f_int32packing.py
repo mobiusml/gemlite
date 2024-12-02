@@ -98,20 +98,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             pre_hook=init_to_zero("c_ptr") if split_k > 1 else None,
         )
 
-
-#ONLY USE THIS WITH: contiguous=False
 def get_autotune_config():
-    #Tuned on 4090 RTX
     _configs = []
     for _M in [1]: 
-        for _N in [1, 2, 4, 8, 16, 32, 64]:  #[2, 4, 8]
-            for _K in [64, 128, 256, 512, 1024, 2048, 4096]: #[256, 256, 512, 1024, 2048]
-                for _w in [4, 8]: #[4, 8] 
-                    for _s in [1, 2]: #[1, 2, 4]
-                        for _sK in [1]: #[1, 2, 4, 8]
-                            for _A_load_order in [0]: #[0, 1, 2, 3] - 4090/A100, 
+        for _N in [1, 2, 4, 8, 16, 32, 64]:
+            for _K in [64, 128, 256, 512, 1024, 2048, 4096]:
+                for _w in [4, 8]:
+                    for _s in [1, 2]:
+                        for _sK in [1]:
+                            for _A_load_order in [0]: #[0, 1, 2, 3]
                                 for _dot_prod_mode in [0]: #[0, 1]
-                                    for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                                    for _meta_evict_policy in ['']: #[', 'evict_last']
                                         for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                             _configs.append(
                                                     triton.Config(
@@ -125,7 +122,6 @@ def get_autotune_config():
                                                         )
                                                     )
     return _configs
-
 
 
 compute_capability = torch.cuda.get_device_capability(0)
@@ -298,22 +294,6 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
 
         if(A_load_order == 3): #Late load 
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
-        
-        ######################################################################
-        # #Dot: FP32
-        # acc += a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype) #138.88 tokens/sec - X
-        # #acc += (a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype)).to(acc_dtype) #138.63 tokens/sec
-
-        # #acc += tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True)   #129.29 tokens/sec
-        # #acc += tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True).to(acc_dtype) #142.44 tokens/sec - X
-
-        #Dot: FP16
-        #acc += a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype) #145.91 tokens/sec - X
-        #acc += (a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype)).to(acc_dtype) #145.69 tokens/sec
-
-        #acc += tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True)   # 142.78 tokens/sec
-        #acc += tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True).to(acc_dtype) #142.42 tokens/sec -
-        #########################################################################
 
         if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
 

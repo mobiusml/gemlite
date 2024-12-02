@@ -91,11 +91,11 @@ def get_autotune_config():
     #Tuned on 4090 RTX
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [64, 128, 256, 512]: #[128, 256]
-            for _K in [8, 16, 32, 64]: #[32, 64], block_size >=32 
-                for _w in [2, 4]: #[4]
-                    for _s in [1, 2]: #[2, 4]
-                        for _A_load_order in [0, 1]:  #[0, 1, 2, 3] - using [2] for faster warm-up, for best results set to max
+        for _N in [64, 128, 256, 512]:
+            for _K in [8, 16, 32, 64]:
+                for _w in [2, 4]:
+                    for _s in [1, 2]:
+                        for _A_load_order in [0, 1]:  #[0, 1, 2, 3]
                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
                                 for _dot_prod_mode in [0]: #[0, 1]
                                     for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
@@ -110,33 +110,6 @@ def get_autotune_config():
                                                 )
 
     return _configs
-
-#contiguous = False
-# def get_autotune_config():
-#     #Tuned on 4090 RTX
-#     _configs = []
-#     for _M in [1]: #ONLY 1 allowed here
-#         for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256]: #[128, 256]
-#             for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]: #[32, 64], block_size >=32 
-#                 for _w in [2, 4]: #[4]
-#                     for _s in [1, 2]: #[2, 4]
-#                         for _A_load_order in [0, 1]:  #[0, 1, 2] - using [2] for faster warm-up, for best results set to max
-#                             for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-#                                 for _dot_prod_mode in [0]: #[0, 1]
-#                                     for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
-#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
-#                                                     num_stages=_s, num_warps=_w, 
-#                                                     pre_hook=init_to_zero("c_ptr"),
-#                                                     )
-#                                                 )
-
-#     return _configs
-
-
 
 compute_capability = torch.cuda.get_device_capability(0)
 
