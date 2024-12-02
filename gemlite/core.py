@@ -406,7 +406,22 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.data_contiguous = False
 
-        #TODO: Register buffers
+        #Register buffers
+        self.W_q      = torch.nn.Parameter(self.W_q,   requires_grad=False)
+        self.scales   = torch.nn.Parameter(self.scales,requires_grad=False)
+        self.zeros    = torch.nn.Parameter(self.zeros, requires_grad=False)
+        self.metadata = torch.nn.Parameter(torch.tensor([
+            self.W_nbits,
+            self.group_size,
+            self.unpack_mask,
+            self.elements_per_sample,
+            self.input_dtype.value,
+            self.output_dtype.value,
+            self.acc_dtype.value,
+            self.meta_dtype.value,
+            self.channel_scale_mode,
+            self.W_group_mode,
+            ], device='cpu', dtype=torch.int32), requires_grad=False)
 
         return self
 
@@ -480,7 +495,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             return self.forward_manual(x, matmul_type=self.default_gemv) #GEMV / GEMV_REVSPLITK / GEMV_SPLITK
 
-    
+    @torch.no_grad()
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
         x, scaled_x = self.scale_activations(x)
         out_shape = x.shape[:-1] + (self.out_features,)
@@ -514,11 +529,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     @staticmethod
     def cache_config(filename, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
-        #global GEMLITE_TRITON_MAPPING
-        #_GEMLITE_TRITON_MAPPING = GEMLITE_TRITON_CACHE
-
         config = {}
-
         try: 
             with open(filename) as json_file:
                 config = json.load(json_file)
