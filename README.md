@@ -1,10 +1,31 @@
 # GemLite
-<a href="https://github.com/mobiusml/gemlite/">GemLite</a>  is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for <b>simplicity</b> and <b>reasubility</b>.
 
-This project was initiated because we found it challenging to customize the low-bit kernels that are currently available.
-<a href="https://github.com/mobiusml/gemlite/">GemLite</a> provides both flexibility and performance, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs.
+<div align="center" style="margin-bottom: 1em;">
+<p><i>Low-bit Triton Kernels for Efficient Matrix Multiplication</i></p>
 
-While <a href="https://github.com/mobiusml/gemlite/">GemLite</a> can outperform the best existing implementations on large matrices, there's still potential for further optimization!
+  <img src="images/gemlite%20banner.png" alt="GemLite Logo" height="240">
+  
+  [![Twitter][mobius-twitter-badge]][mobius-twitter]
+
+  Made with ❤ by the team at [Mobius Labs](https://www.mobiuslabs.com/) for  'Aana' (ആന : Elephant) suite of multimodal product.  
+  
+</div>
+
+**GemLite** is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for **simplicity** and **reusability**. This project began as a way to address the challenges we faced in customizing existing low-bit kernels.
+
+GemLite provides both **flexibility** and **performance**, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs. The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility. 
+
+### Recent Highlights
+- **Major performance improvement**: especially on the A100 and H100.
+- **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
+- **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
+- **Helper functions**: helper functions make it easier to get started, especially useful for dynamic quantization.  
+- **New GEMV RevSplitK algorithm**: outperforms GEMM Split-K and GEMV for batch-size=1 with packed data.
+- **Channel-wise scaling**: Added support for channel-wise scaling for weights, activations, and both.
+- **Precision support**: Includes FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
+- **torch.compile() support**.
+
+While GemLite can outperform the best existing implementations on large matrices, there's still potential for further optimization!
 
 <div class="row"><center>
   <div class="column">
@@ -12,7 +33,6 @@ While <a href="https://github.com/mobiusml/gemlite/">GemLite</a> can outperform 
   </div>
  </center>
 </div> 
-
 
 <div class="row"><center>
   <div class="column">
@@ -330,4 +350,5 @@ month  = {August},
 year   = {2024}
 ```
  
-
+[mobius-twitter-badge]: https://img.shields.io/twitter/follow/Mobius_Labs?style=social
+[mobius-twitter]: https://twitter.com/Mobius_Labs
