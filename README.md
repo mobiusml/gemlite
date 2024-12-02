@@ -36,13 +36,7 @@ pip install git+https://github.com/mobiusml/gemlite/
 
 ## Usage
 ```Python
-from gemlite.core import DType, GemLiteLinear, set_autotune
-
-#Set autotuner: by default autotuning is disabled for faster kernel launch.
-#Make sure to enable autotuning for group_size < 128. By default, all these optioned are turned-off.
-set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True},
-              exhaustive=False, #If True, iterates through all the kernels for each shape to pick the best one.
-              use_cuda_graph=False) #If True, uses CUDA Graphs for benchmarking (autotune and exhaustive mode).
+from gemlite.core import DType, GemLiteLinear
 
 #Currently using the Triton backend as the default
 gemlite_linear = GemLiteLinear(
@@ -64,7 +58,28 @@ gemlite_linear.pack(W_q, scales, zeros, bias)
 #Forward
 out = gemlite_linear(x)
 ```
-You can explore various examples in the <a href="https://github.com/mobiusml/gemlite/tree/master/examples">examples folder</a>. Before running them, ensure you have installed the necessary dependencies by executing `./install_dependencies.sh`.
+Additionally, we offer helper functions that operate as follows:
+
+```Python
+from gemlite.helper import *
+
+#Non-packed 8-bit weights (INT8 or FP8)
+gemlite_linear = A16W8(device='cuda:0').from_linear(linear_layer) #FP16 activations
+gemlite_linear = A8W8_int8_dynamic(device='cuda:0').from_linear(linear_layer) #INT8 activations
+gemlite_linear = A8W8_fp8_dynamic(device='cuda:0').from_linear(linear_layer) #FP8 activations
+
+#Packed weights for 4-bit/2-bit/1-bit (HQQ format)
+gemlite_linear = A16Wn(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP16 activations
+gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP8 activations
+
+```
+
+Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
+```Python
+GemLiteLinear.cache_config('a100_config.json') #Cache- run this over multiple batch-sizes
+GemLiteLinear.load_config('a100_config.json') #Load
+``` 
+Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
 # Deep Dive
 ## Triton
@@ -80,24 +95,51 @@ This newly proposed algorithm in GemLite operates in contrast to the GEMM Split-
 
 All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions.
 
-To achieve optimal performance, it’s crucial to configure the eviction policy correctly. This is especially important in memory-bound scenarios, where we aim to cache activations by setting `eviction_policy="evict_last"`. Float16 accumulation further improves performance in compute-bound scenarios. 
+To achieve optimal performance, it’s crucial to configure the eviction policy correctly. This is especially important in memory-bound scenarios, where we aim to cache activations by setting `eviction_policy="evict_last"`. Float16 accumulation further improves performance in compute-bound scenarios on consumer devices. 
 
-For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, which can be found <a href="https://github.com/LeiWang1999/GPTQModel/blob/main/gptqmodel/nn_modules/qlinear/qlinear_tritonv2.py#L97-L105">here</a>.
-
-### Limitations
-* Performance needs improvement for smaller matrices or lower batch sizes, particularly with the GEMV kernel.
-* There is a <a href="https://github.com/triton-lang/triton/issues/2637">high overhead</a> when launching Triton kernels, which becomes more noticeable with lighter workloads. Unfortunately, Cudagraphs does not seem to resolve this issue.
-* Autotuning is time-consuming, so the current kernels were optimized with a limited set of configurations. More exhaustive autotuning would likely yield better results. If you plan to run these kernels with different settings or devices, consider adding more configurations for better performance.
-* Performance has been mainly optimized for the 4090 RTX (see the autotune configs in the kernel files).
+For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, which can be found <a href="https://github.com/LeiWang1999/GPTQModel/blob/main/gptqmodel/nn_modules/qlinear/qlinear_tritonv2.py#L97-L105">here</a>. We modifiy the bitpacking to support both 32-bit and 8-bit bitpacking, as well as packing along the rows or the columns. 
 
 ### Performance
+
+#### End-2-End Performance
+We present various end-2-end Llama results generated with <a href="https://github.com/pytorch/ao/tree/main/torchao/_models/llama">gptfast</a>. GemLite leads to up to 7-8x faster prefill and 3-6x faster decoding compared to the default torchao kernels:
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit_dynamic.svg" alt="llama3_8bit_dynamic.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_4bit.svg" alt="llama3_4bit.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama2_prefill.svg" alt="llama2_prefill.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+
+#### Matmul Performance
 We present performance results across various batch sizes on the RTX 4090. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
 
 <details>
 <summary>8-bit Weights</summary>
 
-<details>
-<summary>4090 RTX</summary>
+
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_4096x4096_4090RTX.svg" alt="8bit_gs=infeatures_4096x4096_4090RTX" style="width:98%">
@@ -125,16 +167,13 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
   </div>
  </center>
 </div> 
-</details>
+
 
 </details>
 
 
 <details>
 <summary>4-bit Weights</summary>
-
-<details>
-<summary>4090 RTX</summary>
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_4090RTX.svg" alt="4bit_gs=128_4096x4096_4090RTX" style="width:98%">
@@ -166,111 +205,8 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 
 
 <details>
-<summary>3090 RTX</summary>
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_3090RTX.svg" alt="4bit_gs=128_4096x4096_3090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_3090RTX.svg" alt="4bit_gs=128_8192x8192_3090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_3090RTX.svg" alt="4bit_gs=128_16384x16384_3090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_3090RTX.svg" alt="4bit_gs=128_32768x32768_3090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-</details>
-
-
-<details>
-<summary>A100 SXM4</summary>
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_A100.svg" alt="4bit_gs=128_4096x4096_A100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_A100.svg" alt="4bit_gs=128_8192x8192_A100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_A100.svg" alt="4bit_gs=128_16384x16384_A100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_A100.svg" alt="4bit_gs=128_32768x32768_A100" style="width:98%">
-  </div>
- </center>
-</div> 
-</details>
-
-
-<details>
-<summary>H100 SXM4</summary>
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_4096x4096_H100.svg" alt="4bit_gs=128_4096x4096_H100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_8192x8192_H100.svg" alt="4bit_gs=128_8192x8192_H100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_16384x16384_H100.svg" alt="4bit_gs=128_16384x16384_H100" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_H100.svg" alt="4bit_gs=128_32768x32768_H100" style="width:98%">
-  </div>
- </center>
-</div> 
-</details>
-
-
-
-</details>
-
-
-
-<details>
 <summary>2-bit Weights</summary>
 
-<details>
-<summary>4090 RTX</summary>
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_4096x4096_4090RTX.svg" alt="2bit_gs=128_4096x4096_4090RTX" style="width:98%">
@@ -300,9 +236,6 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 </div> 
 </details>
 
-
-
-</details>
 
 ## CUDA
 We explain in detail how the implementation works in our <a href="https://mobiusml.github.io/gemlite_blogpost/">blogpost</a>. 
