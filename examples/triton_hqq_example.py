@@ -3,10 +3,7 @@ import torch
 def check_valid(x, W, quant_linear, tol=1e-3):
     y_ref = torch.matmul(x, W.T)
     y_q   = quant_linear(x)
-    try:
-        assert (y_ref - y_q).abs().mean() < tol
-    except:
-        raise Error('Assertion Failed')
+    assert (y_ref - y_q).abs().mean() < tol, 'Outputs do not match'
 
 ############################################################################################
 from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
@@ -25,14 +22,18 @@ W            = hqq_layer.dequantize().reshape(orig_shape)
 ############################################################################################
 
 from gemlite.core import GemLiteLinearTriton, DType
-gemlite_linear = GemLiteLinearTriton(W_nbits, group_size=group_size, in_features=in_features, out_features=out_features, input_dtype=DType.FP16, output_dtype=DType.FP16, acc_dtype=DType.FP16)
+gemlite_linear = GemLiteLinearTriton(W_nbits, 
+                                    group_size=group_size, 
+                                    in_features=in_features, 
+                                    out_features=out_features, 
+                                    input_dtype=DType.FP16, 
+                                    output_dtype=DType.FP16)
 
-W_q           = hqq_layer.unpack().view(orig_shape)
+W_q           = hqq_layer.unpack(dtype=torch.uint8).view(orig_shape)
 scales        = hqq_layer.meta['scale']
 zeros         = hqq_layer.meta['zero']
-gemlite_linear.pack(W_q, scales, zeros, None);
+gemlite_linear.pack(W_q, scales, zeros, None)
 
-batch_size = 8
-x = torch.randn((batch_size, in_features), dtype=gemlite_linear.compute_dtype, device='cuda:0')/10.
+x = torch.randn((8, in_features), dtype=gemlite_linear.compute_dtype, device='cuda:0')/10.
 check_valid(x, W, gemlite_linear)
 
