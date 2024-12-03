@@ -154,28 +154,33 @@ W, gemlite_linear, torchao_linear, bitblas_linear, marlin_linear = gen_data(in_f
 
 if(matmul_type == "AUTO"):
     BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1, 16]
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1, 16]
     gemlite_linear.forward = gemlite_linear.forward_auto_with_warmup
 
 if(matmul_type == "GEMV"):
     BATCH_SIZES = [1, 2, 4, 8]
     gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV")
-    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMV_REVSPLITK"):
     BATCH_SIZES = [1, 2, 4, 8]
     gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV_REVSPLITK")
-    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMM_SPLITK"):
     BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64]
     gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMM_SPLITK")
-    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMM"):
     BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
     gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMM")
-    HQQLinearBitBlas.DEFAULT_BATCHSIZE = [16]
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [16]
 
 print("W_nbits", W_nbits, "group_size", group_size, "matmul_type", matmul_type)
 for batch_size in BATCH_SIZES:
