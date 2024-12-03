@@ -107,13 +107,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #These autotunes are optimized for batch-size 1 to 64 (!)
 def get_autotune_config():
-    #Tuned on 4090 RTX
+    _stages  = [1, 2, 4, 5] if gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
     for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
         for _N in [32, 64, 128, 256]:
             for _K in [32, 64, 128, 256]:
                 for _w in [4, 8]:
-                    for _s in [1, 2, 4, 5]:
+                    for _s in _stages:
                         for _sK in [1, 2, 4, 8, 16]: 
                             for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
