@@ -115,7 +115,7 @@ def get_autotune_config():
 def get_default_config():
     #small batch, not sure what is the right default cnnfig here.
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
-                            num_warps=4, num_stages=2),]
+                            num_warps=4, num_stages=1),]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 

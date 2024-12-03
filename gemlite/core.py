@@ -71,9 +71,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         if in_features % 128 != 0 or out_features % 128 != 0:
             raise NotImplementedError("Invalid input shapes")
 
-        group_size = 1 if (group_size is None) else group_size
+        if(group_size is not None):
+            assert group_size >= 32, "Only group_size >= 32 is supported."
 
-        assert group_size >= 32, "Only group_size >= 32 is supported."
+        group_size = 1 if (group_size is None) else group_size
 
         self.in_features  = in_features
         self.out_features = out_features
@@ -162,7 +163,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         return W_q_out, elements_per_sample
 
     #Make sure to feed UINT8 W_q for packing
-    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: bool=True, packing_bitwidth: int=32):
+    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: Union[int,None]=None, packing_bitwidth: int=32):
 
         #Unpacked weights
         self.W_q = None
@@ -175,9 +176,12 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q = W_q.t() #row-major
             self.elements_per_sample = 1
 
+            if(contiguous is None): contiguous = False
+
         if(W_q.dtype == torch.uint8): #Packed weigths
             self.W_q, self.elements_per_sample = self.pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-K
             #self.W_q, self.elements_per_sample = self.pack_weights_over_rows(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-N
+            if(contiguous is None): contiguous = True
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
@@ -196,8 +200,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = None
             self.W_group_mode = 0
             self.channel_scale_mode = 2 if self.scaled_activations else 0 
-            return 
-
+            
         #The rest of the use-cases require some kind of meta-data
         if(scales is not None):
             self.scales = scales.view((self.out_features, -1)).t()
@@ -207,7 +210,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         #Symmetric no shift
         if(zeros is None):  
             self.zeros = None
-            self.W_group_mode = 2
+            self.W_group_mode = 2 if(self.scales is not None) else 0
         else:
             #Asymmetric or Symmetric with shift
             if(isinstance(zeros, torch.Tensor)):
@@ -253,9 +256,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(isinstance(self.zeros, int)): #Union[Tensor, int] not supported by custom op
             self.zeros = torch.tensor(self.zeros, dtype=torch.int32, device=self.device)
         if(self.zeros is None):
-            self.zeros = torch.tensor([], dtype=torch.int32, device=self.device)
+            self.zeros = torch.tensor([[]], dtype=torch.int32, device=self.device)
         if(self.scales is None):
-            self.scales = torch.tensor([], dtype=torch.int32, device=self.device)
+            self.scales = torch.tensor([[]], dtype=torch.int32, device=self.device)
 
         if(self.scales is not None):
             self.meta_dtype = DType.FP32 if self.scales.dtype == torch.float32 else DType.FP16

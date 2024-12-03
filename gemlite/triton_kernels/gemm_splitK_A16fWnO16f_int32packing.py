@@ -137,17 +137,17 @@ def get_default_config():
     #4090: default
     config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                            'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+                            num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (8, 0)): #A100
         config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                              'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+                             num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     if(compute_capability == (9, 0)): #H100
         config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
                              'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                             num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
+                             num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     return [config]
 
