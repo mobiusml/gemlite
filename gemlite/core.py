@@ -317,7 +317,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 self.data_contiguous,
                 ]
 
-    #Main manual call
+    # #Main manual call
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
         return GemLiteLinearTriton.forward_functional(x, self.bias, self.out_features, self.scale_activations, matmul_type, self.get_tensor_args(), self.get_meta_args())
 
