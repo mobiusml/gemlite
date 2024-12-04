@@ -321,16 +321,6 @@ class GemLiteLinearTriton(torch.nn.Module):
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
         return GemLiteLinearTriton.forward_functional(x, self.bias, self.out_features, self.scale_activations, matmul_type, self.get_tensor_args(), self.get_meta_args())
 
-    # @torch.no_grad()
-    # def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
-    #     x, scaled_x = self.scale_activations(x)
-    #     out_shape   = x.shape[:-1] + (self.out_features,)
-    #     out         = GEMLITE_TRITON_MAPPING[matmul_type].forward(x.view(-1, x.shape[-1]), *self.get_tensor_args(), scaled_x, *self.get_meta_args()).view(out_shape)
-    #     if self.bias is not None:
-    #         out += self.bias
-    #     return out
-
-
     #Main auto call without exhaustive search
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
         _batch_size = x.view(-1, x.shape[-1]).shape[0]
