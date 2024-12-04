@@ -108,10 +108,15 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.forward = self.forward_auto_no_warmup
 
         #Default GEMV for packed vs. non-packed data
-        self.default_gemv = 'GEMV_REVSPLITK' if (self.W_nbits < 8) else 'GEMV_SPLITK'
+        self.default_gemv = self.get_default_gemv()
             
         #Set torch flags
         torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
+
+
+    #Returns the default gemv choice based on the config
+    def get_default_gemv(self):
+        return 'GEMV_REVSPLITK' if (self.W_nbits < 8) else 'GEMV_SPLITK'
 
     #Override this function to perform dynamic activation quantization
     def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
