@@ -299,7 +299,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         return out
 
-    #Returns the main arguments
+    #Return the main arguments
     def get_tensor_args(self):
         return [self.W_q, self.scales, self.zeros]
 
@@ -356,7 +356,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 continue
             if signature[0] < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
                 continue  
-            t[i] = eval_time_for_auto_mode(lambda x: forward_manual(x, _kernel.matmul_type), x)
+            t[i] = eval_time_for_auto_mode(lambda x: self.forward_manual(x, _kernel.matmul_type), x)
 
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
@@ -367,7 +367,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     #Exhaustive search 
     def forward_auto_with_warmup(self, x: Tensor) -> Tensor:
-        _signature = (get_closest_m(x_input.shape[0]),) + self.signature
+        _batch_size = x.view(-1, x.shape[-1]).shape[0]
+        _signature = (get_closest_m(_batch_size),) + self.signature
         if _signature not in GEMLITE_TRITON_CACHE:
             self.warmup(_signature, x)
         return self.forward_manual(x, GEMLITE_TRITON_CACHE[_signature]["matmul_type"])
