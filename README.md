@@ -27,6 +27,19 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
 - **torch.compile() support**.
 
+
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
+    fdfdsf
+  </div>
+  <div class="column">
+  <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
+    fdfdsf    
+  </div>
+ </center>
+</div> 
+
 <div class="row"><center>
   <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:98%">
