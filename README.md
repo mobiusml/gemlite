@@ -11,11 +11,11 @@
   
 </div>
 
-**GemLite** is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for **simplicity** and **reusability**. This project began as a way to address the challenges we faced in customizing existing low-bit kernels.
+**GemLite** is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for **simplicity** and **reusability**. GemLite is exhibiting up to 7-8x faster prefill and 3-6x faster decoding compared to the default torchao kernels. Detail benchmarks are available in the [Performance](#performance) section. 
 
-GemLite provides both **flexibility** and **performance**, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs. The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility. 
+GemLite provides both **flexibility** and **performance**, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs. Often, the speed-up algorithms for various hardware are different, so we have implemented multiple versions of the kernels that maximize performance on different hardware. 
 
-For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
+The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility.  For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
 
 ### Recent Highlights
 - **Major performance improvement**: especially on the A100 and H100.
