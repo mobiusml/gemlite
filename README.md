@@ -11,7 +11,7 @@
   
 </div>
 
-**GemLite** is a collection of CUDA and Triton kernels designed for efficient low-bit matrix multiplication, emphasizing simplicity and reusability. It provides a practical solution for achieving significant performance gains, delivering up to **7-8x faster prefill** and **3-6x faster decoding** compared to default Torch AO kernels. For more detailed benchmarks, check the [Performance](#performance) section.
+**GemLite** is a collection of Triton kernels designed for efficient low-bit matrix multiplication, emphasizing simplicity and reusability. It provides a practical solution for achieving significant performance gains, delivering up to **7-8x faster prefill** and **3-6x faster decoding** compared to default Torch AO kernels. For more detailed benchmarks, check the [Performance](#performance) section.
 
 GemLite strikes the perfect balance between **flexibility** and **performance**, allowing users to easily use and modify the codebase to develop high-performance kernels optimized for their specific hardware. We have included multiple versions of the kernels optimized for 4090, A100s, and H100s to maximize performance across different platforms.
 
@@ -24,7 +24,15 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 
 Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
 
-### Recent Highlights
+# Table of Contents
+- [Recent Highlights](#recent-highlights)
+- [Getting Started](#getting-started)
+- [Deep Dive](#deep-dive)
+- [Performance](#performance)
+- [Talks and Resources](#talks-and-resources)
+- [Contributing](#contributing)
+
+# Recent Highlights
 - **Major performance improvement**: especially on the A100 and H100.
 - **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
 - **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
