@@ -1,7 +1,7 @@
 # GemLite
 
 <div align="center" style="margin-bottom: 1em;">
-<h2>Low-bit Triton Kernels for Efficient Low-Bit Matrix Multiplication</h2>
+<h2>Triton Kernels for Efficient Low-Bit Matrix Multiplication</h2>
 
   <img src="images/gemlite%20banner.png" alt="GemLite Logo" height="150">
   
@@ -13,12 +13,12 @@
 
 **GemLite** is a collection of Triton kernels designed for efficient low-bit matrix multiplication, emphasizing simplicity and reusability. It provides a practical solution for achieving significant performance gains, delivering up to **7-8x faster prefill** and **3-6x faster decoding** compared to default Torch AO kernels. For more detailed benchmarks, check the [Performance](#performance) section.
 
-GemLite strikes the perfect balance between **flexibility** and **performance**, allowing users to easily use and modify the codebase to develop high-performance kernels optimized for their specific hardware. We have included multiple versions of the kernels optimized for 4090, A100s, and H100s to maximize performance across different platforms.
+GemLite strikes the perfect balance between **flexibility** and **performance**, allowing users to easily use and modify the codebase to develop high-performance kernels optimized for their specific hardware. We have included multiple versions of the kernels to maximize performance across different matrix shapes.
 
-The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility.  For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
+The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility. For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
 
 ### Result Teaser 
-| End-to-end performance for Llama3 8bit              | Matmul performance on 8bit               |
+| End-to-end Performance (Llama3 8-bit)              | Matmul Performance (A16W8)               |
 | --------------------------------------------------- | ---------------------------------------- |
 | ![End to End Performance](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg) | ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg) |
 
@@ -101,8 +101,6 @@ GemLiteLinear.load_config('a100_config.json') #Load
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
-
-
 ## Deep Dive
 We implement various versions of the Triton kernels: 
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_A16fWnO16f_int32packing.py">GEMV</a></b>: This GEMV kernel splits the activations into 1D chunks, performs the dot product using `tl.sum`, and accumulates via atomic addition. It is primarily intended for use with small batch sizes (M < 16). As `tl.atomic_add` does not support bfloat16, this kernel is limited to float16.
@@ -114,16 +112,9 @@ We implement various versions of the Triton kernels:
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_revsplitK_A16fWnO16f_int32packing.py">Gemv RevSplit-K</a></b>: 
 This newly proposed algorithm in GemLite operates in contrast to the GEMM Split-K approach, but within a GEMV context. By doubling the workload per Triton program launched in the GEMV kernel, it reduces the frequency of loading scales/zeros and lowers the number of threads needed. As a result, this method delivers the best performance for batch-size=1 decoding. 
 
-All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions.
-
-To achieve optimal performance, it’s crucial to configure the eviction policy correctly. This is especially important in memory-bound scenarios, where we aim to cache activations by setting `eviction_policy="evict_last"`. Float16 accumulation further improves performance in compute-bound scenarios on consumer devices. 
-
-For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, which can be found <a href="https://github.com/LeiWang1999/GPTQModel/blob/main/gptqmodel/nn_modules/qlinear/qlinear_tritonv2.py#L97-L105">here</a>. We modifiy the bitpacking to support both 32-bit and 8-bit bitpacking, as well as packing along the rows or the columns. 
-
-
+All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as well as both fp16 and int8/fp8 activations.
 
 ## Performance
-
 ### End-2-End Performance
 We present various end-2-end Llama results generated with <a href="https://github.com/pytorch/ao/tree/main/torchao/_models/llama">gptfast</a>. GemLite leads to up to 7-8x faster prefill and 3-6x faster decoding compared to the default torchao kernels:
 
@@ -154,7 +145,6 @@ We present various end-2-end Llama results generated with <a href="https://githu
   </div>
  </center>
 </div> 
-
 
 ### Matmul Performance
 We present performance results across various batch sizes on the RTX 4090. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
@@ -260,17 +250,14 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
 </details>
 
 ## Talks and Resources
-
-Check out the talk lead author Hicham Badri gave about GemLite at [GPU MODE](https://www.youtube.com/watch?v=7c3c3bCGzKU&t=4838s&ab_channel=GPUMODE). You can also find the slides [here](https://docs.google.com/presentation/d/1R9B6RLOlAblyVVFPk9FtAq6MXR1ufj1NaT0bjjib7Vc/edit#slide=id.g310b85e2148_0_135).
+Check out the talk lead author <a href="https://github.com/mobicham/">Dr. Hicham Badri</a> gave about GemLite at [GPU MODE](https://www.youtube.com/watch?v=7c3c3bCGzKU&t=4838s&ab_channel=GPUMODE). You can also find the slides [here](https://docs.google.com/presentation/d/1R9B6RLOlAblyVVFPk9FtAq6MXR1ufj1NaT0bjjib7Vc/edit#slide=id.g310b85e2148_0_135).
 
 Please note that GemLite is under active development, and the content discussed in the talk may evolve as the library continues to improve.
 
 ## Contributing
-
 Contributions are always welcome! Please feel free to raise issues, submit pull requests, or start a discussion.
 
 If you're looking to integrate GemLite with major inference and AI libraries, we'd love to hear about it!
-
 
 [mobius-twitter-badge]: https://img.shields.io/twitter/follow/Mobius_Labs?style=social
 [mobius-twitter]: https://twitter.com/Mobius_Labs
