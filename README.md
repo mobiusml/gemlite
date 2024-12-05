@@ -24,6 +24,17 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 
 Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
 
+### Recent Highlights
+- **Major performance improvement**: especially on the A100 and H100.
+- **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
+- **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
+- **Helper functions**: helper functions make it easier to get started, especially useful for dynamic quantization.  
+- **New GEMV RevSplitK algorithm**: outperforms GEMM Split-K and GEMV for batch-size=1 with packed data.
+- **Channel-wise scaling**: Added support for channel-wise scaling for weights, activations, and both.
+- **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
+- **torch.compile() support**.
+
+
 # Getting Started
 ## Installation
 ##### Latest Stable Version
@@ -82,15 +93,6 @@ GemLiteLinear.load_config('a100_config.json') #Load
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
-### Recent Highlights
-- **Major performance improvement**: especially on the A100 and H100.
-- **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
-- **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
-- **Helper functions**: helper functions make it easier to get started, especially useful for dynamic quantization.  
-- **New GEMV RevSplitK algorithm**: outperforms GEMM Split-K and GEMV for batch-size=1 with packed data.
-- **Channel-wise scaling**: Added support for channel-wise scaling for weights, activations, and both.
-- **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
-- **torch.compile() support**.
 
 
 ## Deep Dive
