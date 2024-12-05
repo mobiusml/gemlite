@@ -1,7 +1,7 @@
 # GemLite
 
 <div align="center" style="margin-bottom: 1em;">
-<p><i>Low-bit Triton Kernels for Efficient Low-Bit Matrix Multiplication</i></p>
+<h1>Low-bit Triton Kernels for Efficient Low-Bit Matrix Multiplication</h1>
 
   <img src="images/gemlite%20banner.png" alt="GemLite Logo" height="150">
   
