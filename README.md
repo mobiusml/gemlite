@@ -30,7 +30,7 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 
 <div style="display: flex; justify-content: space-around;">
   <div style="text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:45%">
     <p>End-to-end performance for Llama3 8bit</p>
   </div>
   <div style="text-align: center;">
