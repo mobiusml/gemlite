@@ -11,9 +11,9 @@
   
 </div>
 
-**GemLite** is a collection of straightforward CUDA and Triton kernels for efficient, fused low-bit matrix multiplication. It is specifically designed for **simplicity** and **reusability**. GemLite is exhibiting up to 7-8x faster prefill and 3-6x faster decoding compared to the default torchao kernels. Detail benchmarks are available in the [Performance](#performance) section. 
+**GemLite** is a collection of CUDA and Triton kernels designed for efficient low-bit matrix multiplication, emphasizing simplicity and reusability. It provides a practical solution for achieving significant performance gains, delivering up to **7-8x faster prefill** and **3-6x faster decoding** compared to default Torch AO kernels. For more detailed benchmarks, check the [Performance](#performance) section.
 
-GemLite provides both **flexibility** and **performance**, enabling users to easily modify the codebase to develop high-performance kernels tailored to their specific needs. Often, the speed-up algorithms for various hardware are different, so we have implemented multiple versions of the kernels that maximize performance on different hardware. 
+GemLite strikes the perfect balance between **flexibility** and **performance**, allowing users to easily use and modify the codebase to develop high-performance kernels optimized for their specific hardware. We have included multiple versions of the kernels optimized for 4090, A100s, and H100s to maximize performance across different platforms.
 
 The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility.  For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
 
@@ -122,6 +122,8 @@ All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions.
 To achieve optimal performance, it’s crucial to configure the eviction policy correctly. This is especially important in memory-bound scenarios, where we aim to cache activations by setting `eviction_policy="evict_last"`. Float16 accumulation further improves performance in compute-bound scenarios on consumer devices. 
 
 For bitpacking, we adapt the method from the GPTQ Triton V2 implementation, which can be found <a href="https://github.com/LeiWang1999/GPTQModel/blob/main/gptqmodel/nn_modules/qlinear/qlinear_tritonv2.py#L97-L105">here</a>. We modifiy the bitpacking to support both 32-bit and 8-bit bitpacking, as well as packing along the rows or the columns. 
+
+
 
 ## Performance
 
@@ -259,6 +261,18 @@ We present performance results across various batch sizes on the RTX 4090. Perfo
  </center>
 </div> 
 </details>
+
+## Talks and Resources
+
+Check out the talk lead author Hicham Badri gave about GemLite at [GPU MODE](https://www.youtube.com/watch?v=7c3c3bCGzKU&t=4838s&ab_channel=GPUMODE). You can also find the slides [here](https://docs.google.com/presentation/d/1R9B6RLOlAblyVVFPk9FtAq6MXR1ufj1NaT0bjjib7Vc/edit#slide=id.g310b85e2148_0_135).
+
+Please note that GemLite is under active development, and the content discussed in the talk may evolve as the library continues to improve.
+
+## Contributing
+
+Contributions are always welcome! Please feel free to raise issues, submit pull requests, or start a discussion.
+
+If you're looking to integrate GemLite with major inference and AI libraries, we'd love to hear about it!
 
 
 [mobius-twitter-badge]: https://img.shields.io/twitter/follow/Mobius_Labs?style=social
