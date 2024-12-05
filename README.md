@@ -3,7 +3,7 @@
 <div align="center" style="margin-bottom: 1em;">
 <p><i>Low-bit Triton Kernels for Efficient Low-Bit Matrix Multiplication</i></p>
 
-  <img src="images/gemlite%20banner.png" alt="GemLite Logo" height="240">
+  <img src="images/gemlite%20banner.png" alt="GemLite Logo" height="150">
   
   [![Twitter][mobius-twitter-badge]][mobius-twitter]
 
