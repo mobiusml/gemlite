@@ -17,7 +17,15 @@ GemLite strikes the perfect balance between **flexibility** and **performance**,
 
 The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility.  For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
 
+#### Result Teaser 
+| End-to-end performance for Llama3 8bit              | Matmul performance on 8bit               |
+| --------------------------------------------------- | ---------------------------------------- |
+| ![End to End Performance](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg) | ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg) |
+
+Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
+
 ### Recent Highlights
+<details>
 - **Major performance improvement**: especially on the A100 and H100.
 - **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
 - **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
@@ -26,14 +34,7 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **Channel-wise scaling**: Added support for channel-wise scaling for weights, activations, and both.
 - **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
 - **torch.compile() support**.
-
-#### Result Teaser 
-| End-to-end performance for Llama3 8bit              | Matmul performance on 8bit               |
-| --------------------------------------------------- | ---------------------------------------- |
-| ![End to End Performance](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg) | ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg) |
-
-Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
-
+</details>
 # Getting Started
 ## Installation
 ##### Latest Stable Version
