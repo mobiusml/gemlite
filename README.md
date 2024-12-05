@@ -28,7 +28,7 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **torch.compile() support**.
 
 
-![Elements](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg){:style="height:83px"} ![Dandi](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg){:style="height:83px"}
+![Elements](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg){ width="300" } ![Dandi](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg){ width="300" }
 
 <!-- <div style="display: flex; gap: 10px; justify-content: center;">
   <div style="width: 40%; text-align: center;">
