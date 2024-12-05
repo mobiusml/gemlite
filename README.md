@@ -28,16 +28,17 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **torch.compile() support**.
 
 
-<div style="display: flex; justify-content: space-around;">
+<div style="display: flex; justify-content: center; align-items: center; gap: 20px;">
   <div style="text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:25%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="Llama3 8bit Performance" style="max-width: 45%; height: auto;">
     <p>End-to-end performance for Llama3 8bit</p>
   </div>
   <div style="text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Image 2" style="width: 25%;">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Matmul Performance on 8bit" style="max-width: 45%; height: auto;">
     <p>Matmul performance on 8bit</p>
   </div>
 </div>
+
 Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
 
 # Getting Started
