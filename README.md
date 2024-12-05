@@ -51,7 +51,8 @@ For the old CUDA version, please refer to <a href="https://github.com/mobiusml/g
 # Getting Started
 ## Installation
 ```
-pip install git+https://github.com/mobiusml/gemlite/
+pip install gemlite #latest stable version
+pip install git+https://github.com/mobiusml/gemlite/ #Latest from master
 ```
 
 ## Usage
