@@ -27,24 +27,10 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
 - **torch.compile() support**.
 
+#### Result Teaser 
 | End-to-end performance for Llama3 8bit              | Matmul performance on 8bit               |
 | --------------------------------------------------- | ---------------------------------------- |
 | ![End to End Performance](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg) | ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg) |
-| --------------------------------------------------- | ---------------------------------------- |
-
-<!-- ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg){ width="300" } -->
-
-<!-- <div style="display: flex; gap: 10px; justify-content: center;">
-  <div style="width: 40%; text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="Llama3 8bit Performance" style="width: 40%; height: auto;">
-    <p>End-to-end performance for Llama3 8bit</p>
-  </div>
-  <div style="width: 40%; text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Matmul Performance on 8bit" style="width: 40%; height: auto;">
-    <p>Matmul performance on 8bit</p>
-  </div>
-</div> -->
-
 
 Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
 
