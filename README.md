@@ -17,7 +17,7 @@ GemLite strikes the perfect balance between **flexibility** and **performance**,
 
 The project started with CUDA kernels, but we have switched to <a href="https://github.com/triton-lang/triton/">Triton</a> for enhanced flexibility.  For the old CUDA version, please refer to <a href="https://github.com/mobiusml/gemlite/tree/stable_cuda_only">this branch.</a>
 
-#### Result Teaser 
+### Result Teaser 
 | End-to-end performance for Llama3 8bit              | Matmul performance on 8bit               |
 | --------------------------------------------------- | ---------------------------------------- |
 | ![End to End Performance](https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg) | ![Matmul Performance](https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg) |
@@ -37,11 +37,11 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 
 # Getting Started
 ## Installation
-##### Latest Stable Version
+### Latest Stable Version
 ```
 pip install gemlite
 ```
-##### Latest
+### Latest
 ```
 pip install git+https://github.com/mobiusml/gemlite/
 ```
