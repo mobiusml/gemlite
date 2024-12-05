@@ -30,15 +30,15 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 
 <div style="display: flex; justify-content: space-around;">
   <div style="text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:45%">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:25%">
     <p>End-to-end performance for Llama3 8bit</p>
   </div>
   <div style="text-align: center;">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Image 2" style="width: 45%;">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Image 2" style="width: 25%;">
     <p>Matmul performance on 8bit</p>
   </div>
-  <p>Extensive performance results across different bitwidths, batch sizes, and devices are available in the <a href="#performance">Performance</a> section.</p>
 </div>
+Extensive performance results across different bitwidths, batch sizes, and devices are available in the [Performance](#performance) section below.
 
 # Getting Started
 ## Installation
