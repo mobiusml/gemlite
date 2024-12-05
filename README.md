@@ -28,38 +28,17 @@ The project started with CUDA kernels, but we have switched to <a href="https://
 - **torch.compile() support**.
 
 
-<div class="row"><center>
-  <div class="column">
+<div style="display: flex; justify-content: space-around;">
+  <div style="text-align: center;">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
-    fdfdsf
+    <p>End-to-end performance for Llama3 8bit</p>
   </div>
-  <div class="column">
-  <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_8bit.svg" alt="llama3_8bit.svg" style="width:98%">
-    fdfdsf    
+  <div style="text-align: center;">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="Image 2" style="width: 45%;">
+    <p>Matmul performance on 8bit</p>
   </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/8bit_gs=infeatures_32768x32768_4090RTX.svg" alt="8bit_gs=infeatures_32768x32768_4090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/4bit_gs=128_32768x32768_4090RTX.svg" alt="4bit_gs=128_32768x32768_4090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
-
-<div class="row"><center>
-  <div class="column">
-    <img src="https://github.com/mobiusml/gemlite/blob/master/images/2bit_gs=128_32768x32768_4090RTX.svg" alt="2bit_gs=128_32768x32768_4090RTX" style="width:98%">
-  </div>
- </center>
-</div> 
+  <p>Extensive performance results across different bitwidths, batch sizes, and devices are available in the <a href="#performance">Performance</a> section.</p>
+</div>
 
 # Getting Started
 ## Installation
