@@ -237,6 +237,7 @@ for batch_size in BATCH_SIZES:
         print((batch_size, in_features, out_features), 'Marlin Speed-up vs. torch.matmul', np.round(ref_time/marlin_time, 2))
 
     print('----------------------------------------------')
+    GemLiteLinearTriton.cache_config('test_config.json')
 
 
-GemLiteLinearTriton.cache_config('test_config.json')
+
