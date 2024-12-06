@@ -32,13 +32,14 @@ def eval_time_for_auto_mode(fct, params):
 def get_closest_m(M):
     return 2 ** int(math.ceil(math.log2(M)))
 
-def cache_kernel_config(kernel, prune_keys, config={}):
-    kernel_cache = getattr(kernel, 'cache', None)
-    if(kernel_cache is not None):
+def cache_kernel_config(kernel, prune_keys):
+    kernel_cache = kernel.cache
+    k_config = {}
+    if(len(kernel_cache) > 0):
         for k in kernel_cache:
-            _k = k[:len(prune_keys)]
-            config[str(_k)] = kernel_cache[k].all_kwargs()
-    return config
+            key = str(k[:len(prune_keys)])
+            k_config[key] = kernel_cache[k].all_kwargs()
+    return k_config
 
 GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
@@ -335,16 +336,17 @@ class GemLiteLinearTriton(torch.nn.Module):
     def warmup(self, signature, x):
         global GEMLITE_TRITON_CACHE
         t = [np.inf] * len(self.kernels)
+        M = signature[0]
         for i, _kernel in enumerate(self.kernels):
-            if signature[0] > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
+            if M > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
                 continue 
-            if signature[0] > 1 and _kernel.matmul_type == "GEMV_SPLITK": #skip gemvs for larger batch-sizes: GEMV_SPLTIK
+            if M > 1 and _kernel.matmul_type == "GEMV_SPLITK": #skip gemvs for larger batch-sizes: GEMV_SPLTIK
                 continue 
-            if signature[0] > 2 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
+            if M > 2 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
                 continue 
-            if signature[0] > 32 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
+            if M > 32 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
                 continue
-            if signature[0] < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
+            if M < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
                 continue  
             t[i] = eval_time_for_auto_mode(lambda x: self.forward_manual(x, _kernel.matmul_type), x)
 
