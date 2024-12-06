@@ -5,7 +5,7 @@ from torch import Tensor
 import numpy as np
 from enum import Enum
 import math, json
-import warnings
+import warnings, random
 from typing import Union, Tuple, Callable
 
 #Dtypes
@@ -19,14 +19,37 @@ from .triton_kernels import *
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
+def eval_time_triton(fct, params):
+    return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
+
+def eval_time_torch(fct, params, rep=100, return_mode='min'):
+    cache = torch.empty(int(256 * 1024 * 1024 // 4), dtype=torch.int, device='cuda')
+
+    t = []
+    for _ in range(rep):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        cache.zero_() #fast_flush
+        start_event.record()
+        fct(*params)
+        end_event.record()
+        torch.cuda.synchronize()
+        t.append(start_event.elapsed_time(end_event))
+        cache += int(random.random()*1000)  #change cache
+
+    return np.min(t) if return_mode=='min' else np.mean(t[rep//2:])
+
+eval_time = eval_time_torch
+
 def eval_time_for_auto_mode(fct, params):
-    for _ in range(5): fct(*params) #Run first to kick-off Triton autotune
+    for _ in range(10): fct(*params) #Run first to kick-off Triton autotune
     if(AUTOTUNE_ENABLE.USE_CUDA_GRAPH):
         stream = torch.cuda.Stream()
         torch.cuda.set_stream(stream)
         out = do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
     else:
-        out = do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
+        out = eval_time(fct, params)
     return out
 
 def get_closest_m(M):
@@ -338,17 +361,19 @@ class GemLiteLinearTriton(torch.nn.Module):
         t = [np.inf] * len(self.kernels)
         M = signature[0]
         for i, _kernel in enumerate(self.kernels):
-            if M > 1 and _kernel.matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
+            _matmul_type = _kernel.matmul_type
+            if M > 1 and _matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
                 continue 
-            if M > 1 and _kernel.matmul_type == "GEMV_SPLITK": #skip gemvs for larger batch-sizes: GEMV_SPLTIK
+            if M > 1 and _matmul_type == "GEMV_SPLITK": #skip gemvs for larger batch-sizes: GEMV_SPLTIK
                 continue 
-            if M > 2 and _kernel.matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
+            if M > 2 and _matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
                 continue 
-            if M > 32 and _kernel.matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
+            if M > 32 and _matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
                 continue
-            if M < 16 and _kernel.matmul_type == "GEMM": #skip GEMM for smaller matrices
+            if M < 16 and _matmul_type == "GEMM": #skip GEMM for smaller matrices
                 continue  
-            t[i] = eval_time_for_auto_mode(lambda x: self.forward_manual(x, _kernel.matmul_type), x)
+            #t[i] = eval_time_for_auto_mode(lambda x: self.forward_manual(x, matmul_type=_matmul_type), x)
+            t[i] = eval_time_for_auto_mode(self.forward_manual, [x, _matmul_type])
 
         indx = np.argmin(t)
         GEMLITE_TRITON_CACHE[signature] = {
