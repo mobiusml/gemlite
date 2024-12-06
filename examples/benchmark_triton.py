@@ -1,4 +1,4 @@
-#OMP_NUM_THREADS=16 CUDA_VISIBLE_DEVICES=0 ipython3 benchmark_triton.py #select the right number of threads based on your machine
+#OMP_NUM_THREADS=16 TRITON_PRINT_AUTOTUNING=1 CUDA_VISIBLE_DEVICES=0 ipython3 benchmark_triton.py #select the right number of threads based on your machine
 #################################################################################################################################
 import torch
 import numpy as np
@@ -17,7 +17,7 @@ except:
 
 #GemLite
 from gemlite.core import GemLiteLinearTriton, DType, set_autotune
-set_autotune({'GEMV_REVSPLITK':True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True, use_cuda_graph=False)
+set_autotune({'GEMV_REVSPLITK':True, 'GEMV_SPLITK': True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True, use_cuda_graph=False)
 
 device = 'cuda:0'
 compute_dtype = torch.float16
@@ -33,10 +33,32 @@ W_nbits, group_size = 4, 128
 
 matmul_type = "AUTO" #GEMM, GEMV, GEMV_REVSPLITK, GEMM_SPLITK | AUTO
 
+GemLiteLinearTriton.load_config('test_config.json')
 #################################################################################################################################
 from triton.testing import do_bench
-def eval_time(fct, params): 
-    return do_bench(lambda: fct(**params), warmup=25, rep=200, fast_flush=True, return_mode='min') 
+
+# def eval_time(fct, params): 
+#     return do_bench(lambda: fct(**params), warmup=25, rep=200, fast_flush=True, return_mode='min') 
+
+import random
+def eval_time(fct, params, rep=1000, return_mode='min'):
+    cache = torch.empty(int(256 * 1024 * 1024 // 4), dtype=torch.int, device='cuda')
+
+    t = []
+    for _ in range(rep):
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+
+        cache.zero_() #fast_flush
+        start_event.record()
+        fct(**params)
+        end_event.record()
+        torch.cuda.synchronize()
+        t.append(start_event.elapsed_time(end_event))
+        cache += int(random.random()*1000)  #change cache
+
+    return np.min(t) if return_mode=='min' else np.mean(t[rep//2:])
+
 
 def check_valid(x, W, quant_linear, tol=1e-3):
     y_ref = torch.matmul(x, W.T)
@@ -156,44 +178,51 @@ if(matmul_type == "AUTO"):
     BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
     if(HQQLinearBitBlas is not None):
         HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1, 16]
-    gemlite_linear.forward = gemlite_linear.forward_auto_with_warmup
 
 if(matmul_type == "GEMV"):
     BATCH_SIZES = [1, 2, 4, 8]
-    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV")
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type=matmul_type)
+    if(HQQLinearBitBlas is not None):
+        HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
+
+if(matmul_type == "GEMV_SPLITK"):
+    BATCH_SIZES = [1, 2, 4, 8]
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type=matmul_type)
     if(HQQLinearBitBlas is not None):
         HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMV_REVSPLITK"):
     BATCH_SIZES = [1, 2, 4, 8]
-    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMV_REVSPLITK")
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type=matmul_type)
     if(HQQLinearBitBlas is not None):
         HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMM_SPLITK"):
-    BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64]
-    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMM_SPLITK")
+    BATCH_SIZES = [2, 4, 8, 16, 32, 64]
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type=matmul_type)
     if(HQQLinearBitBlas is not None):
         HQQLinearBitBlas.DEFAULT_BATCHSIZE = [1]
 
 if(matmul_type == "GEMM"):
-    BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
-    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type="GEMM")
+    BATCH_SIZES = [32, 64, 128, 256, 512, 1024]
+    gemlite_linear.forward = lambda x: gemlite_linear.forward_manual(x, matmul_type=matmul_type)
     if(HQQLinearBitBlas is not None):
         HQQLinearBitBlas.DEFAULT_BATCHSIZE = [16]
 
 print("W_nbits", W_nbits, "group_size", group_size, "matmul_type", matmul_type)
+
 for batch_size in BATCH_SIZES:
 
     x = torch.randn((batch_size, in_features), dtype=gemlite_linear.compute_dtype, device='cuda:0')/10.
-    check_valid(x, W, gemlite_linear)
-
+    check_valid(x, W, gemlite_linear) #Check correctness
     ref_time = eval_time(lambda x: torch.matmul(x, W.T), {'x':x.to(W.dtype)}) 
     print("ref_time", ref_time)
+
+    for _ in range(10): gemlite_linear(x); #warnup
+    #gemlite_linear.forward = torch.compile(gemlite_linear.forward, mode='max-autotune-no-cudagraphs', fullgraph=True)
     
-    if(gemlite_linear is not None):
-        triton_time  = eval_time(lambda x: gemlite_linear(x), {'x':x.to(gemlite_linear.compute_dtype)}) 
-        print((batch_size, in_features, out_features), 'Triton Speed-up vs. torch.matmul', np.round(ref_time/triton_time, 2), 'time', triton_time)
+    triton_time  = eval_time(lambda x: gemlite_linear(x), {'x':x.to(gemlite_linear.compute_dtype)}) 
+    print((batch_size, in_features, out_features), 'Triton Speed-up vs. torch.matmul', np.round(ref_time/triton_time, 2), 'time', triton_time)
 
     if(torchao_linear is not None):
         torchao_time = eval_time(lambda x: torchao_linear(x), {'x':x.to(torchao_linear.compute_dtype)}) 
@@ -210,5 +239,4 @@ for batch_size in BATCH_SIZES:
     print('----------------------------------------------')
 
 
-
-
+GemLiteLinearTriton.cache_config('test_config.json')
