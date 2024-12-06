@@ -3,7 +3,7 @@ from torch.utils.cpp_extension import BuildExtension
 
 setup(
     name='gemlite',
-    version="0.4.0",
+    version="0.4.1",
     url="https://github.com/mobiusml/gemlite/",
     author="Dr. Hicham Badri",
     author_email="hicham@mobiuslabs.com",
