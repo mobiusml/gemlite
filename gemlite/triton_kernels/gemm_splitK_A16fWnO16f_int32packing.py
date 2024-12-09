@@ -15,7 +15,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS
     from ..core import GEMLITE_TRITON_CONFIG_CACHE
 
-    m = nargs['M'] 
+    m = 2 ** int(math.ceil(math.log2(nargs['M'])))
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
@@ -23,7 +23,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([nargs[i] for i in KEYS]))
+        _signature = str(tuple([m, n, k, g, e]))
         if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
             _num_stages = _config.pop('num_stages')
