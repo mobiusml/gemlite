@@ -146,6 +146,15 @@ We present various end-2-end Llama results generated with <a href="https://githu
  </center>
 </div> 
 
+
+We also run comparison with VLLM's MarlinHQQ kernel which supports asymmetric quantization with a group size of 64. GemLite matches or even outperforms the highly optimized CUDA kernel end-2-end.
+<div class="row"><center>
+  <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_vllm.svg" alt="llama3_vllm.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
 ### Matmul Performance
 We present performance results across various batch sizes on the RTX 4090. Performance is measured as the speed-up relative to A16W16 (fp16 `torch.matmul`). You can reproduce these results by running `examples/benchmark_triton.py` after installing the necessary dependencies via `install_dependencies.sh`.
 
