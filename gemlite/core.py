@@ -7,7 +7,8 @@ from enum import Enum
 import math, json
 import warnings, random
 from typing import Union, Tuple, Callable
-
+import logging
+    
 #Dtypes
 from .dtypes import *
 
@@ -16,6 +17,7 @@ import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 
+logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
@@ -424,12 +426,16 @@ class GemLiteLinearTriton(torch.nn.Module):
             json.dump(config, json_file)
 
     @staticmethod
-    def load_config(filename):
-        global GEMLITE_TRITON_CONFIG_CACHE
-        with open(filename) as json_file:
-            GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
-
-
+    def load_config(filename, print_error=True):
+        status=False
+        try:
+            with open(filename) as json_file:
+                GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
+                status=True
+        except Exception as e:
+            if(print_error):
+                logger.error(f"Failed to load the cache file '{filename}': {e}")
+        return status 
 ###################################################################################################################################
 ###################################################################################################################################
 GemLiteLinear = GemLiteLinearTriton  # Triton by default
