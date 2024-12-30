@@ -428,15 +428,14 @@ class GemLiteLinearTriton(torch.nn.Module):
     @staticmethod
     def load_config(filename, print_error=True):
         global GEMLITE_TRITON_CONFIG_CACHE
-        status=False
         try:
             with open(filename) as json_file:
                 GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
-                status=True
         except Exception as e:
             if(print_error):
                 logger.error(f"Failed to load the cache file '{filename}': {e}")
-        return status 
+            return False
+        return True 
 ###################################################################################################################################
 ###################################################################################################################################
 GemLiteLinear = GemLiteLinearTriton  # Triton by default
