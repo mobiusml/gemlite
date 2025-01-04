@@ -17,6 +17,9 @@ import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 
+import threading
+FILE_LOCK = threading.Lock()
+
 logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
@@ -394,13 +397,13 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     @staticmethod
     def cache_config(filename, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
-        config = {}
-        try: 
-            with open(filename) as json_file:
+        #Load existing cache if available
+        try:
+            with FILE_LOCK, open(filename, 'r') as json_file:
                 config = json.load(json_file)
         except:
-            pass
-
+            config = {}
+    
         #Can't use GEMLITE_TRITON_MAPPING for some reason kernel.cache is empty
         _GEMLITE_TRITON_MAPPING = {}
         from .triton_kernels.gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f
@@ -422,14 +425,15 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(name not in config): config[name] = {}
             config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, prune_keys))
 
-        with open(filename, "w") as json_file: 
+        #Save combined cache
+        with FILE_LOCK, open(filename, "w") as json_file: 
             json.dump(config, json_file)
 
     @staticmethod
     def load_config(filename, print_error=True):
         global GEMLITE_TRITON_CONFIG_CACHE
         try:
-            with open(filename) as json_file:
+            with FILE_LOCK, open(filename, 'r') as json_file:
                 GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
         except Exception as e:
             if(print_error):
