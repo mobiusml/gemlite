@@ -96,8 +96,10 @@ gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #
 
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
 ```Python
-GemLiteLinear.cache_config('a100_config.json') #Cache- run this over multiple batch-sizes
-GemLiteLinear.load_config('a100_config.json') #Load
+import gemlite
+gemlite.core.GEMLITE_TRITON_RESTRICT_M = True #Restrict the batch-size to powers of 2 if True
+gemlite.core.GemLiteLinear.cache_config('gemlite_config.json') #Cache- run this over multiple batch-sizes
+gemlite.core.GemLiteLinear.load_config('gemlite_config.json') #Load
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 

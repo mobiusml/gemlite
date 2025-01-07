@@ -21,9 +21,18 @@ import threading
 FILE_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
+
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
+GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
+GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
+GEMLITE_TRITON_CONFIG_CACHE = {}
+GEMLITE_TRITON_CACHE        = {}
+GEMLITE_TRITON_RESTRICT_M   = False
+_GROUP_SIZE_WARNED          = False
+
 def eval_time_triton(fct, params):
     return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
 
@@ -58,25 +67,25 @@ def eval_time_for_auto_mode(fct, params):
     return out
 
 def get_closest_m(M):
-    return 2 ** int(math.ceil(math.log2(M)))
+    #Next power of 2
+    return 2 ** int(math.ceil(math.log2(M))) 
 
 def cache_kernel_config(kernel, prune_keys):
+    global GEMLITE_TRITON_RESTRICT_M
     kernel_cache = kernel.cache
     k_config = {}
     if(len(kernel_cache) > 0):
         for k in kernel_cache:
-            key = str(k[:len(prune_keys)])
-            k_config[key] = kernel_cache[k].all_kwargs()
+            key = k[:len(prune_keys)]
+            if(GEMLITE_TRITON_RESTRICT_M):
+                key    = list(key)
+                key[0] = get_closest_m(key[0]) #restrict batch-size
+                key    = tuple(key)
+            k_config[str(key)] = kernel_cache[k].all_kwargs()
     return k_config
 
-GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
-GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
-GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
-GEMLITE_TRITON_CONFIG_CACHE = {}
-GEMLITE_TRITON_CACHE        = {}
-
-# Triton
-_GROUP_SIZE_WARNED = False;
+###################################################################################################################################
+#Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.FP8e5, DType.INT8]
@@ -440,6 +449,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 logger.error(f"Failed to load the cache file '{filename}': {e}")
             return False
         return True 
+
 ###################################################################################################################################
 ###################################################################################################################################
 GemLiteLinear = GemLiteLinearTriton  # Triton by default

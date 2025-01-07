@@ -13,9 +13,9 @@ MATMUL_TYPE = "GEMM_SPLITK"
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS
-    from ..core import GEMLITE_TRITON_CONFIG_CACHE
+    from ..core import GEMLITE_TRITON_CONFIG_CACHE, GEMLITE_TRITON_RESTRICT_M, get_closest_m
 
-    m = 2 ** int(math.ceil(math.log2(nargs['M'])))
+    m = get_closest_m(nargs['M']) if GEMLITE_TRITON_RESTRICT_M else nargs['M']
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
