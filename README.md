@@ -70,7 +70,7 @@ gemlite_linear = GemLiteLinear(
 )
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
-gemlite_linear.pack(W_q, scales, zeros, bias)
+gemlite_linear.pack(W_q, scales, zeros, bias, packing_bitwidth=32) #32-bit packing by default
 
 #For activation quantization you need to override this function which should return the activation scales:
 #gemlite_linear.scale_activations = f(x: torch.Tensor) -> x_scaled: torch.Tensor, scales: torch.Tensor # x ~ x_scaled * scaled
@@ -115,6 +115,11 @@ We implement various versions of the Triton kernels:
 This newly proposed algorithm in GemLite operates in contrast to the GEMM Split-K approach, but within a GEMV context. By doubling the workload per Triton program launched in the GEMV kernel, it reduces the frequency of loading scales/zeros and lowers the number of threads needed. As a result, this method delivers the best performance for batch-size=1 decoding. 
 
 All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as well as both fp16 and int8/fp8 activations.
+
+## Limitations
+* All kernels require a minimum group-size of 32.
+* The default accumulation DType for FP16 inputs is FP16. If you encounter precision issues, you can try <a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/core.py#L28">reverting to FP32</a>.
+* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_revsplitK_A16fWnO16f_int32packing.py">Gemv RevSplit-K</a></b>, which is the default kernel for batch-size=1, does not work with 1-bit weights packed as 32-bit with a group-size of 32. In this case, you should use 8-bit bitpacking via `.pack(...,packing_bitwidth=8)`, or revert to using the `GEMV` kernel instead.
 
 ## Performance
 ### End-2-End Performance
