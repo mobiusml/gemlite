@@ -62,8 +62,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Since we load the scales / zeros once per split_k pass, we need this
         if(not (block_size_k * split_k <= g)):
             continue
+
+        #Block size should be compatible with minimum-packing
+        if(block_size_k < e):
+            continue
         
-        #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
+        #K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
         if(not is_divisible(k, block_size_k * split_k)):
             continue
 
@@ -98,7 +102,7 @@ def get_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
         for _N in [128, 256, 512]:
-            for _K in [16, 32, 64]: 
+            for _K in [8, 16, 32, 64]: 
                 for _w in [2, 4]:
                     for _s in [1, 2]:
                         for _A_load_order in [0, 1]: 
@@ -244,7 +248,6 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
 
     #Dot product
     if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
-
     if(dot_prod_mode == 0):
         acc = tl.sum(a.to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True)
     if(dot_prod_mode == 1):
