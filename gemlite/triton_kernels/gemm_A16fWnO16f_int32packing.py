@@ -83,6 +83,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(m >= 256): block_size_m = min(max(block_size_m, 64), 256)  #[64, 256]
         if(m >= 512): block_size_m = min(max(block_size_m, 128), 256) #[128, 256]
 
+        #block_size_m = min(block_size_m, 32)
+
         #Filter 
         block_area = block_size_k * block_size_n
         if(block_area > 4096 * 4): #Limit area for faster autotuning. Use for more 4096 * 8
@@ -305,7 +307,8 @@ def gemm_A16fWnO16f_int32packing_kernel(
         
         #Dot
         acc = tl.dot(a, b.to(input_a_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")
-
+        #acc += tl.dot(a, b.to(input_a_dtype), out_dtype=acc_dtype, input_precision="tf32") #Triton 3.2 int8 fix
+        
         #Advance
         if(use_tma):
             desc_offs_ak += BLOCK_SIZE_K
