@@ -56,9 +56,13 @@ pip install git+https://github.com/mobiusml/gemlite/
 
 ## Usage
 ```Python
-from gemlite.core import DType, GemLiteLinear
+from gemlite.core import DType, GemLiteLinear, GEMLITE_ACC_DTYPE
 
-#Currently using the Triton backend as the default
+#Set accumulation dtyoe
+GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100
+#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090
+
+#Main constructor
 gemlite_linear = GemLiteLinear(
     W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]
     group_size=group_size, # any group_size divisible by 32 - enable autotune for group_size < 128 (!)
@@ -78,6 +82,7 @@ gemlite_linear.pack(W_q, scales, zeros, bias, packing_bitwidth=32) #32-bit packi
 #Forward
 out = gemlite_linear(x)
 ```
+### Helper Functions
 Additionally, we offer helper functions that operate as follows:
 
 ```Python
@@ -93,7 +98,7 @@ gemlite_linear = A16Wn(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP16 ac
 gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP8 activations
 
 ```
-
+### Config Caching
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
 ```Python
 import gemlite
