@@ -25,12 +25,12 @@ logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
-GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CONFIG_CACHE = {}
 GEMLITE_TRITON_CACHE        = {}
-GEMLITE_TRITON_RESTRICT_M   = False
+GEMLITE_TRITON_RESTRICT_M   = True
 _GROUP_SIZE_WARNED          = False
 
 def eval_time_triton(fct, params):
