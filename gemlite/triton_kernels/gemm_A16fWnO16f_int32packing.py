@@ -8,14 +8,45 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
+KERNEL_CACHE = {}
+ENABLE_TMA   = False #True
+try:
+    import triton.tools.experimental_descriptor
+except:
+    ENABLE_TMA = False
+    print('Failed to load triton.tools.experimental_descriptor. TMA support will be disabled.')
+
+ENABLE_AUTOTUNE = False if (ENABLE_TMA) else AUTOTUNE_ENABLE.GEMM #TODO: ENABLE AUTOTUNING WITH TMA
+
 KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
 MATMUL_TYPE = "GEMM"
 
+def get_closest_m(M):
+    return 2 ** int(math.ceil(math.log2(M))) 
+
+def cache_kernel_config(kernel, prune_keys=KEYS):
+    kernel_cache = kernel.cache
+    k_config = {}
+    if(len(kernel_cache) > 0):
+        for k in kernel_cache:
+            key = k[:len(prune_keys)]
+            #Restrict to powers of 2
+            key    = list(key)
+            key[0] = get_closest_m(key[0]) #restrict batch-size
+            key    = tuple(key)
+            k_config[str(key)] = kernel_cache[k].all_kwargs()
+    return k_config
+
 def kernel_config_pruner(configs, nargs, **kwargs):
-    global KEYS
+    global KEYS, KERNEL_CACHE
     from ..core import GEMLITE_TRITON_CONFIG_CACHE, GEMLITE_TRITON_RESTRICT_M, get_closest_m
 
-    m = get_closest_m(nargs['M']) if GEMLITE_TRITON_RESTRICT_M else nargs['M']
+    if(MATMUL_TYPE not in GEMLITE_TRITON_CONFIG_CACHE):
+        GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE] = {}
+    KERNEL_CACHE.update(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE])
+    GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE].update(KERNEL_CACHE)
+
+    m = get_closest_m(nargs['M']) #if GEMLITE_TRITON_RESTRICT_M else nargs['M']
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
@@ -86,7 +117,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'meta_evict_policy': meta_evict_policy,
             },
             num_stages=num_stages,
-            num_warps=num_warps
+            num_warps=num_warps,
         )
 
 
@@ -110,15 +141,16 @@ def get_autotune_config():
     return _configs
 
 
-#4090 RTX
+compute_capability = torch.cuda.get_device_capability(0)
+
 def get_default_config():
-    #small batch, not sure what is the right default cnnfig here.
-    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
-                            num_warps=4, num_stages=1),]
+    if(compute_capability == (9, 0)): #H100
+        #return [triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':0, 'meta_evict_policy':''}, num_warps=8, num_stages=5),]
+        return [triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':0, 'meta_evict_policy':''}, num_warps=8, num_stages=5),]
+    
+    #Default
+    return [triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, num_warps=4, num_stages=1),]
 
-ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
-
-#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
     key = KEYS, #['CLOSEST_M', 'N', 'K', 'group_size', 'elements_per_sample'],
@@ -131,6 +163,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 @triton.jit
 def gemm_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
+    a_desc_ptr, b_desc_ptr, c_desc_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
     ######### Quant parms #########
@@ -144,7 +177,8 @@ def gemm_A16fWnO16f_int32packing_kernel(
     stride_cm, stride_cn,
     stride_meta_g, stride_meta_n,
     ######### Dtypes #########
-    input_dtype: tl.constexpr,
+    input_a_dtype: tl.constexpr,
+    input_b_dtype: tl.constexpr,
     output_dtype: tl.constexpr,
     acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
@@ -158,6 +192,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     GROUP_SIZE_M: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,
     data_contiguous: tl.constexpr,
+    use_tma: tl.constexpr = False,
 ):
     """
     Based on https://github.com/fpgaminer/GPTQ-triton
@@ -180,12 +215,9 @@ def gemm_A16fWnO16f_int32packing_kernel(
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
     
     #Offsets
+    offs_k  = tl.arange(0, BLOCK_SIZE_K)
     offs_m  = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_n  = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    offs_k  = tl.arange(0, BLOCK_SIZE_K)
-
-    #Vectorized coalesced load
-    ##############################
     offs_am = offs_m
     offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
 
@@ -195,13 +227,18 @@ def gemm_A16fWnO16f_int32packing_kernel(
     else:
         offs_bn = offs_n
         offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-    ###############################
 
     #Inputs
-    a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)  
-    a_mask  = (offs_am[:, None] < M)
-    b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
-
+    if(use_tma):
+        desc_offs_ak = 0 
+        desc_offs_bk = 0 
+        desc_offs_am = tl.multiple_of((pid_m * BLOCK_SIZE_M) % M, BLOCK_SIZE_M)
+        desc_offs_bn = tl.multiple_of((pid_n * BLOCK_SIZE_N) % N, BLOCK_SIZE_N)
+    else:
+        a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak)  
+        a_mask  = (offs_am[:, None] < M)
+        b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
+    
     #Meta data stuff
     q_shift     = ((offs_k  % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
@@ -218,12 +255,21 @@ def gemm_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            if(use_tma):
+                a = tl._experimental_descriptor_load(a_desc_ptr, [desc_offs_am, desc_offs_ak], [BLOCK_SIZE_M, BLOCK_SIZE_K], input_a_dtype)
+            else:
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        if(use_tma):
+            b = tl._experimental_descriptor_load(b_desc_ptr, [desc_offs_bk, desc_offs_bn], [BLOCK_SIZE_K, BLOCK_SIZE_N], input_b_dtype)
+        else:
+            b = tl.load(b_ptrs, eviction_policy='evict_first')
 
         if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            if(use_tma):
+                a = tl._experimental_descriptor_load(a_desc_ptr, [desc_offs_am, desc_offs_ak], [BLOCK_SIZE_M, BLOCK_SIZE_K], input_a_dtype)
+            else:
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Load meta-data  
         if(W_group_mode > 0):          
@@ -243,20 +289,30 @@ def gemm_A16fWnO16f_int32packing_kernel(
             zeros = None
 
         if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            if(use_tma):
+                a = tl._experimental_descriptor_load(a_desc_ptr, [desc_offs_am, desc_offs_ak], [BLOCK_SIZE_M, BLOCK_SIZE_K], input_a_dtype)
+            else:
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
 
         if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            if(use_tma):
+                a = tl._experimental_descriptor_load(a_desc_ptr, [desc_offs_am, desc_offs_ak], [BLOCK_SIZE_M, BLOCK_SIZE_K], input_a_dtype)
+            else:
+                a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")
+        acc = tl.dot(a, b.to(input_a_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")
 
         #Advance
-        a_ptrs += BLOCK_SIZE_K * stride_ak
-        b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
+        if(use_tma):
+            desc_offs_ak += BLOCK_SIZE_K
+            desc_offs_bk += BLOCK_SIZE_K // elements_per_sample
+        else:
+            a_ptrs += BLOCK_SIZE_K * stride_ak
+            b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
 
     ##################################################################
     #Channel-wise scaling
@@ -276,13 +332,16 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
     acc = acc.to(output_dtype)
     ##################################################################
-
     #Output
-    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
-    c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
-    tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
+    if(use_tma):
+        tl._experimental_descriptor_store(c_desc_ptr, acc, [desc_offs_am, desc_offs_bn])
+    else:
+        offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+        offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+        c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+        tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
+################################################################################################################
 
 
 _costum_op_id = '_' + str(int(random.random()*10000))
@@ -294,16 +353,39 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
                                         ) -> Tensor:
     
-
+    global KERNEL_CACHE
+    
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
+    a_desc, b_desc, c_desc, use_tma = None, None, None, False
+
+    #key = str(tuple([get_closest_m(M), N, K, group_size, elements_per_sample]))
+    #if((key in KERNEL_CACHE) and ENABLE_TMA and (elements_per_sample==1)):
+        #_KERNEL_CACHE = KERNEL_CACHE[key]
+    
+    if(ENABLE_TMA and (elements_per_sample==1)): #TODO: Enable for packed data
+        _KERNEL_CACHE = get_autotune_config()[0].all_kwargs()
+
+        BLOCK_SIZE_M = _KERNEL_CACHE['BLOCK_SIZE_M'] 
+        BLOCK_SIZE_N = _KERNEL_CACHE['BLOCK_SIZE_N']  
+        BLOCK_SIZE_K = _KERNEL_CACHE['BLOCK_SIZE_K']  
+        num_stages   = _KERNEL_CACHE['num_stages'] 
+        num_warps    = _KERNEL_CACHE['num_warps']  
+
+        a_desc  = triton.tools.experimental_descriptor.create_2d_tma_descriptor(x.data_ptr(), M, K, BLOCK_SIZE_M, BLOCK_SIZE_K, x.element_size())
+        b_desc  = triton.tools.experimental_descriptor.create_2d_tma_descriptor(W_q.data_ptr(), K // elements_per_sample, N, BLOCK_SIZE_K, BLOCK_SIZE_N, W_q.element_size())
+        c_desc  = triton.tools.experimental_descriptor.create_2d_tma_descriptor(output.data_ptr(), M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, output.element_size())
+        use_tma = True
+
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
+    print('here')
     gemm_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
+        a_desc, b_desc, c_desc,
         scales, zeros, scales_x,
         M, N, K,
         W_nbits, group_size, unpack_mask, elements_per_sample,  
@@ -312,16 +394,23 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
         ########################
-        input_dtype  = DTYPE_TO_TRITON[input_dtype],
-        output_dtype = DTYPE_TO_TRITON[output_dtype],
-        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
-        meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
+        input_a_dtype  = DTYPE_TO_TRITON[input_dtype],
+        input_b_dtype  = TORCH_DTYPE_TO_TRITON[W_q.dtype],
+        output_dtype   = DTYPE_TO_TRITON[output_dtype],
+        acc_dtype      = DTYPE_TO_TRITON[acc_dtype],
+        meta_dtype     = DTYPE_TO_TRITON[meta_dtype],
         ########################
         channel_scale_mode = channel_scale_mode,
         W_group_mode       = W_group_mode,
         zero_is_scalar     = zeros.numel() == 1,
         data_contiguous    = data_contiguous,
+        ########################
+        use_tma = use_tma,
     )
+
+    # if(use_tma is False):
+    #     #KERNEL_CACHE.update(cache_kernel_config(gemm_A16fWnO16f_int32packing_kernel))
+    #     KERNEL_CACHE[key] = get_autotune_config()[0].all_kwargs()
 
     return output
 
