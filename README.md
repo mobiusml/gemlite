@@ -58,8 +58,8 @@ pip install git+https://github.com/mobiusml/gemlite/
 ```Python
 from gemlite.core import DType, GemLiteLinear, GEMLITE_ACC_DTYPE
 
-#Set accumulation dtyoe
-GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100
+#Set accumulation dtype (only do this once)
+GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100 (default)
 #GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090
 
 #Main constructor
