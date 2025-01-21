@@ -16,8 +16,11 @@ except:
     pass
 
 #GemLite
-from gemlite.core import GemLiteLinearTriton, DType, set_autotune
+from gemlite.core import GemLiteLinearTriton, DType, set_autotune, GEMLITE_ACC_DTYPE
 set_autotune({'GEMV_REVSPLITK':True, 'GEMV_SPLITK': True, 'GEMV':True, 'GEMM_SPLITK':True, 'GEMM':True}, exhaustive=True, use_cuda_graph=False)
+
+GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100
+#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090
 
 device = 'cuda:0'
 compute_dtype = torch.float16
