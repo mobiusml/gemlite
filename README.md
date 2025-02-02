@@ -33,6 +33,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 - [Contributing](#contributing)
 
 # Recent Highlights
+- GemLite is now integrated with <a href="https://github.com/pytorch/ao">TorchAO</a>/<a href="https://github.com/sgl-project/sglang">SGLang</a> for 4-bit quantization. Check-out the <a href="https://pytorch.org/blog/accelerating-llm-inference/">blogpost</a>!
 - **Major performance improvement**: especially on the A100 and H100.
 - **Flexible bitpacking**: use 8-bit packing for improved batched performance on the A100 and H100 with packed data.
 - **Autotune caching**: save/load the best autotune configs across all the kernels with a single line of code.
