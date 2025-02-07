@@ -46,6 +46,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = config.kwargs['BLOCK_SIZE_K'] #min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
+        #Skip larger blocks
+        if(block_size_k > k or block_size_n > n):
+            continue
+            
         #Only 1 is supported
         block_size_m = 1 
         
