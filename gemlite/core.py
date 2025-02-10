@@ -68,7 +68,7 @@ def eval_time_for_auto_mode(fct, params):
 
 def get_closest_m(M):
     #Next power of 2
-    return 2 ** int(math.ceil(math.log2(M))) 
+    return 2 ** int(math.ceil(math.log2(M))) if (M > 0) else 0
 
 def cache_kernel_config(kernel, prune_keys):
     global GEMLITE_TRITON_RESTRICT_M
