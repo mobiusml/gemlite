@@ -4,7 +4,7 @@ import torch
 from torch import Tensor
 import numpy as np
 from enum import Enum
-import math, json
+import math, json, os
 import warnings, random
 from typing import Union, Tuple, Callable
 import logging
@@ -16,6 +16,7 @@ from .dtypes import *
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
+from .triton_kernels.utils import gpu_has_more_shared_memory
 
 import threading
 FILE_LOCK = threading.Lock()
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
-GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CONFIG_CACHE = {}
@@ -447,6 +448,8 @@ class GemLiteLinearTriton(torch.nn.Module):
     @staticmethod
     def load_config(filename, print_error=True):
         global GEMLITE_TRITON_CONFIG_CACHE
+        if(filename is None):
+            return False
         try:
             with FILE_LOCK, open(filename, 'r') as json_file:
                 GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
@@ -456,6 +459,33 @@ class GemLiteLinearTriton(torch.nn.Module):
             return False
         return True 
 
+    @staticmethod
+    def reset_config():
+        global GEMLITE_TRITON_CONFIG_CACHE
+        GEMLITE_TRITON_CONFIG_CACHE = {}
+
 ###################################################################################################################################
 ###################################################################################################################################
 GemLiteLinear = GemLiteLinearTriton  # Triton by default
+
+#Setting default config
+def get_default_cache_config():
+    root_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../configs/")
+    
+    def get_tags(path):
+        return [f.split('.')[0] for f in os.listdir(path)]
+
+    name = torch.cuda.get_device_properties(0).name.lower()
+    tags = get_tags(root_path)
+
+    selected_tag = None
+    for tag in tags:
+        if(tag in name):
+            selected_tag = os.path.join(root_path, tag + '.json')
+            break
+    
+    return selected_tag
+
+selected_tag = get_default_cache_config()
+if(GemLiteLinear.load_config(selected_tag)):
+    logger.warning('Loaded ' + selected_tag + ' config.')
