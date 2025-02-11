@@ -10,7 +10,7 @@ setup(
     license="Apache 2",
     packages=find_packages(include=["gemlite", "gemlite.*"]),
     package_data={
-        "gemlite": ["gemlite/*.py"],
+        "gemlite": ["gemlite/*.py", "configs/*.json"],
     },
     include_package_data=True,
     cmdclass={'build_ext': BuildExtension},
