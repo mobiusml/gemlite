@@ -470,7 +470,7 @@ GemLiteLinear = GemLiteLinearTriton  # Triton by default
 
 #Setting default config
 def get_default_cache_config():
-    root_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../configs/")
+    root_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs/")
     
     def get_tags(path):
         return [f.split('.')[0] for f in os.listdir(path)]
