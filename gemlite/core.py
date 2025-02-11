@@ -89,6 +89,7 @@ def cache_kernel_config(kernel, prune_keys):
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.FP8e5, DType.INT8]
+    MIN_SIZE              = 128
 
     def __init__(
         self,
@@ -104,13 +105,20 @@ class GemLiteLinearTriton(torch.nn.Module):
         global _GROUP_SIZE_WARNED
 
         super().__init__()
+
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
-        if in_features % 128 != 0 or out_features % 128 != 0:
-            raise NotImplementedError("Invalid input shapes")
+        
+        if in_features % GemLiteLinearTriton.MIN_SIZE != 0 or out_features % GemLiteLinearTriton.MIN_SIZE != 0:
+            raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. Should be >= ' + str(GemLiteLinearTriton.MIN_SIZE))
+
+        #Warning: Input dtype should be the same as dequantize() weights dtype.
+        if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
+            raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
 
         if(group_size is not None):
-            assert group_size >= 32, "Only group_size >= 32 is supported."
+            if(group_size >= 32):
+                raise NotImplementedError("Only group_size >= 32 is supported.")
 
         group_size = 1 if (group_size is None) else group_size
 
@@ -129,10 +137,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.meta_dtype    = DType.FP16
         self.kernels       = GEMLITE_TRITON_KERNELS
 
-        #Warning: Input dtype should be the same as dequantize() weights dtype.
-        if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
-            raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
-
         #Accumulation
         self.acc_dtype = GEMLITE_ACC_DTYPE[self.input_dtype] if(acc_dtype is None) else acc_dtype
 
@@ -149,8 +153,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.default_gemv = self.get_default_gemv()
             
         #Set torch flags
-        torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
-
+        try:
+            torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
+        except:
+            pass
 
     #Returns the default gemv choice based on the config
     def get_default_gemv(self):
