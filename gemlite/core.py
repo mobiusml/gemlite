@@ -475,7 +475,7 @@ def get_default_cache_config():
     def get_tags(path):
         return [f.split('.')[0] for f in os.listdir(path)]
 
-    name = torch.cuda.get_device_properties(0).name.lower()
+    name = torch.cuda.get_device_properties(0).name.lower().replace(' ', '_')
     tags = get_tags(root_path)
 
     selected_tag = None
