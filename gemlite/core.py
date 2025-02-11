@@ -117,7 +117,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
 
         if(group_size is not None):
-            if(group_size >= 32):
+            if(group_size < 32):
                 raise NotImplementedError("Only group_size >= 32 is supported.")
 
         group_size = 1 if (group_size is None) else group_size
