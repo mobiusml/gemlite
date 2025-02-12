@@ -412,7 +412,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         return self.forward_manual(x, GEMLITE_TRITON_CACHE[_signature]["matmul_type"])
 
     @staticmethod
-    def cache_config(filename, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
+    def cache_config(filename: str, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
         #Load existing cache if available
         try:
             with FILE_LOCK, open(filename, 'r') as json_file:
@@ -438,7 +438,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         _GEMLITE_TRITON_MAPPING['GEMM'] = gemm_A16fWnO16f
 
         for name in _GEMLITE_TRITON_MAPPING:
-            if(name not in config): config[name] = {}
+            if(name not in config): 
+                config[name] = {}
             config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, prune_keys))
 
         #Save combined cache
@@ -446,13 +447,21 @@ class GemLiteLinearTriton(torch.nn.Module):
             json.dump(config, json_file)
 
     @staticmethod
-    def load_config(filename, print_error=True):
+    def load_config(filename: str, print_error: bool = True, overwrite: bool = False):
         global GEMLITE_TRITON_CONFIG_CACHE
         if(filename is None):
             return False
         try:
             with FILE_LOCK, open(filename, 'r') as json_file:
-                GEMLITE_TRITON_CONFIG_CACHE = json.load(json_file)
+                config = json.load(json_file)
+                if(overwrite):
+                    GEMLITE_TRITON_CONFIG_CACHE = config
+                else:
+                    for name in config:
+                        if(name not in GEMLITE_TRITON_CONFIG_CACHE): 
+                            GEMLITE_TRITON_CONFIG_CACHE[name] = {}
+                        GEMLITE_TRITON_CONFIG_CACHE[name].update(config[name])
+
         except Exception as e:
             if(print_error):
                 logger.error(f"Failed to load the cache file '{filename}': {e}")
