@@ -410,6 +410,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     @staticmethod
     def cache_config(filename: str):
+        global GEMLITE_TRITON_CONFIG_CACHE
         #Load existing cache if available
         try:
             with FILE_LOCK, open(filename, 'r') as json_file:
@@ -437,6 +438,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         for name in _GEMLITE_TRITON_MAPPING:
             if(name not in config): 
                 config[name] = {}
+            
+            if(name in GEMLITE_TRITON_CONFIG_CACHE):
+                config[name].update(GEMLITE_TRITON_CONFIG_CACHE[name])
+
             config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 5)) #5: len(prune_keys)
 
         #Save combined cache
