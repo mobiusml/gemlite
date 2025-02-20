@@ -55,7 +55,7 @@ def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800']):
 
 #Next power of 2
 M_MAXVAL  = 1024
-M_MAPPING = {M:min(2 ** int(math.ceil(math.log2(M))), M_MAXVAL) if (M > 0) else 0 for M in range(M_MAXVAL)}
+M_MAPPING = {M:min(2 ** int(math.ceil(math.log2(M))), M_MAXVAL) if (M > 0) else 0 for M in range(M_MAXVAL + 1)}
 def get_closest_m_fast_autotune(M):
     return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
 
