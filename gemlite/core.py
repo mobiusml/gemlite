@@ -17,6 +17,7 @@ import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 from .triton_kernels.utils import gpu_has_more_shared_memory
+from .triton_kernels import utils
 
 import threading
 FILE_LOCK = threading.Lock()
@@ -31,7 +32,6 @@ GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CONFIG_CACHE = {}
 GEMLITE_TRITON_CACHE        = {}
-GEMLITE_TRITON_RESTRICT_M   = True
 _GROUP_SIZE_WARNED          = False
 
 def eval_time_triton(fct, params):
@@ -67,23 +67,20 @@ def eval_time_for_auto_mode(fct, params):
         out = eval_time(fct, params)
     return out
 
-def get_closest_m(M):
-    #Next power of 2
-    return 2 ** int(math.ceil(math.log2(M))) if (M > 0) else 0
-
-def cache_kernel_config(kernel, prune_keys):
-    global GEMLITE_TRITON_RESTRICT_M
+def cache_kernel_config(kernel, num_keys):
     kernel_cache = kernel.cache
     k_config = {}
     if(len(kernel_cache) > 0):
         for k in kernel_cache:
-            key = k[:len(prune_keys)]
-            if(GEMLITE_TRITON_RESTRICT_M):
-                key    = list(key)
-                key[0] = get_closest_m(key[0]) #restrict batch-size
-                key    = tuple(key)
+            key    = list(k[:num_keys])
+            key[0] = utils.get_closest_m(key[0]) #restrict batch-size
+            key    = tuple(key)
             k_config[str(key)] = kernel_cache[k].all_kwargs()
     return k_config
+
+#Set M autotune logic
+def set_autotune_setting(fct): #fct = lambda M: M for max-autotune
+    utils.get_closest_m = fct 
 
 ###################################################################################################################################
 #Main class
@@ -412,7 +409,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         return self.forward_manual(x, GEMLITE_TRITON_CACHE[_signature]["matmul_type"])
 
     @staticmethod
-    def cache_config(filename: str, prune_keys = ['M', 'N', 'K', 'group_size', 'elements_per_sample']):
+    def cache_config(filename: str):
         #Load existing cache if available
         try:
             with FILE_LOCK, open(filename, 'r') as json_file:
@@ -440,7 +437,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         for name in _GEMLITE_TRITON_MAPPING:
             if(name not in config): 
                 config[name] = {}
-            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, prune_keys))
+            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 5)) #5: len(prune_keys)
 
         #Save combined cache
         with FILE_LOCK, open(filename, "w") as json_file: 

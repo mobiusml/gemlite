@@ -6,16 +6,16 @@ import triton
 import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
-from .utils import *
+from . import utils
+from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize
 
-KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"
 
 def kernel_config_pruner(configs, nargs, **kwargs):
-    global KEYS
-    from ..core import GEMLITE_TRITON_CONFIG_CACHE, GEMLITE_TRITON_RESTRICT_M, get_closest_m
+    from ..core import GEMLITE_TRITON_CONFIG_CACHE
 
-    m = get_closest_m(nargs['M']) if GEMLITE_TRITON_RESTRICT_M else nargs['M']
+    m = nargs['M'] 
     n = nargs['N'] 
     k = nargs['K'] 
     g = nargs['group_size']
@@ -23,20 +23,16 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([m, n, k, g, e]))
+        _signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
         if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
             _num_stages = _config.pop('num_stages')
             _num_warps  = _config.pop('num_warps')
             _num_ctas   = _config.pop('num_ctas')
 
-            yield triton.Config(_config,
-                num_stages=_num_stages,
-                num_warps=_num_warps,
-            )
-
+            yield triton.Config(_config, num_stages=_num_stages, num_warps=_num_warps)
             return
-
+            
     used = set()
     for config in configs:
         block_size_m = config.kwargs['BLOCK_SIZE_M']
@@ -50,7 +46,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(m >= 64) : block_size_m = min(max(block_size_m, 32), 64)   #[32, 64]
         if(m >= 128): block_size_m = min(max(block_size_m, 64), 128)  #[64, 128]
         if(m >= 256): block_size_m = min(max(block_size_m, 64), 256)  #[64, 256]
-        if(m >= 512): block_size_m = min(max(block_size_m, 128), 256) #[128, 256]
+        if(m >= 512): block_size_m = min(max(block_size_m, 64), 256)  #[64, 256]
 
         #Filter 
         block_area = block_size_k * block_size_n
@@ -91,7 +87,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 
 def get_autotune_config():
-    _stages  = [1, 4, 5] if gpu_has_more_shared_memory() else [1, 2, 4]
+    _stages  = [1, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
     for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
@@ -118,10 +114,9 @@ def get_default_config():
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
-#@triton.heuristics(values={'CLOSEST_M': lambda args: 2 ** int(math.ceil(math.log2(args['M'])))})
 @triton.autotune(
     configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = KEYS, #['CLOSEST_M', 'N', 'K', 'group_size', 'elements_per_sample'],
+    key = KEYS, 
     prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
     warmup = 50, 
     rep = 50,
@@ -132,7 +127,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 def gemm_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
-    M, N, K, 
+    M, N, K, M_CLOSEST,
     ######### Quant parms #########
     W_nbits: tl.constexpr, 
     group_size: tl.constexpr, 
@@ -297,6 +292,8 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
+    M_CLOSEST = utils.get_closest_m(M)
+
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
@@ -305,7 +302,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     gemm_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
-        M, N, K,
+        M, N, K, M_CLOSEST,
         W_nbits, group_size, unpack_mask, elements_per_sample,  
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),

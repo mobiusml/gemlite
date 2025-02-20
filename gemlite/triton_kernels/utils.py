@@ -1,4 +1,4 @@
-import torch, triton
+import torch, triton, math
 import triton.language as tl
 from ..dtypes import *
 
@@ -52,3 +52,11 @@ def is_divisible(dividend, divisor):
 def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800']): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
+
+#Next power of 2
+M_MAXVAL  = 1024
+M_MAPPING = {M:min(2 ** int(math.ceil(math.log2(M))), M_MAXVAL) if (M > 0) else 0 for M in range(M_MAXVAL)}
+def get_closest_m_fast_autotune(M):
+    return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
+
+get_closest_m = get_closest_m_fast_autotune

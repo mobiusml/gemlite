@@ -58,11 +58,16 @@ pip install git+https://github.com/mobiusml/gemlite/
 
 ## Usage
 ```Python
-from gemlite.core import DType, GemLiteLinear, GEMLITE_ACC_DTYPE
+from gemlite import DType, GemLiteLinear
 
 #Set accumulation dtype (only do this once)
-GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100 (default)
-#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090
+#from gemlite import GEMLITE_ACC_DTYPE
+#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100 (default)
+#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090 (default)
+
+#Set autotune (by default uses powers of 2 up to 1024)
+#from gemlite import set_autotune_setting
+#set_autotune_setting(lambda M: M) #max-autotune example
 
 #Main constructor
 gemlite_linear = GemLiteLinear(
@@ -104,9 +109,9 @@ gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
 ```Python
 import gemlite
-gemlite.core.GEMLITE_TRITON_RESTRICT_M = True #Restrict the batch-size to powers of 2 if True
-gemlite.core.GemLiteLinear.cache_config('gemlite_config.json') #Cache- run this over multiple batch-sizes
-gemlite.core.GemLiteLinear.load_config('gemlite_config.json') #Load
+gemlite.cache_config('gemlite_config.json') #Cache- run this over multiple batch-sizes
+gemlite.load_config('gemlite_config.json') #Load
+gemlite.reset_config() #resets cache config for all kernels
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
