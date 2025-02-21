@@ -8,6 +8,7 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from . import utils
 from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize
+from .triton_configs import AUTOTUNE_CONFIG
 
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"
@@ -113,15 +114,6 @@ def get_default_config():
                             num_warps=4, num_stages=1),]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
-
-@triton.autotune(
-    configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = KEYS, 
-    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup = 50, 
-    rep = 50,
-    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
-)
 
 @triton.jit
 def gemm_A16fWnO16f_int32packing_kernel(
@@ -293,13 +285,27 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
     M_CLOSEST = utils.get_closest_m(M)
-
+    config = AUTOTUNE_CONFIG.GEMM.get((M_CLOSEST, N, K, group_size, elements_per_sample), None)
+    if config is None:
+        config = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config()
+        try: import triton_dejavu; _autotune_fn = triton_dejavu.autotune
+        except: _autotune_fn = triton.autotune
+    else: _autotune_fn = triton.autotune
+    autotune_fn = _autotune_fn(
+            configs = config,
+            key = KEYS, 
+            prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+            warmup = 50, 
+            rep = 50,
+            use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+        )
+        
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
-    gemm_A16fWnO16f_int32packing_kernel[grid](
+    autotune_fn(gemm_A16fWnO16f_int32packing_kernel)[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,

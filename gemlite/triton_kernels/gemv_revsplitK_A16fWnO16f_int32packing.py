@@ -7,6 +7,7 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from .utils import *
+from .triton_configs import AUTOTUNE_CONFIG
 
 KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
 MATMUL_TYPE = "GEMV_REVSPLITK"
@@ -140,15 +141,6 @@ def get_default_config():
     return [config]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMV_REVSPLITK
-
-@triton.autotune(
-    configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
-    key = KEYS,
-    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
-    warmup = 50, 
-    rep = 50,
-    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
-)
 
 @triton.jit
 def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
@@ -318,8 +310,22 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
+    config = AUTOTUNE_CONFIG.GEMV_REVSPLITK.get((M, N, K, group_size, elements_per_sample), None)
+    if config is None:
+        config = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config()
+        try: import triton_dejavu; _autotune_fn = triton_dejavu.autotune
+        except: _autotune_fn = triton.autotune
+    else: _autotune_fn = triton.autotune
+    autotune_fn = _autotune_fn(
+            configs = config,
+            key = KEYS, 
+            prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+            warmup = 50, 
+            rep = 50,
+            use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+        )
 
-    gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
+    autotune_fn(gemv_revsplitK_A16fWnO16f_int32packing_kernel)[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
