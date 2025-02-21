@@ -30,6 +30,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             _num_warps  = _config.pop('num_warps')
             _num_ctas   = _config.pop('num_ctas')
 
+            _config.pop('num_buffers_warp_spec', None)
+            _config.pop('num_consumer_groups', None)
+            _config.pop('reg_dec_producer', None)
+            _config.pop('reg_inc_consumer', None)
+
             yield triton.Config(_config, num_stages=_num_stages, num_warps=_num_warps)
             return
             
