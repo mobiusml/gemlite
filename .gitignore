@@ -1,0 +1,14 @@
+# python stuff
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.pyw
+*.pyz
+
+# pip stuff
+*.egg-info
+*.dist-info
+*.whl
+*.tar.gz
+*.zip
