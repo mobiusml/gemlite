@@ -1,6 +1,8 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 # ********************************************************
-import imp 
+import sys
+if sys.version_info < (3, 12): import imp
+else: import importlib as imp
 
 class AUTOTUNE_ENABLE:
 	GEMV           = True
