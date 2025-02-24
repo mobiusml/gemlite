@@ -58,16 +58,18 @@ pip install git+https://github.com/mobiusml/gemlite/
 
 ## Usage
 ```Python
+import gemlite
 from gemlite import DType, GemLiteLinear
 
 #Set accumulation dtype (only do this once)
-#from gemlite import GEMLITE_ACC_DTYPE
-#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP32 #For A100/H100 (default)
-#GEMLITE_ACC_DTYPE[DType.FP16] = DType.FP16 #For 3090/4090 (default)
+#gemlite.set_acc_dtype(DType.FP32) #For A100/H100 (default)
+#gemlite.set_acc_dtype(DType.FP16) #For 3090/4090 (default)
+
+#Set default packing bitwidth: use 8-bit for larger batch-sizes on A100s/H100s
+#gemlite.set_packing_bitwidth(8)
 
 #Set autotune (by default uses powers of 2 up to 1024)
-#from gemlite import set_autotune_setting
-#set_autotune_setting(lambda M: M) #max-autotune example
+#gemlite.set_autotune_setting(lambda M: M) #max-autotune example
 
 #Main constructor
 gemlite_linear = GemLiteLinear(
@@ -81,7 +83,7 @@ gemlite_linear = GemLiteLinear(
 )
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
-gemlite_linear.pack(W_q, scales, zeros, bias, packing_bitwidth=32) #32-bit packing by default
+gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #For activation quantization you need to override this function which should return the activation scales:
 #gemlite_linear.scale_activations = f(x: torch.Tensor) -> x_scaled: torch.Tensor, scales: torch.Tensor # x ~ x_scaled * scaled
@@ -109,9 +111,9 @@ gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
 ```Python
 import gemlite
+gemlite.reset_config() #resets cache config for all kernels
 gemlite.cache_config('gemlite_config.json') #Cache- run this over multiple batch-sizes
 gemlite.load_config('gemlite_config.json') #Load
-gemlite.reset_config() #resets cache config for all kernels
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
