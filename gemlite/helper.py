@@ -111,10 +111,9 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', packing_bitwidth=32, post_scale=False):
-        self.packing_bitwidth = 32
-        self.post_scale       = post_scale
-        self.device           = device
+    def __init__(self, device='cuda:0', post_scale=False):
+        self.post_scale = post_scale
+        self.device     = device
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias):
         in_features, out_features = W_q.shape[::-1]
@@ -128,12 +127,13 @@ class A16Wn:
                         scaled_activations=False,
                         )
 
+
         gemlite_linear.pack(W_q.to(self.device), 
                             scales.to(device=self.device, dtype=torch.float16), 
                             zeros.to(device=self.device, dtype=torch.float16), 
                             bias=bias.to(device=self.device, dtype=torch.float16) if bias is not None else None, 
-                            contiguous=True, 
-                            packing_bitwidth=self.packing_bitwidth) 
+                            contiguous=True,
+                            ) 
 
         gemlite_linear.default_gemv = 'GEMV_REVSPLITK' 
 
@@ -175,11 +175,10 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', packing_bitwidth=32, post_scale=False):
+    def __init__(self, device='cuda:0', post_scale=False):
         super().__init__()
-        self.packing_bitwidth = 32
-        self.post_scale       = post_scale
-        self.device           = device
+        self.post_scale = post_scale
+        self.device     = device
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias):
         w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
@@ -199,8 +198,8 @@ class A8Wn_dynamic(A16Wn):
                             scales.to(device=self.device, dtype=torch.float16), 
                             zeros.to(device=self.device, dtype=torch.float16), 
                             bias=bias.to(device=self.device, dtype=torch.float16) if bias is not None else None, 
-                            contiguous=True, 
-                            packing_bitwidth=self.packing_bitwidth) 
+                            contiguous=True,
+                            ) 
 
         def scale_fct(x):
             x_shape  = x.shape

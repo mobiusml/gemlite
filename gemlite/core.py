@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
-GEMLITE_TRITON_CONFIG_CACHE = {}
-GEMLITE_TRITON_CACHE        = {}
+GEMLITE_TRITON_CONFIG_CACHE = {} #Global config cache for all the kernels
+GEMLITE_TRITON_CACHE        = {} #Cache used forward with warmup
 _GROUP_SIZE_WARNED          = False
 
 def eval_time_triton(fct, params):
@@ -82,12 +82,24 @@ def cache_kernel_config(kernel, num_keys):
 def set_autotune_setting(fct): #fct = lambda M: M for max-autotune
     utils.get_closest_m = fct 
 
+#set default packing format
+def set_packing_bitwidth(packing_bitwidth : int):
+    assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)."
+    GemLiteLinearTriton.PACKING_BITWIDTH = packing_bitwidth
+
+#Set accumulation dtype
+def set_acc_dtype(dtype):
+    global GEMLITE_ACC_DTYPE
+    assert dtype in [DType.FP16, DType.FP32], "Invalid dtype (should be DType.FP16 or DType.FP32)."
+    GEMLITE_ACC_DTYPE[DType.FP16] = dtype
+
 ###################################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.FP8e5, DType.INT8]
     MIN_SIZE              = 128
+    PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
     def __init__(
         self,
@@ -165,7 +177,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         return x, self.scales_x
 
     # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
-    def pack_weights_over_rows(self, W_q, W_nbits, packing_bitwidth=32, transpose=True):
+    def pack_weights_over_rows(self, W_q, W_nbits, packing_bitwidth, transpose=True):
         elements_per_sample = packing_bitwidth // W_nbits
 
         W_q     = W_q.to(torch.int32)
@@ -186,7 +198,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         return W_q_out, elements_per_sample
 
-    def pack_weights_over_cols(self, W_q, W_nbits, packing_bitwidth=32, transpose=True):
+    def pack_weights_over_cols(self, W_q, W_nbits, packing_bitwidth, transpose=True):
         elements_per_sample = packing_bitwidth // W_nbits
 
         W_q     = W_q.to(torch.int32)
@@ -210,7 +222,13 @@ class GemLiteLinearTriton(torch.nn.Module):
         return W_q_out, elements_per_sample
 
     #Make sure to feed UINT8 W_q for packing
-    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: Union[int,None]=None, packing_bitwidth: int=32):
+    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: Union[int,None]=None, packing_bitwidth: Union[int,None]=None):
+
+        #Set packing bitwidth
+        if(packing_bitwidth is None):
+            packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
+
+        assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)"
 
         #Unpacked weights
         self.W_q = None
