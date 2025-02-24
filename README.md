@@ -172,6 +172,14 @@ We present various end-2-end Llama results generated with <a href="https://githu
 
 <div class="row"><center>
   <div class="column">
+    <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_triton3.2.png" alt="llama3_8bit_dynamic.svg" style="width:98%">
+  </div>
+ </center>
+</div> 
+
+
+<div class="row"><center>
+  <div class="column">
     <img src="https://github.com/mobiusml/gemlite/blob/master/images/llama3_4bit.svg" alt="llama3_4bit.svg" style="width:98%">
   </div>
  </center>
