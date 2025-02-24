@@ -1,7 +1,8 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
 
-import torch
+import torch, gc
+from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE
 
 ####################################################################################################
@@ -221,4 +222,49 @@ class A8Wn_dynamic(A16Wn):
                 gemlite_linear.channel_scale_mode = 2
 
         return gemlite_linear
+
+
+####################################################################################################
+#Warm-up function: 
+def warmup(shapes: list, batch_sizes: list = [2**i for i in range(0,11)], W_nbits: list = [8, 4], group_sizes: list = [64], mode: str = 'static'):
+    """
+    * Warm-up for A16W4 with group_size=64
+    warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
+    
+    * Warm-up for A8W8 fp8 dynamic
+    warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_fp8')
+
+    * warm-up for A8W8 int8 dynamic
+    warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_int8')
+    """
+
+    if min(W_nbits) < 8:
+        try:
+            from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
+        except ModuleNotFoundError:
+            raise ModuleNotFoundError("the hqq package is missing. Please install via `pip install hqq`.")
+
+    for W_nbit in W_nbits:
+        for group_size in group_sizes:
+            for shape in shapes:
+                for batch_size in tqdm(batch_sizes):
+                    out_features, in_features = shape
+                    linear = torch.nn.Linear(in_features=in_features, out_features=out_features, bias=False, dtype=torch.float16, device='cuda:0')
+
+                    if(W_nbit == 8):
+                        processor      = A16W8 if (mode == 'static') else (A8W8_fp8_dynamic if mode == 'dynamic_fp8' else A8W8_int8_dynamic)
+                        gemlite_linear = processor(device='cuda:0').from_linear(linear)
+                    else:
+                        processor      = A16Wn if (mode == 'static') else A8Wn_dynamic
+                        quant_config   = BaseQuantizeConfig(nbits=W_nbit, group_size=group_size, axis=1)
+                        linear         = HQQLinear(linear, quant_config=quant_config, compute_dtype=torch.float16, device='cuda:0')
+                        gemlite_linear = processor(device='cuda:0').from_hqqlinear(linear)
+
+
+                    _ = gemlite_linear(torch.randn((batch_size, in_features), dtype=torch.float16, device='cuda:0') / 100.)
+
+                    del linear, gemlite_linear
+                    torch.cuda.empty_cache()
+
+                gc.collect()
 

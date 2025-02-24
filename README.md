@@ -117,6 +117,23 @@ gemlite.load_config('gemlite_config.json') #Load
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
 
+You can warm-up with specific shapes via the following helper function:
+```Python
+import gemlite
+
+#Ignore pre-loaded configs - if you want to start from scratch (Optional)
+#gemlite.reset_config() 
+
+#Warm-up for A16W4 with group_size=64
+gemlite.helper.warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
+
+#Warm-up for A8W8 dynamic_fp8 or dynamic_int8
+gemlite.helper.warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_fp8')
+
+#Cache your new config
+gemlite.cache_config('new_config.json')
+```
+
 ## Deep Dive
 We implement various versions of the Triton kernels: 
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_A16fWnO16f_int32packing.py">GEMV</a></b>: This GEMV kernel splits the activations into 1D chunks, performs the dot product using `tl.sum`, and accumulates via atomic addition. It is primarily intended for use with small batch sizes (M < 16). As `tl.atomic_add` does not support bfloat16, this kernel is limited to float16.
