@@ -119,7 +119,7 @@ class A16Wn:
         in_features, out_features = W_q.shape[::-1]
 
         gemlite_linear = GemLiteLinearTriton(W_nbits, 
-                        group_size=group_size, 
+                        group_size=group_size,  
                         in_features=in_features, 
                         out_features=out_features, 
                         input_dtype=DType.FP16, 
