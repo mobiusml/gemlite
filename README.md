@@ -112,7 +112,7 @@ Triton autotuning can be time-consuming. To accelerate this process, we provide 
 ```Python
 import gemlite
 gemlite.reset_config() #resets cache config for all kernels
-gemlite.cache_config('gemlite_config.json') #Cache- run this over multiple batch-sizes
+gemlite.cache_config('gemlite_config.json') #Cache
 gemlite.load_config('gemlite_config.json') #Load
 ``` 
 Ensure that you have one JSON cache file per GPU model. When the cache is loaded, the kernels will skip autotuning, leading to a faster startup time.
