@@ -98,7 +98,7 @@ def set_acc_dtype(dtype):
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.FP8e5, DType.INT8]
-    MIN_SIZE              = 128
+    MIN_SIZE              = 64
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
     def __init__(
