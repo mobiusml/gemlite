@@ -118,7 +118,7 @@ def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
     grid    = (triton.cdiv(num_rows * num_cols, unroll), )
 
     pack_weights_over_cols_kernel[grid](
-        W_q,
+        W_q.contiguous(),
         W_q_out,
         num_input_cols,
         num_cols,
@@ -196,7 +196,7 @@ def unpack_over_cols_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_c
 
     # Launch the kernel
     unpack_over_cols_kernel[grid](
-        W_q_packed,
+        W_q_packed.contiguous(),
         W_q_unpacked,
         num_rows,
         num_cols,
@@ -261,7 +261,7 @@ def pack_weights_over_rows_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
     grid    = (triton.cdiv(num_rows * num_cols, unroll), )
 
     pack_weights_over_rows_kernel[grid](
-        W_q,
+        W_q.contiguous(),
         W_q_out,
         num_rows,
         num_cols,
@@ -341,7 +341,7 @@ def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_r
     
     # Launch kernel
     unpack_weights_over_rows_kernel[grid](
-        W_q_packed,
+        W_q_packed.contiguous(),
         W_q_unpacked,
         num_output_rows,
         num_cols,
