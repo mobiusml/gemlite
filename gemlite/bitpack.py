@@ -115,7 +115,7 @@ def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
 
     W_q_out = torch.empty((num_rows, num_cols), dtype=dtype, device=W_q.device)
     unroll  = highest_divisor(num_rows, max_val=64) 
-    grid    = (num_rows * num_cols // unroll, )
+    grid    = (triton.cdiv(num_rows * num_cols, unroll), )
 
     pack_weights_over_cols_kernel[grid](
         W_q,
@@ -135,6 +135,82 @@ def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
     return W_q_out, elements_per_sample
 
 
+def unpack_over_cols_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_cols: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols = W_q_packed.shape
+    elements_per_sample = num_output_cols // num_cols
+
+    shifts       = torch.arange(elements_per_sample, device=W_q_packed.device, dtype=W_q_packed.dtype) * W_nbits 
+    mask         = (1 << W_nbits) - 1
+    W_q_unpacked = ((W_q_packed.unsqueeze(-1) >> shifts) & mask).to(dtype)
+    W_q_unpacked = W_q_unpacked.view(num_rows, num_output_cols)
+
+    return W_q_unpacked
+
+@triton.jit
+def unpack_over_cols_kernel(
+    W_q_packed_ptr,
+    W_q_unpacked_ptr,
+    num_rows,
+    num_cols,
+    num_output_cols,
+    elements_per_sample: tl.constexpr,
+    W_nbits: tl.constexpr,
+    unroll: tl.constexpr,
+    output_dtype: tl.constexpr,
+):
+    pid           = tl.program_id(0)
+    num_blocks    = tl.cdiv(num_output_cols, unroll)
+    pid_row       = pid // num_blocks
+    pid_col_block = pid % num_blocks
+    
+    # Load
+    cols          = pid_col_block * unroll + tl.arange(0, unroll)
+    packed_cols   = cols // elements_per_sample
+    offset        = pid_row * num_cols + packed_cols
+    packed_values = tl.load(W_q_packed_ptr + offset)
+    
+    # Unpack
+    shifts   = (cols % elements_per_sample) * W_nbits
+    mask_val = (1 << W_nbits) - 1
+    unpacked_values = ((packed_values >> shifts) & mask_val).to(output_dtype)
+    
+    # Store the unpacked values
+    unpacked_offsets = pid_row * num_output_cols + cols
+    tl.store(W_q_unpacked_ptr + unpacked_offsets, unpacked_values)
+
+def unpack_over_cols_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_cols: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+
+    # Get input dimensions
+    num_rows, num_cols  = W_q_packed.shape
+    elements_per_sample = num_output_cols // num_cols
+
+    # Allocate output tensor
+    W_q_unpacked = torch.empty((num_rows, num_output_cols), dtype=dtype, device=W_q_packed.device)
+
+    if(dtype == torch.uint8): output_dtype = tl.uint8
+    if(dtype == torch.int16): output_dtype = tl.int16
+    if(dtype == torch.int32): output_dtype = tl.int32
+
+    unroll = highest_divisor(num_cols, max_val=256) 
+    grid = (num_rows * triton.cdiv(num_output_cols, unroll),)
+
+    # Launch the kernel
+    unpack_over_cols_kernel[grid](
+        W_q_packed,
+        W_q_unpacked,
+        num_rows,
+        num_cols,
+        num_output_cols,
+        elements_per_sample,
+        W_nbits,
+        unroll,
+        output_dtype,
+        num_stages=2,
+        num_warps=1
+    )
+
+    return W_q_unpacked
+
 @triton.jit
 def pack_weights_over_rows_kernel(
     W_q_ptr,
@@ -148,7 +224,7 @@ def pack_weights_over_rows_kernel(
 ):  
 
     pid        = tl.program_id(0)
-    num_blocks = num_cols // unroll
+    num_blocks = tl.cdiv(num_cols, unroll)
     pid_row    = pid // num_blocks
     pid_col    = pid % num_blocks
     col        = pid_col * unroll
@@ -182,7 +258,7 @@ def pack_weights_over_rows_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
 
     W_q_out = torch.empty((num_rows, num_cols), dtype=dtype, device=W_q.device)
     unroll  = highest_divisor(num_cols, max_val=64) 
-    grid    = (num_rows * num_cols // unroll, )
+    grid    = (triton.cdiv(num_rows * num_cols, unroll), )
 
     pack_weights_over_rows_kernel[grid](
         W_q,
@@ -201,6 +277,87 @@ def pack_weights_over_rows_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
 
     return W_q_out, elements_per_sample
 
+
+def unpack_over_rows_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols = W_q_packed.shape
+    elements_per_sample = num_output_rows // num_rows
+
+    shifts = torch.arange(elements_per_sample, device=W_q_packed.device, dtype=W_q_packed.dtype) * W_nbits  
+    mask   = ((1 << W_nbits) - 1)
+    W_q_unpacked = ((W_q_packed.unsqueeze(-1) >> shifts) & mask).to(dtype) 
+    W_q_unpacked = W_q_unpacked.permute(0, 2, 1).reshape(num_output_rows, num_cols)
+    
+    return W_q_unpacked
+
+
+@triton.jit
+def unpack_weights_over_rows_kernel(
+    W_q_packed_ptr,
+    W_q_unpacked_ptr,
+    num_input_rows,
+    num_cols,
+    num_packed_rows,
+    elements_per_sample: tl.constexpr,
+    W_nbits: tl.constexpr,
+    unroll: tl.constexpr,
+    output_dtype: tl.constexpr, 
+):
+
+    pid        = tl.program_id(0)
+    num_blocks = tl.cdiv(num_cols, unroll)
+    pid_row    = pid // num_blocks
+    pid_block  = pid % num_blocks
+    start_col  = pid_block * unroll
+    packed_row = pid_row // elements_per_sample
+
+    #Load
+    cols   = start_col + tl.arange(0, unroll)
+    offset = packed_row * num_cols + cols
+    packed_values = tl.load(W_q_packed_ptr + offset)
+    
+    # Unpack
+    shift           = ((pid_row % elements_per_sample) * W_nbits)
+    mask            = (1 << W_nbits) - 1
+    unpacked_values = ((packed_values >> shift) & mask).to(output_dtype)
+    
+    # Store
+    unpacked_offsets = pid_row * num_cols + cols
+    tl.store(W_q_unpacked_ptr + unpacked_offsets, unpacked_values)
+
+def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_packed_rows, num_cols = W_q_packed.shape
+    elements_per_sample = num_output_rows // num_packed_rows
+    
+    # Allocate output
+    W_q_unpacked = torch.empty((num_output_rows, num_cols), dtype=dtype, device=W_q_packed.device)
+
+    if(dtype == torch.uint8): output_dtype = tl.uint8
+    if(dtype == torch.int16): output_dtype = tl.int16
+    if(dtype == torch.int32): output_dtype = tl.int32
+    
+    # Define grid
+    unroll  = highest_divisor(num_cols, max_val=256) 
+    grid = (triton.cdiv(num_output_rows * num_cols, unroll),)
+    
+    # Launch kernel
+    unpack_weights_over_rows_kernel[grid](
+        W_q_packed,
+        W_q_unpacked,
+        num_output_rows,
+        num_cols,
+        num_packed_rows,
+        elements_per_sample,
+        W_nbits,
+        unroll,
+        output_dtype,
+        num_stages=2,
+        num_warps=1
+    )
+    
+    return W_q_unpacked
+
 ########################################################################################################################################################
 pack_weights_over_rows = pack_weights_over_rows_triton
 pack_weights_over_cols = pack_weights_over_cols_triton
+unpack_over_rows       = unpack_over_rows_triton
+unpack_over_cols       = unpack_over_cols_triton
