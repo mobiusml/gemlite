@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
-GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
+GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16, DType.BF16: DType.FP32, DType.FP32: DType.FP32, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
 GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CONFIG_CACHE = {} #Global config cache for all the kernels
@@ -98,7 +98,7 @@ def set_acc_dtype(dtype):
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.FP8, DType.FP8e5, DType.INT8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e5, DType.INT8]
     MIN_SIZE              = 64
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
@@ -144,8 +144,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.input_dtype   = input_dtype
         self.output_dtype  = output_dtype
-        self.compute_dtype = torch.float16
-        self.meta_dtype    = DType.FP16
+        self.compute_dtype = DTYPE_TO_TORCH[input_dtype.value]
+        self.meta_dtype    = input_dtype
         self.kernels       = GEMLITE_TRITON_KERNELS
 
         #Accumulation
@@ -188,8 +188,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #Unpacked weights
         self.W_q = None
-        if(W_q.dtype in [torch.float16, torch.int8, torch.float8_e4m3fn, torch.float8_e5m2]):
-            if(W_q.dtype == torch.float16): 
+        if(W_q.dtype in [torch.float16, torch.bfloat16, torch.int8, torch.float8_e4m3fn, torch.float8_e5m2]):
+            if(W_q.dtype in [torch.float16, torch.bfloat16]): 
                 assert self.W_nbits == 16, "Invalid fp16 weights."
             else: 
                 assert self.W_nbits == 8, "Invalid 8-bit weights."
@@ -281,7 +281,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = torch.tensor([[]], dtype=torch.int32, device=self.device)
 
         if(self.scales is not None):
-            self.meta_dtype = DType.FP32 if self.scales.dtype == torch.float32 else DType.FP16
+            self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
 
         #Force contiguous
         if(contiguous):

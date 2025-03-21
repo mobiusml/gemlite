@@ -173,6 +173,8 @@ def gemv_A16fWnO16f_int32packing_kernel(
     A_load_order: tl.constexpr, meta_evict_policy : tl.constexpr, atomic_mode: tl.constexpr, dot_prod_mode:tl.constexpr,
     data_contiguous: tl.constexpr,
     dump_b_val: tl.constexpr = 0, #Improve accuracy mainly for A16W8 with post looop scaling
+    native_atomic: tl.constexpr = True, #Use native atomic addition
+    Lock = None, #Lock for atomic cas
 ):
     """
     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1
@@ -277,8 +279,11 @@ def gemv_A16fWnO16f_int32packing_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
-    tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
 
+    if(native_atomic):
+        tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
+    else:
+        atomic_add_cas(c_ptrs, acc, Lock, sem=atomic_mode)
 
 _costum_op_id = '_' + str(int(random.random()*10000))
 
@@ -293,7 +298,13 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
-    
+
+    native_atomic = output_dtype in [DType.FP16, DType.FP32]
+    if(native_atomic):
+        Lock = None
+    else:
+        Lock = torch.zeros((1,), device=W_q.device, dtype=torch.int32)
+
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
 
     gemv_A16fWnO16f_int32packing_kernel[grid](
@@ -305,17 +316,19 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        ########################
+        ############################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
-        ########################
+        ############################################
         channel_scale_mode = channel_scale_mode,
         W_group_mode       = W_group_mode,
         zero_is_scalar     = zeros.numel() == 1,
         data_contiguous    = data_contiguous,
         dump_b_val         = 0.001 if(W_group_mode in [0, 1] and acc_dtype == DType.FP16.value and W_nbits == 8) else 0, #Warning: Only use with INT8
+        native_atomic      = native_atomic,
+        Lock               = Lock,
     )
 
     return output

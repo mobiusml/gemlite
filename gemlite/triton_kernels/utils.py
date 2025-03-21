@@ -42,7 +42,15 @@ def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_
         b = tl.fma(b.to(meta_dtype), scales, zeros) #Asymmetric (Grouped - b*scales + zeros)
 
     return b
-    
+
+@triton.jit
+def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = 'release'):
+    while tl.atomic_cas(Lock, 0, 1, sem=sem) == 1:
+        pass
+    tl.store(ptr, tl.load(ptr, mask=mask) + value, mask=mask)
+    tl.debug_barrier()
+    tl.atomic_xchg(Lock, 0)
+
 def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 

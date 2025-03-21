@@ -203,6 +203,8 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr, atomic_mode: tl.constexpr, dot_prod_mode: tl.constexpr,
     data_contiguous: tl.constexpr,
     dump_b_val: tl.constexpr = 0, #Improve accuracy mainly for A16W8 with post looop scaling
+    native_atomic: tl.constexpr = True, #Use native atomic addition
+    Lock = None, #Lock for atomic cas
 ):
     """
     Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
@@ -344,11 +346,15 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+    mask    = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
     if(SPLIT_K == 1):
-        tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
+        tl.store(c_ptrs, acc, mask=mask) 
     else:
-        tl.atomic_add(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N), sem=atomic_mode) 
+        if(native_atomic):
+            tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
+        else:
+            atomic_add_cas(c_ptrs, acc, Lock, mask=mask, sem=atomic_mode)
 
 
 _costum_op_id = '_' + str(int(random.random()*10000))
@@ -364,6 +370,12 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
+
+    native_atomic = output_dtype in [DType.FP16, DType.FP32]
+    if(native_atomic):
+        Lock = None
+    else:
+        Lock = torch.zeros((1,), device=W_q.device, dtype=torch.int32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 
@@ -387,6 +399,8 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
         zero_is_scalar     = zeros.numel() == 1,
         data_contiguous    = data_contiguous,
         dump_b_val         = 0.001 if(W_group_mode in [0, 1] and acc_dtype == DType.FP16.value and W_nbits == 8) else 0, #Warning: Only use with INT8
+        native_atomic      = native_atomic,
+        Lock               = Lock,
     )
 
     return output

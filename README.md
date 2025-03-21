@@ -33,6 +33,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 - [Contributing](#contributing)
 
 # Recent Highlights
+- GemLite now supports bfloat16!
 - GemLite is now available in <a href="https://github.com/vllm-project/vllm/">vllm</a> via the <a href="https://github.com/mobiusml/hqq/">hqq</a> lib! 
 - GemLite is now integrated with <a href="https://github.com/pytorch/ao">TorchAO</a>/<a href="https://github.com/sgl-project/sglang">SGLang</a> for 4-bit quantization. Check-out the <a href="https://pytorch.org/blog/accelerating-llm-inference/">blogpost</a>!
 - **Major performance improvement**: especially on the A100 and H100.
@@ -61,15 +62,8 @@ pip install git+https://github.com/mobiusml/gemlite/
 import gemlite
 from gemlite import DType, GemLiteLinear
 
-#Set accumulation dtype (only do this once)
-#gemlite.set_acc_dtype(DType.FP32) #For A100/H100 (default)
-#gemlite.set_acc_dtype(DType.FP16) #For 3090/4090 (default)
-
 #Set default packing bitwidth: use 8-bit for larger batch-sizes on A100s/H100s
 #gemlite.set_packing_bitwidth(8)
-
-#Set autotune (by default uses powers of 2 up to 1024)
-#gemlite.set_autotune_setting(lambda M: M) #max-autotune example
 
 #Main constructor
 gemlite_linear = GemLiteLinear(
@@ -124,6 +118,9 @@ import gemlite
 #Ignore pre-loaded configs - if you want to start from scratch (Optional)
 #gemlite.reset_config() 
 
+#Set autotune (by default uses powers of 2 up to 1024)
+#gemlite.set_autotune_setting(lambda M: M) #max-autotune example
+
 #Warm-up for A16W4 with group_size=64
 gemlite.helper.warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
 
@@ -136,21 +133,21 @@ gemlite.cache_config('new_config.json')
 
 ## Deep Dive
 We implement various versions of the Triton kernels: 
-* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_A16fWnO16f_int32packing.py">GEMV</a></b>: This GEMV kernel splits the activations into 1D chunks, performs the dot product using `tl.sum`, and accumulates via atomic addition. It is primarily intended for use with small batch sizes (M < 16). As `tl.atomic_add` does not support bfloat16, this kernel is limited to float16.
+* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_A16fWnO16f_int32packing.py">GEMV</a></b>: This GEMV kernel splits the activations into 1D chunks, performs the dot product using `tl.sum`, and accumulates via atomic addition. It is primarily intended for use with small batch sizes (M == 1). 
 
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemm_A16fWnO16f_int32packing.py">GEMM</a></b>: This GEMM kernel is implemented similarly to <a href="https://github.com/fpgaminer/GPTQ-triton">GPTQ-triton</a>. Since it uses tensor cores, activations must be padded with zeros along the batch dimension to fit at least 16 rows. It supports both float32 and float16 accumulation for fp16 inputs, but only float32 accumulation for bfloat16.
 
-* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemm_splitK_A16fWnO16f_int32packing.py">GEMM Split-K</a></b>: This Split-K GEMM kernel is implemented similarly to <a href="https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py">the gptq Split-K version</a>. We build on the gemm version above and add another dimension in the grid which splits the K dimension into multiple jobs that calculate partial sums, which are atomically added and finally stored. Split-K performs particularly well for batched LLM decoding (batch-size between 1 and 32). 
+* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemm_splitK_A16fWnO16f_int32packing.py">GEMM Split-K</a></b>: This Split-K GEMM kernel is implemented similarly to <a href="https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py">the gptq Split-K version</a>. We build on the gemm version above and add another dimension in the grid which splits the K dimension into multiple jobs that calculate partial sums, which are atomically added and finally stored. Split-K performs particularly well for batched LLM decoding (batch-size between 2 and 32). 
 
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_revsplitK_A16fWnO16f_int32packing.py">Gemv RevSplit-K</a></b>: 
 This newly proposed algorithm in GemLite operates in contrast to the GEMM Split-K approach, but within a GEMV context. By doubling the workload per Triton program launched in the GEMV kernel, it reduces the frequency of loading scales/zeros and lowers the number of threads needed. As a result, this method delivers the best performance for batch-size=1 decoding. 
 
-All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as well as both fp16 and int8/fp8 activations.
+All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as well as float16, bfloat16 and int8/fp8 activations.
 
 ## Limitations
 * All kernels require a minimum group-size of 32.
-* The default accumulation DType for FP16 inputs is FP16. If you encounter precision issues, you can try <a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/core.py#L28">reverting to FP32</a>.
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_revsplitK_A16fWnO16f_int32packing.py">Gemv RevSplit-K</a></b>, which is the default kernel for batch-size=1, does not work with 1-bit weights packed as 32-bit with a group-size of 32. In this case, you should use 8-bit bitpacking via `.pack(...,packing_bitwidth=8)`, or revert to using the `GEMV` kernel instead.
+* On datacenter gpus (A100, H100, H200), 8-bit packing via `gemlite.set_packing_bitwidth(8)` is faster for larger batches.
 
 ## Performance
 ### End-2-End Performance
