@@ -37,7 +37,6 @@ class A16W8:
 
         gemlite_linear.W_group_mode       = 2
         gemlite_linear.channel_scale_mode = 0
-        gemlite_linear.default_gemv       = 'GEMV_SPLITK'
         return gemlite_linear
 
     def from_linear(self, linear_layer):
@@ -94,7 +93,6 @@ class A8W8_dynamic:
         gemlite_linear.W_group_mode       = 0
         gemlite_linear.channel_scale_mode = 3 #activation[:,None] + weight[None,:]
         gemlite_linear.meta_dtype         = DType.FP32
-        gemlite_linear.default_gemv       = 'GEMV_SPLITK'
         return gemlite_linear
 
     def from_linear(self, linear_layer):
@@ -145,8 +143,6 @@ class A16Wn:
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
                             contiguous=True,
                             ) 
-
-        gemlite_linear.default_gemv = 'GEMV_REVSPLITK' 
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -224,8 +220,6 @@ class A8Wn_dynamic(A16Wn):
             return out_x.view(x_shape), scaled_x
 
         gemlite_linear.scale_activations = scale_fct
-
-        gemlite_linear.default_gemv = 'GEMV_REVSPLITK' 
 
         if(group_size == in_features):
             if(self.post_scale):

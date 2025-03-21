@@ -44,7 +44,7 @@ def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_
     return b
 
 @triton.jit
-def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = 'release'):
+def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = 'release'):    
     while tl.atomic_cas(Lock, 0, 1, sem=sem) == 1:
         pass
     tl.store(ptr, tl.load(ptr, mask=mask) + value, mask=mask)

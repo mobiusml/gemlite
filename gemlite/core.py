@@ -28,8 +28,23 @@ logger = logging.getLogger(__name__)
 ###################################################################################################################################
 # Triton backend
 ###################################################################################################################################
-GEMLITE_ACC_DTYPE           = {DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16, DType.BF16: DType.FP32, DType.FP32: DType.FP32, DType.FP8: DType.FP32, DType.FP8e5: DType.FP32, DType.INT8: DType.INT32}
-GEMLITE_TRITON_KERNELS      = [gemv_A16fWnO16f, gemv_revsplitK_A16fWnO16f, gemv_splitK_A16fWnO16f, gemm_splitK_A16fWnO16f, gemm_A16fWnO16f] 
+GEMLITE_ACC_DTYPE = {
+    DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16,
+    DType.BF16: DType.FP32,
+    DType.FP32: DType.FP32,
+    DType.FP8: DType.FP32,
+    DType.FP8e5: DType.FP32,
+    DType.INT8: DType.INT32,
+}
+
+GEMLITE_TRITON_KERNELS = [
+    gemv_A16fWnO16f,
+    gemv_revsplitK_A16fWnO16f,
+    gemv_splitK_A16fWnO16f,
+    gemm_splitK_A16fWnO16f,
+    gemm_A16fWnO16f,
+]
+
 GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
 GEMLITE_TRITON_CONFIG_CACHE = {} #Global config cache for all the kernels
 GEMLITE_TRITON_CACHE        = {} #Cache used forward with warmup
@@ -94,6 +109,9 @@ def set_acc_dtype(dtype):
     assert dtype in [DType.FP16, DType.FP32], "Invalid dtype (should be DType.FP16 or DType.FP32)."
     GEMLITE_ACC_DTYPE[DType.FP16] = dtype
 
+#Return the default gemv kernel to use for M==1
+def get_default_gemv(W_nbits: int) -> str:
+    return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 ###################################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
@@ -161,17 +179,13 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.forward = self.forward_auto_no_warmup
 
         #Default GEMV for packed vs. non-packed data
-        self.default_gemv = self.get_default_gemv()
+        self.default_gemv = get_default_gemv(self.W_nbits)
             
         #Set torch flags
         try:
             torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
         except:
             pass
-
-    #Returns the default gemv choice based on the config
-    def get_default_gemv(self):
-        return 'GEMV_REVSPLITK' if (self.W_nbits < 8) else 'GEMV_SPLITK'
 
     #Override this function to perform dynamic activation quantization
     def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:

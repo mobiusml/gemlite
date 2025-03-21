@@ -197,8 +197,6 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
     A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr, atomic_mode: tl.constexpr,
     data_contiguous: tl.constexpr,
-    native_atomic: tl.constexpr = True, #Use native atomic addition
-    Lock = None, #Lock for atomic cas
 ):
     """
     Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
@@ -323,9 +321,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         scales_b = tl.load(scales_ptr   + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
-    acc = acc.to(output_dtype)
     ##################################################################
-
     #Output
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -334,10 +330,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     mask    = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
     if(SPLIT_K > 1):
-        if(native_atomic):
-            tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) #release / relaxed
-        else:
-            atomic_add_cas(c_ptrs, acc, Lock, mask=mask, sem=atomic_mode)
+        tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
     else:
         tl.store(c_ptrs, acc, mask=mask) 
 
@@ -352,17 +345,12 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
                                                 ) -> Tensor: 
     
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+    #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 
     M_CLOSEST = utils.get_closest_m(M)
 
-    #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
-    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
-
-    native_atomic = output_dtype in [DType.FP16, DType.FP32]
-    if(native_atomic):
-        Lock = None
-    else:
-        Lock = torch.zeros((1,), device=W_q.device, dtype=torch.int32)
+    native_atomic = output_dtype in [DType.FP16.value, DType.FP32.value]
+    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 
@@ -375,19 +363,20 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        ########################
+        ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
-        ########################
+        ################################################
         channel_scale_mode = channel_scale_mode,
         W_group_mode       = W_group_mode,
         zero_is_scalar     = zeros.numel() == 1,
         data_contiguous    = data_contiguous,
-        native_atomic      = native_atomic,
-        Lock               = Lock,
     )
+
+    if(not native_atomic):
+        output = output.to(DTYPE_TO_TORCH[output_dtype])
 
     return output
 
