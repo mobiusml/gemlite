@@ -2,21 +2,40 @@ import torch, triton, math
 import triton.language as tl
 from ..dtypes import *
 
+# @triton.jit
+# def swizzle_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+#     grid_m     = tl.cdiv(M, BLOCK_SIZE_M)
+#     grid_n     = tl.cdiv(N, BLOCK_SIZE_N)
+#     width      = GROUP_SIZE_M * grid_n
+#     group_id   = pid // width
+#     group_size = tl.minimum(grid_m - group_id * GROUP_SIZE_M, GROUP_SIZE_M)
+#     pid_m      = group_id * GROUP_SIZE_M + (pid % group_size)
+#     pid_n      = (pid % width) // group_size
+#     return pid_m, pid_n
+
+# @triton.jit
+# def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+#     pid_m = pid // tl.cdiv(N, BLOCK_SIZE_N)
+#     pid_n = pid % tl.cdiv(N, BLOCK_SIZE_N)
+#     return pid_m, pid_n
+
+
 @triton.jit
 def swizzle_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
-    grid_m     = tl.cdiv(M, BLOCK_SIZE_M)
-    grid_n     = tl.cdiv(N, BLOCK_SIZE_N)
+    grid_m     = tl.cdiv(N, BLOCK_SIZE_N)
+    grid_n     = tl.cdiv(M, BLOCK_SIZE_M)
     width      = GROUP_SIZE_M * grid_n
     group_id   = pid // width
     group_size = tl.minimum(grid_m - group_id * GROUP_SIZE_M, GROUP_SIZE_M)
-    pid_m      = group_id * GROUP_SIZE_M + (pid % group_size)
-    pid_n      = (pid % width) // group_size
+    pid_n      = group_id * GROUP_SIZE_M + (pid % group_size)
+    pid_m      = (pid % width) // group_size
     return pid_m, pid_n
+
 
 @triton.jit
 def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
-    pid_m = pid // tl.cdiv(N, BLOCK_SIZE_N)
-    pid_n = pid % tl.cdiv(N, BLOCK_SIZE_N)
+    pid_n = pid // tl.cdiv(M, BLOCK_SIZE_M)
+    pid_m = pid % tl.cdiv(M, BLOCK_SIZE_M)
     return pid_m, pid_n
 
 @triton.jit
