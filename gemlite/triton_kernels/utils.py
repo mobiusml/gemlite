@@ -57,9 +57,13 @@ def init_to_zero(name):
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
 
-def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800']): 
+def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800', 'b100', 'b200']): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
+
+def gpu_supports_bfloat16_atomicadd():
+    major, minor = torch.cuda.get_device_capability()
+    return major >= 9
 
 #Next power of 2
 M_MAXVAL  = 1024

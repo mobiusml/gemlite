@@ -7,10 +7,11 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, atomic_add_cas
+from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, gpu_supports_bfloat16_atomicadd
 
-KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
-MATMUL_TYPE = "GEMM_SPLITK"
+KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
+MATMUL_TYPE   = "GEMM_SPLITK"
+NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     from ..core import GEMLITE_TRITON_CONFIG_CACHE
@@ -349,7 +350,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
 
     M_CLOSEST = utils.get_closest_m(M)
 
-    native_atomic = output_dtype in [DType.FP16.value, DType.FP32.value]
+    native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])

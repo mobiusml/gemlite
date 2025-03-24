@@ -8,8 +8,9 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
-KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
-MATMUL_TYPE = "GEMV_REVSPLITK"
+KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+MATMUL_TYPE   = "GEMV_REVSPLITK"
+NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS
@@ -318,7 +319,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 
-    native_atomic = output_dtype in [DType.FP16.value, DType.FP32.value]
+    native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
