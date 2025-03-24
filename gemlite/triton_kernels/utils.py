@@ -62,8 +62,9 @@ def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800', 'b100
     return True in [g in gpu_name for g in ref_gpus]
 
 def gpu_supports_bfloat16_atomicadd():
-    major, minor = torch.cuda.get_device_capability()
-    return major >= 9
+    #Triton tl.atomic_add doens't support bfloat16 even for Hopper and above. 
+    #return torch.cuda.get_device_capability()[0] >= 9 #Hopper and above
+    return False
 
 #Next power of 2
 M_MAXVAL  = 1024

@@ -147,7 +147,8 @@ All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as wel
 ## Limitations
 * All kernels require a minimum group-size of 32.
 * <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv_revsplitK_A16fWnO16f_int32packing.py">Gemv RevSplit-K</a></b>, which is the default kernel for batch-size=1, does not work with 1-bit weights packed as 32-bit with a group-size of 32. In this case, you should use 8-bit bitpacking via `.pack(...,packing_bitwidth=8)`, or revert to using the `GEMV` kernel instead.
-* On datacenter gpus (A100, H100, H200), 8-bit packing via `gemlite.set_packing_bitwidth(8)` is faster for larger batches.
+* On datacenter gpus (A100, H100, H200), 8-bit packing via `gemlite.set_packing_bitwidth(8)` is faster with larger batches.
+* `bfloat16` is about 5-7% slower for `1 <= M <= 64` because of the fp32 fallback atomic addition implementation. You can set the default gemv to the Split-K kernel which could run faster for `M == 1` in some cases depending on the GPU (A100 confirmed, but slower on the H100) `gemlite.core.get_default_gemv = lambda W_nbits: 'GEMM_SPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'`.
 
 ## Performance
 ### End-2-End Performance
