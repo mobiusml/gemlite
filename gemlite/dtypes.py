@@ -25,6 +25,18 @@ DTYPE_TO_TORCH = {
     8: torch.float8_e5m2,
 }
 
+TORCH_TO_DTYPE = {
+    torch.float32: DType.FP32,
+    torch.float16: DType.FP16,
+    torch.bfloat16: DType.BF16,
+    torch.float8_e4m3fn: DType.FP8,
+    torch.int8: DType.INT8,
+    torch.uint8: DType.UINT8,
+    torch.int32: DType.INT32,
+    torch.uint32: DType.UINT32,
+    torch.float8_e5m2: DType.FP8e5,
+}
+
 TORCH_DTYPE_TO_TRITON = {
     torch.float16:       tl.float16,
     torch.float32:       tl.float32,

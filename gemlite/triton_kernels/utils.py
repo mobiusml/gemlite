@@ -42,16 +42,29 @@ def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_
         b = tl.fma(b.to(meta_dtype), scales, zeros) #Asymmetric (Grouped - b*scales + zeros)
 
     return b
-    
+
+@triton.jit
+def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = 'release'):    
+    while tl.atomic_cas(Lock, 0, 1, sem=sem) == 1:
+        pass
+    tl.store(ptr, tl.load(ptr, mask=mask) + value, mask=mask)
+    tl.debug_barrier()
+    tl.atomic_xchg(Lock, 0)
+
 def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
 
-def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800']): 
+def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800', 'b100', 'b200']): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
+
+def gpu_supports_bfloat16_atomicadd():
+    #Triton tl.atomic_add doens't support bfloat16 even for Hopper and above. 
+    #return torch.cuda.get_device_capability()[0] >= 9 #Hopper and above
+    return False
 
 #Next power of 2
 M_MAXVAL  = 1024

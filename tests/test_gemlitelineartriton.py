@@ -2,13 +2,21 @@
 
 import unittest
 import torch
-from gemlite.core import GemLiteLinearTriton, DType, set_autotune
+from gemlite.core import GemLiteLinearTriton, DType, set_autotune, TORCH_TO_DTYPE
 
-device = 'cuda:0'
-matmul_types = ['GEMV', 'GEMV_SPLITK', 'GEMV_REVSPLITK'] + ['GEMM_SPLITK', 'GEMM']
+def is_fp8_supported():
+    if not torch.cuda.is_available():
+        return False
+    capability = torch.cuda.get_device_capability(0) 
+    return capability >= (8, 9)  
+
+device        = 'cuda:0'
+compute_dtype = torch.float16 #float16, bfloat16
+gemlite_dtype = TORCH_TO_DTYPE[compute_dtype]
+matmul_types  = ['GEMV', 'GEMV_SPLITK', 'GEMV_REVSPLITK'] + ['GEMM_SPLITK', 'GEMM']
 set_autotune(dict([(m, False) for m in matmul_types]), exhaustive=False, use_cuda_graph=False)
 
-def gen_data(in_features, out_features, W_nbits, group_size, dtype=torch.float16):
+def gen_data(in_features, out_features, W_nbits, group_size, dtype=compute_dtype):
 
 	W_q = torch.randint(0, 2**W_nbits - 1, (out_features, in_features), device=device).to(torch.uint8)
 
@@ -40,12 +48,14 @@ def scale_fct(x, max_val, w_dtype):
 class TestGemLiteLinearTriton(unittest.TestCase):
 
 	def test_fp16xfp16(self):
+
+
 		gemlite_linear = GemLiteLinearTriton(W_nbits=16, 
 						group_size=None, 
 						in_features=in_features, 
 						out_features=out_features, 
-						input_dtype=DType.FP16, 
-						output_dtype=DType.FP16,
+						input_dtype=gemlite_dtype, 
+						output_dtype=gemlite_dtype,
 						scaled_activations=False)
 
 		gemlite_linear.pack(W, None, None, None);
@@ -58,8 +68,8 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		tol = 1e-3
 
 		for batch_size in batch_sizes:
-			x = (torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.)
-			y_ref = torch.matmul(x.half(), W.T)
+			x = (torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.)
+			y_ref = torch.matmul(x.to(compute_dtype), W.T)
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
@@ -73,8 +83,8 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						group_size=group_size, 
 						in_features=in_features, 
 						out_features=out_features, 
-						input_dtype=DType.FP16, 
-						output_dtype=DType.FP16)
+						input_dtype=gemlite_dtype, 
+						output_dtype=gemlite_dtype)
 
 
 		gemlite_linear.pack(W_q, scales, zeros, None);
@@ -92,8 +102,8 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		tol = 1e-3
 
 		for batch_size in batch_sizes:
-			x = torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.
-			y_ref = torch.matmul(x.half(), W.T)
+			x = torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.
+			y_ref = torch.matmul(x.to(compute_dtype), W.T)
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
@@ -113,7 +123,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						scaled_activations=False) 
 
 
-		_scales = torch.randn((out_features, 1), dtype=torch.float16, device=device) * 1e-4
+		_scales = torch.randn((out_features, 1), dtype=compute_dtype, device=device) * 1e-4
 		gemlite_linear.pack(W_q, scales=_scales, zeros=7, bias=None);
 
 		#Weights are unpacked() then shifted by 7
@@ -125,7 +135,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		for batch_size in batch_sizes:
 			x = (torch.randint(-10, 10, (batch_size, in_features), device=device)).to(torch.int8)
-			y_ref = torch.matmul(x.half(), ((W_q.half() - 7) * _scales).T) 
+			y_ref = torch.matmul(x.to(compute_dtype), ((W_q.to(compute_dtype) - 7) * _scales).T) 
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
@@ -164,7 +174,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 			x = torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 20.
 			
 			_x, _x_scaled = scaled_activations(x)
-			y_ref = torch.matmul(_x.half(), (W_q.half() - 7).T) * _x_scaled
+			y_ref = torch.matmul(_x.to(torch.float16), (W_q.to(torch.float16) - 7).T) * _x_scaled
 
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
@@ -183,7 +193,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						output_dtype=DType.FP32,
 						scaled_activations=True)
 
-		_scales = torch.randn((out_features, 1), dtype=torch.float16, device=device) * 1e-4
+		_scales = torch.randn((out_features, 1), dtype=compute_dtype, device=device) * 1e-4
 		gemlite_linear.pack(W_q, scales=_scales, zeros=7, bias=None);
 
 		#Scaling activations
@@ -200,9 +210,9 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		for batch_size in batch_sizes:
 			shape = W_q.shape
-			x = torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.
+			x = torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.
 			_x, _x_scaled = scaled_activations(x)
-			y_ref = torch.matmul(_x.half(), ((W_q.half() - 7) * _scales).T) * _x_scaled
+			y_ref = torch.matmul(_x.to(compute_dtype), ((W_q.to(compute_dtype) - 7) * _scales).T) * _x_scaled
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
@@ -210,7 +220,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 				self.assertTrue(err < tol, str(err) + ', expected < ' + str(tol))
 
 
-
+	@unittest.skipIf(not is_fp8_supported(), "Skipping test: GPU does not support FP8")
 	def test_fp8xfp8(self):
 		#FP8 x FP8 - no scaling
 
@@ -219,7 +229,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.FP8, 
-						output_dtype=DType.FP16,
+						output_dtype=gemlite_dtype,
 						scaled_activations=False)
 
 
@@ -233,15 +243,15 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		tol = 5e-3 #needs higher tolerance with fp8
 
 		for batch_size in batch_sizes:
-			x = (torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.).to(torch.float8_e4m3fn)
-			y_ref = torch.matmul(x.half(), W.T)
+			x = (torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.).to(torch.float8_e4m3fn)
+			y_ref = torch.matmul(x.to(compute_dtype), W.T)
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
 				err   = (y_ref - y_gem).abs().mean().item()
 				self.assertTrue(err < tol, str(err) + ', expected < ' + str(tol))
 
-
+	@unittest.skipIf(not is_fp8_supported(), "Skipping test: GPU does not support FP8")
 	def test_fp8xfp8_scaled_weights_scaled_activations(self):
 		#FP8 x FP8 - both activations and weights are scaled
 
@@ -250,15 +260,15 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.FP8, 
-						output_dtype=DType.FP16,
+						output_dtype=gemlite_dtype,
 						scaled_activations=True)
 
 
-		_scales = torch.randn((1, out_features), dtype=torch.float16, device=device) * 1e-4
+		_scales = torch.randn((1, out_features), dtype=compute_dtype, device=device) * 1e-4
 		gemlite_linear.pack(W.to(torch.float8_e4m3fn), scales=_scales, zeros=None, bias=None);
 
 		#Scaling activations
-		scales_x = torch.ones((1, 1), dtype=torch.float16, device='cuda:0') * 0.1
+		scales_x = torch.ones((1, 1), dtype=compute_dtype, device='cuda:0') * 0.1
 		def scaled_activations(x):
 			return x, scales_x
 		gemlite_linear.scale_activations = scaled_activations
@@ -272,15 +282,15 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 
 		for batch_size in batch_sizes:
 			shape = W.shape
-			x = (torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.).to(torch.float8_e4m3fn)
-			y_ref = torch.matmul(x.half(), W.T) * (_scales * scales_x)
+			x = (torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.).to(torch.float8_e4m3fn)
+			y_ref = torch.matmul(x.to(compute_dtype), W.T) * (_scales * scales_x)
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
 				err   = (y_ref - y_gem).abs().mean().item()
 				self.assertTrue(err < tol, str(err) + ', expected < ' + str(tol))
 
-
+	@unittest.skipIf(not is_fp8_supported(), "Skipping test: GPU does not support FP8")
 	def test_fp8xWn_scaled_activations(self):
 		#FP8 x Wn - asymmetric, with activation scaling
 
@@ -289,7 +299,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.FP8, 
-						output_dtype=DType.FP16,
+						output_dtype=gemlite_dtype,
 						scaled_activations=True)
 
 
@@ -312,16 +322,16 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		tol = 5e-3 #needs higher tolerance with fp8
 
 		for batch_size in batch_sizes:
-			x = (torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.).to(torch.float8_e4m3fn).half()
+			x = (torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.).to(torch.float8_e4m3fn).to(compute_dtype)
 			_x, _scaled_x = scaled_activations(x)
-			y_ref = torch.matmul(_x.half(), W.T) * _scaled_x
+			y_ref = torch.matmul(_x.to(compute_dtype), W.T) * _scaled_x
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
 				err   = (y_ref - y_gem).abs().mean().item()
 				self.assertTrue(err < tol, str(err) + ', expected < ' + str(tol))
 
-
+	@unittest.skipIf(not is_fp8_supported(), "Skipping test: GPU does not support FP8")
 	def test_fp8xWn_no_activation_scaling(self):
 		#FP8 x Wn - asymmetric, no activation scaling
 
@@ -330,7 +340,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						in_features=in_features, 
 						out_features=out_features, 
 						input_dtype=DType.FP8, 
-						output_dtype=DType.FP16,
+						output_dtype=gemlite_dtype,
 						scaled_activations=False)
 
 		gemlite_linear.pack(W_q, scales, zeros, None)
@@ -347,8 +357,8 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 		tol = 5e-3 #needs higher tolerance with fp8
 
 		for batch_size in batch_sizes:
-			x = (torch.randn((batch_size, in_features), dtype=torch.float16, device=device) / 10.).to(torch.float8_e4m3fn)
-			y_ref = torch.matmul(x.half(), W.T)
+			x = (torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.).to(torch.float8_e4m3fn)
+			y_ref = torch.matmul(x.to(compute_dtype), W.T)
 			for matmul_type in matmul_types:
 				if(batch_size>1  and 'GEMV' in matmul_type): continue
 				y_gem = gemlite_linear.forward_manual(x, matmul_type=matmul_type)

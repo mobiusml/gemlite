@@ -8,8 +8,9 @@ import triton.language as tl
 from .config import AUTOTUNE_ENABLE
 from .utils import *
 
-KEYS        = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
-MATMUL_TYPE = "GEMV_SPLITK"
+KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+MATMUL_TYPE   = "GEMV_SPLITK"
+NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS
@@ -336,7 +337,6 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
         scales_b = tl.load(scales_ptr   + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
-    acc = acc.to(output_dtype)
     ##################################################################
 
     #Output
@@ -344,11 +344,12 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+    mask    = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
 
     if(SPLIT_K == 1):
-        tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
+        tl.store(c_ptrs, acc, mask=mask) 
     else:
-        tl.atomic_add(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N), sem=atomic_mode) 
+        tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
 
 
 _costum_op_id = '_' + str(int(random.random()*10000))
@@ -361,9 +362,13 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
                                                 ) -> Tensor: 
     
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
-    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
+
+    native_atomic = True 
+    #native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
+    #WARNING: change this to the second check if SPLIT_K > 1 
+    
+    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32) 
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 
@@ -376,18 +381,21 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        ########################
+        ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
-        ########################
+        ################################################
         channel_scale_mode = channel_scale_mode,
         W_group_mode       = W_group_mode,
         zero_is_scalar     = zeros.numel() == 1,
         data_contiguous    = data_contiguous,
         dump_b_val         = 0.001 if(W_group_mode in [0, 1] and acc_dtype == DType.FP16.value and W_nbits == 8) else 0, #Warning: Only use with INT8
     )
+
+    if(not native_atomic):
+        output = output.to(DTYPE_TO_TORCH[output_dtype])
 
     return output
 
