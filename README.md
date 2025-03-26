@@ -62,8 +62,8 @@ pip install git+https://github.com/mobiusml/gemlite/
 import gemlite
 from gemlite import DType, GemLiteLinear
 
-#Set default packing bitwidth: use 8-bit for larger batch-sizes on A100s/H100s
-#gemlite.set_packing_bitwidth(8)
+#Reset the default cache to get the best perf but warm-up will be slow. 
+#gemlite.reset_cache()
 
 #Main constructor
 gemlite_linear = GemLiteLinear(
@@ -84,6 +84,9 @@ gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #Forward
 out = gemlite_linear(x)
+
+#Save cache
+#gemlite.cache_config('gemlite_config.json')
 ```
 ### Helper Functions
 Additionally, we offer helper functions that operate as follows:
