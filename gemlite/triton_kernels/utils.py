@@ -32,7 +32,16 @@ def swizzle_tile_v3(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.cons
     grid_n = tl.cdiv(N, BLOCK_SIZE_N)
     return tl.swizzle2d(pid_m, pid_n, grid_m, grid_n, GROUP_SIZE_M)
 
-swizzle_tile = swizzle_tile_v3
+@triton.jit
+def swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M: tl.constexpr): 
+    group_id = tile_id // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (tile_id % group_size_m)
+    pid_n = (tile_id % num_pid_in_group) // group_size_m
+    return pid_m, pid_n
+
+swizzle_tile = swizzle_tile_v1
 
 @triton.jit
 def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
