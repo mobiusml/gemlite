@@ -3,7 +3,7 @@ import triton.language as tl
 from ..dtypes import *
 
 @triton.jit
-def swizzle_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+def swizzle_tile_v1(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
     grid_m     = tl.cdiv(M, BLOCK_SIZE_M)
     grid_n     = tl.cdiv(N, BLOCK_SIZE_N)
     width      = GROUP_SIZE_M * grid_n
@@ -14,11 +14,42 @@ def swizzle_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constex
     return pid_m, pid_n
 
 @triton.jit
-def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
-    pid_m = pid // tl.cdiv(N, BLOCK_SIZE_N)
-    pid_n = pid % tl.cdiv(N, BLOCK_SIZE_N)
+def swizzle_tile_v2(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+    grid_m     = tl.cdiv(M, BLOCK_SIZE_M)
+    grid_n     = tl.cdiv(N, BLOCK_SIZE_N)
+    width      = GROUP_SIZE_M * grid_m
+    group_id   = pid // width
+    group_size = tl.minimum(grid_n - group_id * GROUP_SIZE_M, GROUP_SIZE_M)
+    pid_n      = group_id * GROUP_SIZE_M + (pid % group_size)
+    pid_m      = (pid % width) // group_size
     return pid_m, pid_n
 
+@triton.jit
+def swizzle_tile_v3(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+    pid_m  = pid % tl.cdiv(M, BLOCK_SIZE_M)
+    pid_n  = pid // tl.cdiv(M, BLOCK_SIZE_M)
+    grid_m = tl.cdiv(M, BLOCK_SIZE_M)
+    grid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    return tl.swizzle2d(pid_m, pid_n, grid_m, grid_n, GROUP_SIZE_M)
+
+@triton.jit
+def swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M: tl.constexpr): 
+    group_id = tile_id // num_pid_in_group
+    first_pid_m = group_id * GROUP_SIZE_M
+    group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
+    pid_m = first_pid_m + (tile_id % group_size_m)
+    pid_n = (tile_id % num_pid_in_group) // group_size_m
+    return pid_m, pid_n
+
+swizzle_tile = swizzle_tile_v1
+
+@triton.jit
+def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
+    pid_m = pid % tl.cdiv(M, BLOCK_SIZE_M)
+    pid_n = pid // tl.cdiv(M, BLOCK_SIZE_M)
+    return pid_m, pid_n
+
+#################################################################################################################
 @triton.jit
 def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample: tl.constexpr, W_group_mode: tl.constexpr, zero_is_scalar: tl.constexpr):
     #Unpack
