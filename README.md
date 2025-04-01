@@ -71,8 +71,8 @@ gemlite_linear = GemLiteLinear(
     group_size=group_size, # any group_size divisible by 32 - enable autotune for group_size < 128 (!)
     in_features=in_features, # input size
     out_features=out_features, #ouput size
-    input_dtype=DType.FP16, #FP16, FP8, INT8
-    output_dtype=DType.FP16, #FP16, FP32, FP8, INT32
+    input_dtype=DType.FP16, #FP16, BF16, FP8, INT8
+    output_dtype=DType.FP16, #FP16, BF16, FP32, FP8, INT32
     scaled_activations=False, #If the activations are scaled or not
 )
 
@@ -85,7 +85,7 @@ gemlite_linear.pack(W_q, scales, zeros, bias)
 #Forward
 out = gemlite_linear(x)
 
-#Save cache
+#Save cache if want to re-use the same autotune config
 #gemlite.cache_config('gemlite_config.json')
 ```
 ### Helper Functions
