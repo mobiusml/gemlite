@@ -211,7 +211,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     NUM_SMS: tl.constexpr,
 ):
     """
-    Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
+    Based on https://triton-lang.org/main/getting-started/tutorials/09-persistent-matmul.html
     GEMM for C = matmul(A, dequantize(B, scales, zeros))
     A is of shape (M, K): float16 or bfloat16
     B is of shape (K//elements_per_sample, N): int32 as a packed matrix
