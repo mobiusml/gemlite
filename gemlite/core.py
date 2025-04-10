@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Triton backend
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
-    DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16,
+    DType.FP16: DType.FP32, #AMD
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.FP8: DType.FP32,
@@ -100,7 +100,7 @@ def set_autotune_setting(fct): #fct = lambda M: M for max-autotune
 
 #set default packing format
 def set_packing_bitwidth(packing_bitwidth : int):
-    assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)."
+    assert packing_bitwidth in [8, 16, 32], "Unsupported packing bitwidth (should be in [8, 16, 32])."
     GemLiteLinearTriton.PACKING_BITWIDTH = packing_bitwidth
 
 #Set accumulation dtype
@@ -198,7 +198,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
 
-        assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)"
+        assert packing_bitwidth in [8, 16, 32], "Unsupported packing bitwidth (should be 8, or 16 or 32)"
 
         #Unpacked weights
         self.W_q = None
@@ -301,6 +301,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(contiguous):
             self.data_contiguous = True
             self.W_q = self.W_q.contiguous()
+
             if(isinstance(self.scales, torch.Tensor)):
                 self.scales = self.scales.contiguous()
             if(isinstance(self.zeros, torch.Tensor)):
@@ -308,11 +309,11 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.data_contiguous = False
 
-            ###### AMD ###############################
-            # if(isinstance(self.scales, torch.Tensor)):
-            #     self.scales = self.scales.contiguous()
-            # if(isinstance(self.zeros, torch.Tensor)):
-            #     self.zeros = self.zeros.contiguous()
+            #AMD
+            if(isinstance(self.scales, torch.Tensor)):
+                self.scales = self.scales.contiguous()
+            if(isinstance(self.zeros, torch.Tensor)):
+                self.zeros = self.zeros.contiguous()
             #########################################
 
 

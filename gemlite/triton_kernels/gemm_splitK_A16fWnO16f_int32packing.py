@@ -163,16 +163,42 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #     return _configs
 
 
+# #HIP - Instinct MI300X
+# def get_autotune_config():
+#     _stages  = [2] #[1, 2]
+#     _configs = []
+#     for _M in [16, 32, 64]:
+#         for _N in [32, 64, 128, 256]:
+#             for _K in [32, 64, 128, 256]: #[512]
+#                 for _w in [4]:
+#                     for _s in _stages:
+#                         for _sK in [1, 2, 4, 8]: 
+#                             for _a_load_order in [0]: #[0, 2]
+#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+#                                                     }, 
+#                                                     num_stages=_s, num_warps=_w,
+#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+#                                                     )
+#                                                 )
+#     return _configs
+
+
+
 #HIP - Instinct MI300X
 def get_autotune_config():
     _stages  = [2] #[1, 2]
     _configs = []
-    for _M in [16, 32, 64]:
-        for _N in [32, 64, 128, 256]:
-            for _K in [32, 64, 128, 256]: #[512]
+    for _M in [16]:
+        for _N in [32]:
+            for _K in [32, 64, 128]: #[512]
                 for _w in [4]:
                     for _s in _stages:
-                        for _sK in [1, 2, 4, 8]: 
+                        for _sK in [1]: 
                             for _a_load_order in [0]: #[0, 2]
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
@@ -186,6 +212,7 @@ def get_autotune_config():
                                                     )
                                                 )
     return _configs
+
 
 
 compute_capability = torch.cuda.get_device_capability(0)
@@ -317,12 +344,15 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        #b = tl.load(b_ptrs, eviction_policy='evict_first')
+        b = tl.load(b_ptrs) #AMD
 
         if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD 
         
         #Meta-data loading policy
         if(W_group_mode > 0):
@@ -342,14 +372,16 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             zeros = None
         
         if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
         #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
 
         if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
         
         #Dot
         #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 

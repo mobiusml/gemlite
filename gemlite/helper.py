@@ -115,7 +115,7 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', post_scale=False):
+    def __init__(self, device='cuda:0', post_scale=True):
         self.post_scale = post_scale
         self.device     = device
 
@@ -141,7 +141,7 @@ class A16Wn:
                             scales.to(device=self.device, dtype=dtype), 
                             zeros.to(device=self.device, dtype=dtype), 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
-                            contiguous=True,
+                            contiguous=True, 
                             ) 
 
         if(group_size == in_features):

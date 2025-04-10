@@ -47,8 +47,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m      = 1 #Only 1 allowed here
-        block_size_n      = min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k      = min(k, config.kwargs['BLOCK_SIZE_K'])
+        block_size_n      = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k      = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
 
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -153,17 +153,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #     return _configs
 
 
-##HIP - Instinct MI300X - contiguous = False
+##HIP - Instinct MI300X - ontiguous = True (For packed data)
 def get_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [8, 16, 32, 64]:
-            for _K in [128, 256, 512, 1024]: 
+        for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]:
+            for _K in [32, 64, 128, 256, 512, 1024, 2048]: 
                 for _w in [4]:
                     for _s in [1]:
                         for _A_load_order in [0]: 
-                            for _meta_evict_policy in ['']: #[', 'evict_last']
-                                for _atomic_mode in ['relaxed']:  #['release', 'relaxed']
+                            for _meta_evict_policy in ['']: #['', 'evict_last']
+                                for _atomic_mode in ['relaxed']: 
                                     for _dot_prod_mode in [0]: #[0, 1]
                                         _configs.append(
                                                 triton.Config(
@@ -259,15 +259,22 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    #AMD
+    #data_contiguous = False
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    offs_ak = offs_k
+    offs_bk = offs_k
 
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
-    else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    # offs_am = offs_m
+    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+    # if(data_contiguous):
+    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    #     offs_bk = offs_k
+    # else:
+    #     offs_bn = offs_n
+    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
@@ -295,11 +302,14 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     #Load
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False)
-    
+        #a = tl.load(a_ptrs).reshape((BLOCK_SIZE_K, 1), can_reorder=False) #AMD
+
     b = tl.load(b_ptrs, eviction_policy='evict_first') 
+    #b = tl.load(b_ptrs) #AMD
 
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False)
+        #a = tl.load(a_ptrs).reshape((BLOCK_SIZE_K, 1), can_reorder=False) #AMD
 
     # Unpack and dequantize    
     b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
@@ -317,11 +327,14 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
 
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False)
+        #a = tl.load(a_ptrs).reshape((BLOCK_SIZE_K, 1), can_reorder=False) #AMD
     
     b = tl.load(b_ptrs, eviction_policy='evict_first') 
+    #b = tl.load(b_ptrs) #AMD
 
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy='evict_last').reshape((BLOCK_SIZE_K, 1), can_reorder=False)
+        #a = tl.load(a_ptrs).reshape((BLOCK_SIZE_K, 1), can_reorder=False) #AMD
 
     # Unpack and dequantize    
     b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
@@ -376,6 +389,16 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
 
+    #AMD
+    #acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
+    dtype = DTYPE_TO_TRITON[input_dtype]
+    if(dtype in [tl.float16, tl.bfloat16, tl.float32]):
+        acc_dtype = dtype
+    else:
+        acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
+
     gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
@@ -388,7 +411,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
         ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
-        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+        acc_dtype    = acc_dtype,
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ################################################
         channel_scale_mode = channel_scale_mode,

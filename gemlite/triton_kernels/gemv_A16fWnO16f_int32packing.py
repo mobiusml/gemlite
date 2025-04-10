@@ -47,10 +47,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m = 1 #Only 1 allowed
-        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
-        
-        #Skip blocks that are either too large or too small
+        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
+
+        #Faster autotune
         block_area = block_size_k * block_size_n
         if(block_area < 1024 or block_area > 4096 * 8): 
             continue
@@ -145,22 +145,21 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #HIP - Instinct MI300X - contiguous = False
 def get_autotune_config():
-    #Tuned on MI300X
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [8, 16, 32, 64]:
-            for _K in [64, 128, 256, 512, 1024]:
+        for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]:
+            for _K in [32, 64, 128, 256, 512, 1024, 2048]: 
                 for _w in [4]:
                     for _s in [1]:
-                        for _A_load_order in [0]:  #[0, 1, 2, 3]
-                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
-                                for _dot_prod_mode in [0]: #[0, 1]
-                                    for _atomic_mode in ['relaxed']:  #['release', 'relaxed'] - 'relaxed' default 4090
+                        for _A_load_order in [0]: 
+                            for _meta_evict_policy in ['']: #['', 'evict_last']
+                                for _atomic_mode in ['relaxed']: 
+                                    for _dot_prod_mode in [0]: #[0, 1, 2]. Use _M = [16] for dot_prod_mode = 2
                                         _configs.append(
                                                 triton.Config(
                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
-                                                    'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode,}, 
+                                                    'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
                                                     num_stages=_s, num_warps=_w, 
                                                     pre_hook=init_to_zero("c_ptr"),
                                                     )
@@ -249,15 +248,22 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    #AMD
+    #data_contiguous = False
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    offs_ak = offs_k
+    offs_bk = offs_k
 
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
-    else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    # offs_am = offs_m
+    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+    # if(data_contiguous):
+    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    #     offs_bk = offs_k
+    # else:
+    #     offs_bn = offs_n
+    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak  
@@ -267,11 +273,14 @@ def gemv_A16fWnO16f_int32packing_kernel(
     #Load
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy='evict_last')
+        #a = tl.load(a_ptrs)
 
     b = tl.load(b_ptrs, eviction_policy='evict_first')
+    #b = tl.load(b_ptrs)
 
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy='evict_last')
+        #a = tl.load(a_ptrs)
     
     if(W_group_mode > 0):
         k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
@@ -291,6 +300,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     
     if(A_load_order == 2):
         a = tl.load(a_ptrs, eviction_policy='evict_last')
+        #a = tl.load(a_ptrs)
 
     ####################################################################
     # Unpack and dequantize
@@ -299,6 +309,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
     if(A_load_order == 3):
         a = tl.load(a_ptrs, eviction_policy='evict_last')
+        #a = tl.load(a_ptrs)
 
     if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
 
@@ -307,6 +318,8 @@ def gemv_A16fWnO16f_int32packing_kernel(
         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
     if(dot_prod_mode == 1):
         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True).to(acc_dtype) 
+    if(dot_prod_mode == 2):
+        acc = tl.sum(tl.dot(a, b.to(input_dtype)), axis=0, keep_dims=True)
 
     if(dump_b_val > 0): acc /= dump_b_val
 
@@ -352,6 +365,16 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
 
+    #AMD
+    #acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
+    dtype = DTYPE_TO_TRITON[input_dtype]
+    if(dtype in [tl.float16, tl.bfloat16, tl.float32]):
+        acc_dtype = dtype
+    else:
+        acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
+
     gemv_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
@@ -364,7 +387,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         ############################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
-        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+        acc_dtype    = acc_dtype,
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ############################################
         channel_scale_mode = channel_scale_mode,
