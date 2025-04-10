@@ -308,6 +308,14 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.data_contiguous = False
 
+            ###### AMD ###############################
+            # if(isinstance(self.scales, torch.Tensor)):
+            #     self.scales = self.scales.contiguous()
+            # if(isinstance(self.zeros, torch.Tensor)):
+            #     self.zeros = self.zeros.contiguous()
+            #########################################
+
+
         #Register buffers
         self.W_q      = torch.nn.Parameter(self.W_q,   requires_grad=False)
         self.scales   = torch.nn.Parameter(self.scales,requires_grad=False)

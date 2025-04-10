@@ -60,7 +60,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Only use higher split_k values for smaller m
         if(m >= 32): split_k = min(split_k, 8)
         #Only use lower split_k values for larger m
-        if(m <= 16): split_k = max(split_k, 2)
+        if(m <= 16): split_k = max(split_k, 1) #EDIT: max(split_k, 2)
 
         #Filter 
         block_area = block_size_k * block_size_n
@@ -112,16 +112,68 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 #These autotunes are optimized for batch-size 1 to 64 (!)
+
+## Nvidia
+# def get_autotune_config():
+#     _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+#     _configs = []
+#     for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
+#         for _N in [32, 64, 128, 256]:
+#             for _K in [32, 64, 128, 256]:
+#                 for _w in [4, 8]:
+#                     for _s in _stages:
+#                         for _sK in [1, 2, 4, 8, 16]: 
+#                             for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
+#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+#                                                     }, 
+#                                                     num_stages=_s, num_warps=_w,
+#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+#                                                     )
+#                                                 )
+#     return _configs
+
+
+# #HIP
+# def get_autotune_config():
+#     _stages  = [1, 2]
+#     _configs = []
+#     for _M in [16, 32, 64]:
+#         for _N in [32, 64, 128, 256]:
+#             for _K in [32, 64, 128, 256]:
+#                 for _w in [2]:
+#                     for _s in _stages:
+#                         for _sK in [1, 2, 4, 8]: #[1, 2, 4, 8, 16]: 
+#                             for _a_load_order in [0]: #[0, 2]
+#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+#                                                     }, 
+#                                                     num_stages=_s, num_warps=_w,
+#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+#                                                     )
+#                                                 )
+#     return _configs
+
+
+#HIP - Instinct MI300X
 def get_autotune_config():
-    _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+    _stages  = [2] #[1, 2]
     _configs = []
-    for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
+    for _M in [16, 32, 64]:
         for _N in [32, 64, 128, 256]:
-            for _K in [32, 64, 128, 256]:
-                for _w in [4, 8]:
+            for _K in [32, 64, 128, 256]: #[512]
+                for _w in [4]:
                     for _s in _stages:
-                        for _sK in [1, 2, 4, 8, 16]: 
-                            for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
+                        for _sK in [1, 2, 4, 8]: 
+                            for _a_load_order in [0]: #[0, 2]
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
                                         _configs.append(
@@ -300,8 +352,9 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
-        
+        #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) #HIP
+
         #Advance
         a_ptrs += BLOCK_SIZE_K_U * stride_ak
         b_ptrs += BLOCK_SIZE_K_P * stride_bk

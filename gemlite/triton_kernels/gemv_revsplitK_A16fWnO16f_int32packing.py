@@ -102,16 +102,66 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             pre_hook=config.pre_hook,
         )
 
-#contiguous = True
+# #contiguous = True | nvidia
+# def get_autotune_config():
+#     #Tuned on 4090 RTX / A100 SXM4
+#     _configs = []
+#     for _M in [1]: #ONLY 1 allowed here
+#         for _N in [128, 256, 512]:
+#             for _K in [8, 16, 32, 64]: 
+#                 for _w in [2, 4]:
+#                     for _s in [1, 2]:
+#                         for _A_load_order in [0, 1]: 
+#                             for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed']
+#                                     for _dot_prod_mode in [0]: #[0, 1]
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
+#                                                     num_stages=_s, num_warps=_w, 
+#                                                     pre_hook=init_to_zero("c_ptr"),
+#                                                     )
+#                                                 )
+
+#     return _configs
+
+
+# ##HIP - Instinct MI300X - contiguous = True
+# def get_autotune_config():
+#     _configs = []
+#     for _M in [1]: #ONLY 1 allowed here
+#         for _N in [128, 256, 512, 1024]:
+#             for _K in [8, 16, 32, 64]: 
+#                 for _w in [4]:
+#                     for _s in [1]:
+#                         for _A_load_order in [0]: 
+#                             for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed']
+#                                     for _dot_prod_mode in [0]: #[0, 1]
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
+#                                                     num_stages=_s, num_warps=_w, 
+#                                                     pre_hook=init_to_zero("c_ptr"),
+#                                                     )
+#                                                 )
+
+#     return _configs
+
+
+##HIP - Instinct MI300X - contiguous = False
 def get_autotune_config():
-    #Tuned on 4090 RTX / A100 SXM4
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [128, 256, 512]:
-            for _K in [8, 16, 32, 64]: 
-                for _w in [2, 4]:
-                    for _s in [1, 2]:
-                        for _A_load_order in [0, 1]: 
+        for _N in [8, 16, 32, 64]:
+            for _K in [128, 256, 512, 1024]: 
+                for _w in [4]:
+                    for _s in [1]:
+                        for _A_load_order in [0]: 
                             for _meta_evict_policy in ['']: #[', 'evict_last']
                                 for _atomic_mode in ['relaxed']:  #['release', 'relaxed']
                                     for _dot_prod_mode in [0]: #[0, 1]
@@ -126,6 +176,8 @@ def get_autotune_config():
                                                 )
 
     return _configs
+
+
 
 
 compute_capability = torch.cuda.get_device_capability(0)

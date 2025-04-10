@@ -108,13 +108,69 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             pre_hook=init_to_zero("c_ptr") if split_k > 1 else None,
         )
 
+
+# #Nvidia 
+# def get_autotune_config():
+#     _configs = []
+#     for _M in [1]: 
+#         for _N in [1, 2, 4, 8, 16, 32, 64]:
+#             for _K in [64, 128, 256, 512, 1024, 2048, 4096]:
+#                 for _w in [4, 8]:
+#                     for _s in [1, 2]:
+#                         for _sK in [1]:
+#                             for _A_load_order in [0]: #[0, 1, 2, 3]
+#                                 for _dot_prod_mode in [0]: #[0, 1]
+#                                     for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                         for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                             _configs.append(
+#                                                     triton.Config(
+#                                                         {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                         'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                         'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                         'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode,
+#                                                         }, 
+#                                                         num_stages=_s, num_warps=_w,
+#                                                         pre_hook=init_to_zero("c_ptr") if(_sK > 1) else None,
+#                                                         )
+#                                                     )
+#     return _configs
+
+
+# #HIP 
+# def get_autotune_config():
+#     _configs = []
+#     for _M in [1]: 
+#         for _N in [1, 2, 4, 8, 16, 32, 64]:
+#             for _K in [64, 128, 256, 512, 1024, 2048, 4096]:
+#                 for _w in [4, 8]:
+#                     for _s in [1, 2]:
+#                         for _sK in [1]:
+#                             for _A_load_order in [0]: #[0, 1, 2, 3]
+#                                 for _dot_prod_mode in [0]: #[0, 1]
+#                                     for _meta_evict_policy in ['']: #[', 'evict_last']
+#                                         for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+#                                             _configs.append(
+#                                                     triton.Config(
+#                                                         {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                         'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+#                                                         'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                         'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode,
+#                                                         }, 
+#                                                         num_stages=_s, num_warps=_w,
+#                                                         pre_hook=init_to_zero("c_ptr") if(_sK > 1) else None,
+#                                                         )
+#                                                     )
+#     return _configs
+
+
+#HIP - Instinct MI300X - contiguous = False
 def get_autotune_config():
     _configs = []
     for _M in [1]: 
         for _N in [1, 2, 4, 8, 16, 32, 64]:
-            for _K in [64, 128, 256, 512, 1024, 2048, 4096]:
-                for _w in [4, 8]:
-                    for _s in [1, 2]:
+            for _K in [128, 256, 512, 1024, 2048, 4096]:
+                for _w in [4]:
+                    for _s in [1]:
                         for _sK in [1]:
                             for _A_load_order in [0]: #[0, 1, 2, 3]
                                 for _dot_prod_mode in [0]: #[0, 1]
@@ -273,9 +329,11 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        #b = tl.load(b_ptrs, eviction_policy='evict_first')
+        b = tl.load(b_ptrs) #AMD
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
@@ -311,6 +369,8 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
             acc += a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype)
         if(dot_prod_mode == 1):
             acc += tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True).to(acc_dtype) 
+
+        #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype)
 
         #Advance
         a_ptrs += BLOCK_SIZE_K_U * stride_ak
