@@ -41,7 +41,7 @@ def swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M: 
     pid_n = (tile_id % num_pid_in_group) // group_size_m
     return pid_m, pid_n
 
-swizzle_tile = swizzle_tile_v1
+swizzle_tile = swizzle_tile_v1 #v1
 
 @triton.jit
 def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):

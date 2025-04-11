@@ -48,8 +48,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
         block_size_m = config.kwargs['BLOCK_SIZE_M']
-        block_size_n = config.kwargs['BLOCK_SIZE_N']
-        block_size_k = config.kwargs['BLOCK_SIZE_K']
+        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
         #Makes autotuning faster: mainly for batch-size 1 .. 64
@@ -64,7 +64,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Filter 
         block_area = block_size_k * block_size_n
-        if(block_area > 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
+        if(block_area >= 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
         #Constraints
@@ -78,8 +78,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         num_warps  = config.num_warps
         num_stages = config.num_stages
 
-        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
-        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+
+        #if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
@@ -138,70 +138,19 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #     return _configs
 
 
-# #HIP
-# def get_autotune_config():
-#     _stages  = [1, 2]
-#     _configs = []
-#     for _M in [16, 32, 64]:
-#         for _N in [32, 64, 128, 256]:
-#             for _K in [32, 64, 128, 256]:
-#                 for _w in [2]:
-#                     for _s in _stages:
-#                         for _sK in [1, 2, 4, 8]: #[1, 2, 4, 8, 16]: 
-#                             for _a_load_order in [0]: #[0, 2]
-#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
-#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-#                                                     }, 
-#                                                     num_stages=_s, num_warps=_w,
-#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
-#                                                     )
-#                                                 )
-#     return _configs
-
-
-# #HIP - Instinct MI300X
-# def get_autotune_config():
-#     _stages  = [2] #[1, 2]
-#     _configs = []
-#     for _M in [16, 32, 64]:
-#         for _N in [32, 64, 128, 256]:
-#             for _K in [32, 64, 128, 256]: #[512]
-#                 for _w in [4]:
-#                     for _s in _stages:
-#                         for _sK in [1, 2, 4, 8]: 
-#                             for _a_load_order in [0]: #[0, 2]
-#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
-#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-#                                                     }, 
-#                                                     num_stages=_s, num_warps=_w,
-#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
-#                                                     )
-#                                                 )
-#     return _configs
-
-
-
 #HIP - Instinct MI300X
 def get_autotune_config():
     _stages  = [2] #[1, 2]
     _configs = []
-    for _M in [16]:
-        for _N in [32]:
-            for _K in [32, 64, 128]: #[512]
+    for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
+        for _N in [32, 64, 128, 256]:
+            for _K in [32, 64, 128, 256]: #[512]
                 for _w in [4]:
                     for _s in _stages:
-                        for _sK in [1]: 
-                            for _a_load_order in [0]: #[0, 2]
+                        for _sK in [1, 2, 4, 8]: 
+                            for _a_load_order in [0]:
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
-                                    for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+                                    for _atomic_mode in ['relaxed']: 
                                         _configs.append(
                                                 triton.Config(
                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
@@ -214,25 +163,14 @@ def get_autotune_config():
     return _configs
 
 
-
 compute_capability = torch.cuda.get_device_capability(0)
 
 #Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
 def get_default_config():
-    #4090: default
+    #4090: MI300X
     config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
-                           'A_load_order':2, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
-
-    if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
-                             'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                             num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
-
-    if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
-                             'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                             num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
+                           'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
     return [config]
 
@@ -309,15 +247,22 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    #AMD
+    #data_contiguous = False
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    offs_ak = offs_k
+    offs_bk = offs_k
 
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
-    else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    # offs_am = offs_m
+    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+    # if(data_contiguous):
+    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    #     offs_bk = offs_k
+    # else:
+    #     offs_bn = offs_n
+    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
@@ -332,7 +277,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
 
     stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size
-    BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K   * SPLIT_K
+    BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
     BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
 
     if(zero_is_scalar):
@@ -344,15 +289,15 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
-        #b = tl.load(b_ptrs, eviction_policy='evict_first')
-        b = tl.load(b_ptrs) #AMD
+        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        #b = tl.load(b_ptrs) #AMD
 
         if(A_load_order == 1): #Early load
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD 
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD 
         
         #Meta-data loading policy
         if(W_group_mode > 0):
@@ -372,16 +317,16 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             zeros = None
         
         if(A_load_order == 2): #Mid load
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
         #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
 
         if(A_load_order == 3): #Late load 
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
         
         #Dot
         #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 

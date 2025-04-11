@@ -153,15 +153,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #     return _configs
 
 
-##HIP - Instinct MI300X - ontiguous = True (For packed data)
+##HIP - Instinct MI300X - contiguous = True (For packed data)
 def get_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048]:
-            for _K in [32, 64, 128, 256, 512, 1024, 2048]: 
-                for _w in [4]:
-                    for _s in [1]:
-                        for _A_load_order in [0]: 
+        for _N in [16, 32, 64, 128, 256, 512, 1024, 2048]: #[1024]
+            for _K in [16, 32, 64, 128, 256, 512, 1024]: #[32]
+                for _w in [4]: #4
+                    for _s in [1]: #1
+                        for _A_load_order in [0]: #[0, 1]
                             for _meta_evict_policy in ['']: #['', 'evict_last']
                                 for _atomic_mode in ['relaxed']: 
                                     for _dot_prod_mode in [0]: #[0, 1]
@@ -178,22 +178,38 @@ def get_autotune_config():
     return _configs
 
 
+# def get_autotune_config():
+#     _configs = []
+#     for _M in [1]: #ONLY 1 allowed here
+#         for _N in [1024]:
+#             for _K in [32]: 
+#                 for _w in [4]:
+#                     for _s in [1]:
+#                         for _A_load_order in [0]: #[0, 1]
+#                             for _meta_evict_policy in ['']: #['', 'evict_last']
+#                                 for _atomic_mode in ['relaxed']: 
+#                                     for _dot_prod_mode in [0]: #[0, 1]
+#                                         _configs.append(
+#                                                 triton.Config(
+#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                                     'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 
+#                                                     'atomic_mode': _atomic_mode, 'dot_prod_mode': _dot_prod_mode}, 
+#                                                     num_stages=_s, num_warps=_w, 
+#                                                     pre_hook=init_to_zero("c_ptr"),
+#                                                     )
+#                                                 )
+
+#     return _configs
+
+
 
 
 compute_capability = torch.cuda.get_device_capability(0)
 
 def get_default_config():
-    # #4090: default
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed', 'dot_prod_mode':0}, 
-                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
-
-    if(compute_capability == (8, 0)): #A100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed', 'dot_prod_mode':0}, 
-                            num_warps=2, num_stages=2, pre_hook=init_to_zero("c_ptr"))
-
-    if(compute_capability == (9, 0)): #H100
-        config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16, 'A_load_order':1, 'meta_evict_policy':'', 'atomic_mode':'relaxed', 'dot_prod_mode':0}, 
-                            num_warps=2, num_stages=1, pre_hook=init_to_zero("c_ptr"))
+    #MI300x
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1024, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed', 'dot_prod_mode':0}, 
+                            num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
 
     return [config]
 

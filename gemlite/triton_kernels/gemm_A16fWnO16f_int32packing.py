@@ -41,8 +41,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m = config.kwargs['BLOCK_SIZE_M']
-        block_size_n = config.kwargs['BLOCK_SIZE_N']
-        block_size_k = config.kwargs['BLOCK_SIZE_K']
+        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
@@ -55,14 +55,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Filter 
         block_area = block_size_k * block_size_n
-        if(block_area > 4096 * 4): #Limit area for faster autotuning. Use for more 4096 * 8
+        if(block_area >= 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
         num_warps  = config.num_warps
         num_stages = config.num_stages
 
-        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
-        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+        
+        #if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
@@ -91,16 +92,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 
+#HIP - Instinct MI300X
 def get_autotune_config():
-    _stages  = [1, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+    _stages  = [2]
     _configs = []
     for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
             for _K in [32, 64, 128, 256]:
-                for _w in [4, 8]:
+                for _w in [4]:
                     for _s in _stages:
-                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
-                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                        for _A_load_order in [0]:
+                            for _meta_evict_policy in ['']: 
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
@@ -111,11 +113,11 @@ def get_autotune_config():
     return _configs
 
 
-#4090 RTX
+#MI300X
 def get_default_config():
     #small batch, not sure what is the right default cnnfig here.
-    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
-                            num_warps=4, num_stages=1),]
+    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':0, 'meta_evict_policy':''}, 
+                            num_warps=4, num_stages=2),]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
@@ -186,15 +188,22 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    #AMD
+    #data_contiguous = False
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    offs_ak = offs_k
+    offs_bk = offs_k
 
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
-    else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+    # offs_am = offs_m
+    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+
+    # if(data_contiguous):
+    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    #     offs_bk = offs_k
+    # else:
+    #     offs_bn = offs_n
+    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs
@@ -252,7 +261,8 @@ def gemm_A16fWnO16f_int32packing_kernel(
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")
+        #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) #HIP
 
         #Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak

@@ -51,8 +51,11 @@ class A8W8_dynamic:
         self.weight_scale = weight_scale
 
     def from_weights(self, weight, bias=None):
-        if(self.fp8): #FP8
-            w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+        if(self.fp8 is not False): #FP8
+            if(self.fp8 in [torch.float8_e4m3fn]):
+                w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+            if(self.fp8 in [torch.float8_e5m2]):
+                w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
 
@@ -106,12 +109,14 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', weight_scale=1.):
+    def __init__(self, device='cuda:0', weight_scale=1., use_fp8e5=False):
         super().__init__()
         self.device = device
         self.weight_scale = weight_scale
-        self.fp8 = True
-
+        if(use_fp8e5):
+            self.fp8 = torch.float8_e5m2
+        else:
+            self.fp8 = torch.float8_e4m3fn
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
@@ -182,7 +187,7 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=False):
+    def __init__(self, device='cuda:0', post_scale=True):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
