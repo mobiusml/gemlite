@@ -122,8 +122,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 def get_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [16, 32, 64, 128, 256, 512, 1024, 2048]: #[1024]
-            for _K in [16, 32, 64, 128, 256, 512, 1024]: #[32]
+        for _N in [8, 16, 32, 64, 128, 256, 512, 1024, 2048]: #[1024]
+            for _K in [8, 16, 32, 64, 128, 256, 512, 1024, 2048]: #[32]
                 for _w in [4]: #4
                     for _s in [1]: #1
                         for _A_load_order in [0]: #[0, 1]

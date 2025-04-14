@@ -3,7 +3,7 @@ from torch.utils.cpp_extension import BuildExtension
 
 setup(
     name='gemlite',
-    version="0.4.4",
+    version="0.4.5",
     url="https://github.com/mobiusml/gemlite/",
     author="Dr. Hicham Badri",
     author_email="hicham@mobiuslabs.com",
@@ -14,7 +14,7 @@ setup(
     },
     include_package_data=True,
     cmdclass={'build_ext': BuildExtension},
-    install_requires=["numpy", "triton>=3.1.0"],
+    install_requires=["numpy", "pytorch-triton-rocm"],
 )
 
 # python3 setup.py install

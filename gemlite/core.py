@@ -100,7 +100,6 @@ def set_autotune_setting(fct): #fct = lambda M: M for max-autotune
 
 #set default packing format
 def set_packing_bitwidth(packing_bitwidth : int):
-    assert packing_bitwidth in [8, 16, 32], "Unsupported packing bitwidth (should be in [8, 16, 32])."
     GemLiteLinearTriton.PACKING_BITWIDTH = packing_bitwidth
 
 #Set accumulation dtype
@@ -198,8 +197,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         #Set packing bitwidth
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
-
-        assert packing_bitwidth in [8, 16, 32], "Unsupported packing bitwidth (should be 8, or 16 or 32)"
 
         #Unpacked weights
         self.W_q = None
