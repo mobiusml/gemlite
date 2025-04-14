@@ -18,7 +18,7 @@ class A16W8:
 
         scales = torch.abs(weight.float()).amax(axis=1, keepdim=True) / 127.0
         W_q    = torch.round(weight / scales).to(device=self.device, dtype=torch.int8)
-        scales = scales.to(device=self.device, dtype=torch.float32)
+        scales = scales.to(device=self.device, dtype=dtype)
 
         in_features, out_features = weight.shape[::-1]
 
