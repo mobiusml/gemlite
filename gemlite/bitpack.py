@@ -6,12 +6,12 @@ import triton.language as tl
 
 # Pack data, adapted from: following the same logic as: https://github.com/LeiWang1999/AutoGPTQ.tvm/blob/dcd135b9784b9f98235fc91467fe3c3c8afa34fc/auto_gptq/nn_modules/qlinear_triton.py#L413-L419
 def pack_weights_over_rows_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwidth: int, transpose: bool)-> tuple[torch.Tensor, int]:
-    assert packing_bitwidth in [8, 16, 32], "Unsuported bitpacking width"
+    assert packing_bitwidth in [8, 16, 32, 64], "Unsuported bitpacking width"
     assert W_nbits in [8, 4, 2, 1], "Unsuported nbits"
     elements_per_sample = packing_bitwidth // W_nbits
 
     W_q     = W_q.to(torch.int32)
-    W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32, device=W_q.device) 
+    W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32 if packing_bitwidth <=32 else torch.int64, device=W_q.device) 
 
     i, row = 0, 0
     while row < W_q_out.shape[0]:
@@ -23,18 +23,19 @@ def pack_weights_over_rows_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwid
     if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
     if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
     if(packing_bitwidth == 32): W_q_out = W_q_out.to(torch.int32)
+    if(packing_bitwidth == 64): W_q_out = W_q_out.to(torch.int64)
 
     if(transpose): W_q_out = W_q_out.t()
 
     return W_q_out, elements_per_sample
 
 def pack_weights_over_cols_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwidth: int, transpose: bool)-> tuple[torch.Tensor, int]:
-    assert packing_bitwidth in [8, 16, 32], "Unsuported bitpacking width"
+    assert packing_bitwidth in [8, 16, 32, 64], "Unsuported bitpacking width"
     assert W_nbits in [8, 4, 2, 1], "Unsuported nbits"
     elements_per_sample = packing_bitwidth // W_nbits
 
     W_q     = W_q.to(torch.int32)
-    W_q_out = torch.zeros((W_q.shape[0], W_q.shape[1] // elements_per_sample), dtype=torch.int32, device=W_q.device) 
+    W_q_out = torch.zeros((W_q.shape[0], W_q.shape[1] // elements_per_sample), dtype=torch.int32 if packing_bitwidth <=32 else torch.int64, device=W_q.device) 
 
     i, col = 0, 0
     while col <  W_q_out.shape[1]: 
@@ -48,6 +49,7 @@ def pack_weights_over_cols_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwid
     if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
     if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
     if(packing_bitwidth == 32): W_q_out = W_q_out.to(torch.int32)
+    if(packing_bitwidth == 64): W_q_out = W_q_out.to(torch.int64)
 
     if(transpose): W_q_out = W_q_out.t()
 
@@ -103,7 +105,7 @@ def pack_weights_over_cols_kernel(
         pid_row += 1
 
 def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwidth: int, transpose: bool)-> tuple[torch.Tensor, int]:
-    assert packing_bitwidth in [8, 16, 32], "Unsuported bitpacking width"
+    assert packing_bitwidth in [8, 16, 32, 64], "Unsuported bitpacking width"
     assert W_nbits in [8, 4, 2, 1], "Unsuported nbits"
     elements_per_sample = packing_bitwidth // W_nbits
     num_rows, num_input_cols = W_q.shape
@@ -112,6 +114,7 @@ def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
     if(packing_bitwidth == 8) : dtype, out_dtype = torch.uint8, tl.uint8 
     if(packing_bitwidth == 16): dtype, out_dtype = torch.int16, tl.int16
     if(packing_bitwidth == 32): dtype, out_dtype = torch.int32, tl.int32
+    if(packing_bitwidth == 64): dtype, out_dtype = torch.int64, tl.int64
 
     W_q_out = torch.empty((num_rows, num_cols), dtype=dtype, device=W_q.device)
     unroll  = highest_divisor(num_rows, max_val=64) 
@@ -255,6 +258,7 @@ def pack_weights_over_rows_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
     if(packing_bitwidth == 8) : dtype, out_dtype = torch.uint8, tl.uint8 
     if(packing_bitwidth == 16): dtype, out_dtype = torch.int16, tl.int16
     if(packing_bitwidth == 32): dtype, out_dtype = torch.int32, tl.int32
+    if(packing_bitwidth == 64): dtype, out_dtype = torch.int64, tl.int64
 
     W_q_out = torch.empty((num_rows, num_cols), dtype=dtype, device=W_q.device)
     unroll  = highest_divisor(num_cols, max_val=64) 
@@ -334,6 +338,7 @@ def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_r
     if(dtype == torch.uint8): output_dtype = tl.uint8
     if(dtype == torch.int16): output_dtype = tl.int16
     if(dtype == torch.int32): output_dtype = tl.int32
+    if(dtype == torch.int64): output_dtype = tl.int64
     
     # Define grid
     unroll  = highest_divisor(num_cols, max_val=256) 
