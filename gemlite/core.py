@@ -111,7 +111,8 @@ def set_acc_dtype(dtype):
 
 #Return the default gemv kernel to use for M==1
 def get_default_gemv(W_nbits: int) -> str:
-    return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+    #return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+    return 'GEMV_REVSPLITK'
 ###################################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
