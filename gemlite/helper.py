@@ -51,8 +51,11 @@ class A8W8_dynamic:
         self.weight_scale = weight_scale
 
     def from_weights(self, weight, bias=None):
-        if(self.fp8): #FP8
-            w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+        if(self.fp8 is not False): #FP8
+            if(self.fp8 in [torch.float8_e4m3fn]):
+                w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+            if(self.fp8 in [torch.float8_e5m2]):
+                w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
 
@@ -106,12 +109,14 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', weight_scale=1.):
+    def __init__(self, device='cuda:0', weight_scale=1., use_fp8e5=False):
         super().__init__()
         self.device = device
         self.weight_scale = weight_scale
-        self.fp8 = True
-
+        if(use_fp8e5):
+            self.fp8 = torch.float8_e5m2
+        else:
+            self.fp8 = torch.float8_e4m3fn
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
@@ -141,7 +146,7 @@ class A16Wn:
                             scales.to(device=self.device, dtype=dtype), 
                             zeros.to(device=self.device, dtype=dtype), 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
-                            contiguous=True,
+                            contiguous=True, 
                             ) 
 
         if(group_size == in_features):
@@ -182,17 +187,27 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=False):
+    def __init__(self, device='cuda:0', post_scale=False, use_fp8e5=False):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
+        if(use_fp8e5):
+            self.fp8 = torch.float8_e5m2
+        else:
+            self.fp8 = torch.float8_e4m3fn
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
         dtype = scales.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-        w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+        if(self.fp8 in [torch.float8_e4m3fn]):
+            w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
+            fp32_scale = False
+        if(self.fp8 in [torch.float8_e5m2]):
+            w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
+            fp32_scale = True
+
 
         in_features, out_features = W_q.shape[::-1]
 
@@ -212,10 +227,16 @@ class A8Wn_dynamic(A16Wn):
                             contiguous=True,
                             ) 
 
+        if(fp32_scale):
+            gemlite_linear.meta_dtype = DType.FP32
+
         def scale_fct(x):
             x_shape  = x.shape
             out_x    = x.view(-1, x.shape[-1]) 
-            scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) / max_val
+            scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) 
+            if(fp32_scale):
+                scaled_x = scaled_x.float()
+            scaled_x /= max_val 
             out_x    = torch.round(out_x / scaled_x).to(dtype=w_dtype)
             return out_x.view(x_shape), scaled_x
 
@@ -230,6 +251,23 @@ class A8Wn_dynamic(A16Wn):
                 gemlite_linear.channel_scale_mode = 2
 
         return gemlite_linear
+
+    def from_hqqlinear(self, hqq_layer):
+        assert hqq_layer.meta['axis'] == 1, 'Only axis==1 is supported.'
+
+        self.device = hqq_layer.W_q.device
+
+        W_nbits    = hqq_layer.meta['nbits']
+        group_size = hqq_layer.meta["group_size"]
+        if(group_size is None):
+            group_size = hqq_layer.in_features
+
+        W_q    = hqq_layer.unpack(dtype=torch.uint8).view(hqq_layer.meta['shape']) #Expects uint8 for Wn quantization!
+        scales = hqq_layer.meta['scale'].clone()
+        zeros  = hqq_layer.meta['zero'].clone()
+        bias   = hqq_layer.bias.clone() if (hqq_layer.bias is not None) else None  
+
+        return self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
 
 
 ####################################################################################################
