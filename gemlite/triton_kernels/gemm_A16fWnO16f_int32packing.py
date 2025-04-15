@@ -68,9 +68,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
+        waves_per_eu      = config.kwargs['waves_per_eu']
 
         _key = (block_size_m, block_size_n, block_size_k, group_size_m, 
-                A_load_order, meta_evict_policy, 
+                A_load_order, meta_evict_policy, waves_per_eu,
                 num_stages, num_warps)
         
         if _key in used:
@@ -84,8 +85,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
 
-                'A_load_order': A_load_order,
+                'A_load_order'     : A_load_order,
                 'meta_evict_policy': meta_evict_policy,
+                'waves_per_eu'     : waves_per_eu,
             },
             num_stages=num_stages,
             num_warps=num_warps
@@ -94,21 +96,22 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #HIP - Instinct MI300X
 def get_autotune_config():
-    _stages  = [2]
+    _stages  = [1, 2] #[2] -----------------> [1, 2]
     _configs = []
     for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
         for _N in [32, 64, 128, 256]: 
             for _K in [32, 64, 128, 256]:
-                for _w in [4]:
+                for _w in [4, 8]: #[4] -----------------> [4, 8]
                     for _s in _stages:
                         for _A_load_order in [0]:
                             for _meta_evict_policy in ['']: 
-                                _configs.append(
-                                        triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
-                                            'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy}, 
-                                            num_stages=_s, num_warps=_w)
-                                        )
+                                for _waves in [0, 2, 4]: #[0] -----------------> [0, 2, 4]
+                                    _configs.append(
+                                            triton.Config(
+                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
+                                                'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy, 'waves_per_eu': _waves}, 
+                                                num_stages=_s, num_warps=_w)
+                                            )
 
     return _configs
 

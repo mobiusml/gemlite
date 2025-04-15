@@ -84,9 +84,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
         atomic_mode       = config.kwargs['atomic_mode']
+        waves_per_eu      = config.kwargs['waves_per_eu']
 
         _key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, 
-                A_load_order, meta_evict_policy, atomic_mode,
+                A_load_order, meta_evict_policy, atomic_mode, waves_per_eu,
                 config.num_stages, config.num_warps,
                 )
         
@@ -105,6 +106,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'A_load_order'      : A_load_order,
                 'meta_evict_policy' : meta_evict_policy,
                 'atomic_mode'       : atomic_mode,
+                'waves_per_eu'      : waves_per_eu,
             },
             num_stages=config.num_stages,
             num_warps=config.num_warps,
@@ -140,26 +142,28 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #HIP - Instinct MI300X
 def get_autotune_config():
-    _stages  = [2] #[1, 2]
+    _stages  = [1, 2] #[2] ------------------> [1, 2]
     _configs = []
     for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
         for _N in [32, 64, 128, 256]:
             for _K in [32, 64, 128, 256]: #[512]
-                for _w in [4]:
+                for _w in [4, 8]: #[4] -----------> [4, 8]
                     for _s in _stages:
                         for _sK in [1, 2, 4, 8]: 
                             for _a_load_order in [0]:
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
                                     for _atomic_mode in ['relaxed']: 
-                                        _configs.append(
-                                                triton.Config(
-                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-                                                    'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-                                                    }, 
-                                                    num_stages=_s, num_warps=_w,
-                                                    pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+                                        for _waves in [0, 2, 4]: #[0] -----------------> [0, 2, 4]
+                                            _configs.append(
+                                                    triton.Config(
+                                                        {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+                                                        'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+                                                        'waves_per_eu': _waves,
+                                                        }, 
+                                                        num_stages=_s, num_warps=_w,
+                                                        pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+                                                        )
                                                     )
-                                                )
     return _configs
 
 

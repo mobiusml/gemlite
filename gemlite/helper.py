@@ -109,7 +109,7 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', weight_scale=1., use_fp8e5=False):
+    def __init__(self, device='cuda:0', weight_scale=1., use_fp8e5=True):
         super().__init__()
         self.device = device
         self.weight_scale = weight_scale
@@ -187,7 +187,7 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=True, use_fp8e5=False):
+    def __init__(self, device='cuda:0', post_scale=True, use_fp8e5=True):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
