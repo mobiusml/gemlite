@@ -176,7 +176,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
 
     def post_set_default(self):
-        self.kernels  = GEMLITE_TRITON_KERNELS
+        #self.kernels  = GEMLITE_TRITON_KERNELS
         self.scales_x = None
 
         if(AUTOTUNE_ENABLE.EXHAUSTIVE):
@@ -402,7 +402,8 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     # Warm up all the selected kernels
     def warmup(self, signature, x):
-        global GEMLITE_TRITON_CACHE
+        global GEMLITE_TRITON_CACHE, GEMLITE_TRITON_KERNELS
+        self.kernels = GEMLITE_TRITON_KERNELS
         t = [np.inf] * len(self.kernels)
         M = signature[0]
         for i, _kernel in enumerate(self.kernels):
