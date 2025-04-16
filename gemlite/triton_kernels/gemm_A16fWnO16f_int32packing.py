@@ -99,8 +99,8 @@ def get_autotune_config():
             for _K in [32, 64, 128, 256]:
                 for _w in [4, 8]:
                     for _s in _stages:
-                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
-                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100 
+                            for _meta_evict_policy in ['']: #[', 'evict_last']
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 

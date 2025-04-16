@@ -123,7 +123,7 @@ def get_autotune_config():
                         for _sK in [1, 2, 4, 8, 16]: 
                             for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
                                 for _meta_evict_policy in ['']: #[', 'evict_last']
-                                    for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
+                                    for _atomic_mode in ['relaxed']:
                                         _configs.append(
                                                 triton.Config(
                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,

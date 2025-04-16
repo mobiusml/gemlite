@@ -107,8 +107,8 @@ def get_autotune_config():
     #Tuned on 4090 RTX / A100 SXM4
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [16, 32, 64, 128, 256, 512, 1024, 2048]: #[128, 256, 512]:
-            for _K in [8, 16, 32, 64, 128, 256, 512, 1024, 2048]: #[8, 16, 32, 64]: 
+        for _N in [128, 256, 512]: #contiguous: [128, 256, 512] / non-contiguous: [16, 32, 64, 128, 256, 512, 1024, 2048]
+            for _K in [8, 16, 32, 64] : #contiguous: [8, 16, 32, 64] / non-contiguous: [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
                 for _w in [2, 4]: #[2, 4]
                     for _s in [1, 2]: #[1, 2]
                         for _A_load_order in [0, 1]: 
