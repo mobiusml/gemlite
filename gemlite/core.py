@@ -122,10 +122,10 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     def __init__(
         self,
-        W_nbits,
-        group_size,
-        in_features,
-        out_features,
+        W_nbits = 4,
+        group_size = 64,
+        in_features = None,
+        out_features = None,
         input_dtype = DType.FP16,
         output_dtype = DType.FP16,
         acc_dtype = None,
@@ -138,8 +138,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
         
-        if in_features % GemLiteLinearTriton.MIN_SIZE != 0 or out_features % GemLiteLinearTriton.MIN_SIZE != 0:
-            raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. Should be >= ' + str(GemLiteLinearTriton.MIN_SIZE))
+        if((in_features is not None) and (out_features is not None)):
+            if in_features % GemLiteLinearTriton.MIN_SIZE != 0 or out_features % GemLiteLinearTriton.MIN_SIZE != 0:
+                raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. Should be >= ' + str(GemLiteLinearTriton.MIN_SIZE))
 
         #Warning: Input dtype should be the same as dequantize() weights dtype.
         if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
@@ -162,15 +163,20 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.input_dtype   = input_dtype
         self.output_dtype  = output_dtype
-        self.compute_dtype = DTYPE_TO_TORCH[input_dtype.value]
+        self.compute_dtype = DTYPE_TO_TORCH[self.input_dtype.value]
         self.meta_dtype    = input_dtype
-        self.kernels       = GEMLITE_TRITON_KERNELS
-
+        
         #Accumulation
         self.acc_dtype = GEMLITE_ACC_DTYPE[self.input_dtype] if(acc_dtype is None) else acc_dtype
 
         #Scales activations
         self.scaled_activations = scaled_activations
+
+        self.post_set_default()
+
+
+    def post_set_default(self):
+        self.kernels  = GEMLITE_TRITON_KERNELS
         self.scales_x = None
 
         if(AUTOTUNE_ENABLE.EXHAUSTIVE):
@@ -186,6 +192,39 @@ class GemLiteLinearTriton(torch.nn.Module):
             torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
         except:
             pass
+
+    def load_state_dict(self, state_dict, strict=True, assign=False):
+        self.W_q        = state_dict.pop("W_q", None)
+        self.bias       = state_dict.pop("bias", None)
+        self.scales     = state_dict.pop("scales", None)
+        self.zeros      = state_dict.pop("zeros", None)
+        self.metadata   = state_dict.pop("metadata", None).cpu()
+        self.orig_shape = state_dict.pop("orig_shape", None).cpu()
+
+        self.metadata   = [v.item() for v in self.metadata]
+        self.orig_shape = (v.item() for v in self.orig_shape)
+
+        (self.W_nbits,
+        self.group_size,
+        self.unpack_mask,
+        self.elements_per_sample,
+        self.input_dtype,
+        self.output_dtype,
+        self.acc_dtype,
+        self.meta_dtype,
+        self.channel_scale_mode,
+        self.W_group_mode,
+        self.data_contiguous) = self.metadata
+
+        self.input_dtype  = DType(self.input_dtype)
+        self.output_dtype = DType(self.output_dtype)
+        self.acc_dtype    = DType(self.acc_dtype)
+        self.meta_dtype   = DType(self.meta_dtype)
+
+        self.out_features, self.in_features = self.orig_shape
+        self.compute_dtype = DTYPE_TO_TORCH[self.input_dtype.value]
+
+        self.post_set_default()
 
     #Override this function to perform dynamic activation quantization
     def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
@@ -309,10 +348,11 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.data_contiguous = False
 
         #Register buffers
-        self.W_q      = torch.nn.Parameter(self.W_q,   requires_grad=False)
-        self.scales   = torch.nn.Parameter(self.scales,requires_grad=False)
-        self.zeros    = torch.nn.Parameter(self.zeros, requires_grad=False)
-        self.metadata = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device='cpu', dtype=torch.int32), requires_grad=False)
+        self.W_q        = torch.nn.Parameter(self.W_q,   requires_grad=False)
+        self.scales     = torch.nn.Parameter(self.scales,requires_grad=False)
+        self.zeros      = torch.nn.Parameter(self.zeros, requires_grad=False)
+        self.metadata   = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device='cpu', dtype=torch.int32), requires_grad=False)
+        self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device='cpu', dtype=torch.int32), requires_grad=False)
         return self
 
     #Main function forward function
