@@ -240,8 +240,13 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         pid_m, pid_n = swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M)
         offs_m  = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
         offs_n  = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+
+        if data_contiguous:
+            offs_bn = offs_n  
+        else:
+            offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+
         offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
 
         #Meta data stuff
         scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n

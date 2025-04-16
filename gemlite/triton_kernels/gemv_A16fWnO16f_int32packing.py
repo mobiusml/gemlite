@@ -196,15 +196,13 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
+    if data_contiguous:
+        offs_bn = offs_n  
     else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_ak = offs_k
+    offs_bk = offs_k
     ###############################
 
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak  
