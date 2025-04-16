@@ -48,8 +48,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
         block_size_m = config.kwargs['BLOCK_SIZE_M'] 
-        block_size_n = config.kwargs['BLOCK_SIZE_N'] #min(n, config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = config.kwargs['BLOCK_SIZE_K'] #min(k, config.kwargs['BLOCK_SIZE_K'])
+        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
         #Skip larger blocks

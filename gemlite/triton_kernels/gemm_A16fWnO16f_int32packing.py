@@ -41,8 +41,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m = config.kwargs['BLOCK_SIZE_M']
-        block_size_n = config.kwargs['BLOCK_SIZE_N']
-        block_size_k = config.kwargs['BLOCK_SIZE_K']
+        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
