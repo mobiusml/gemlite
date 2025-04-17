@@ -58,10 +58,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(block_area > 4096 * 4): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
-        num_warps  = config.num_warps
         num_stages = config.num_stages
+        num_warps  = config.num_warps
 
-        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
+        #Nvidia
+        if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']

@@ -60,7 +60,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Only use higher split_k values for smaller m
         if(m >= 32): split_k = min(split_k, 8)
         #Only use lower split_k values for larger m
-        if(m <= 16): split_k = max(split_k, 2)
+        if(m <= 16): split_k = max(split_k, 1)
 
         #Filter 
         block_area = block_size_k * block_size_n
@@ -75,10 +75,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(not is_divisible(k, block_size_k * split_k)):
             continue
 
-        num_warps  = config.num_warps
         num_stages = config.num_stages
+        num_warps  = config.num_warps
 
-        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
+        #Nvidia
+        if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         A_load_order      = config.kwargs['A_load_order']
@@ -87,8 +88,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         _key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, 
                 A_load_order, meta_evict_policy, atomic_mode,
-                config.num_stages, config.num_warps,
-                )
+                num_stages, num_warps)
         
         if _key in used:
             continue
@@ -106,8 +106,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'meta_evict_policy' : meta_evict_policy,
                 'atomic_mode'       : atomic_mode,
             },
-            num_stages=config.num_stages,
-            num_warps=config.num_warps,
+            num_stages=num_stages,
+            num_warps=num_warps,
             pre_hook=init_to_zero("c_ptr") if (split_k > 1) else None, 
         )
 
