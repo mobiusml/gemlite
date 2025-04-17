@@ -75,7 +75,7 @@ def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_
     return b
 
 @triton.jit
-def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = 'release'):    
+def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = "release"):    
     while tl.atomic_cas(Lock, 0, 1, sem=sem) == 1:
         pass
     tl.store(ptr, tl.load(ptr, mask=mask) + value, mask=mask)
@@ -88,9 +88,20 @@ def init_to_zero(name):
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
 
-def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800', 'b100', 'b200']): 
+def gpu_has_more_shared_memory(ref_gpus = ["a100", "h100", "h200", "h800", "b100", "b200"]): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
+
+def gpu_supports_float16_acc(
+    ref_gpus=["5090", "5080", "5070", "5060", 
+              "4090", "4080", "4070", "4060", 
+              "3090", "3080", "3070", "3060",
+              "4000", "5000", '6000',
+              "a40",  "a10",  "l40"]
+):
+    gpu_name = torch.cuda.get_device_properties(0).name.lower()
+    return True in [g in gpu_name for g in ref_gpus]
+
 
 def gpu_supports_bfloat16_atomicadd():
     #Triton tl.atomic_add doens't support bfloat16 even for Hopper and above. 

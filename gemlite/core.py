@@ -16,7 +16,7 @@ from .dtypes import *
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_has_more_shared_memory
+from .triton_kernels.utils import gpu_supports_float16_acc
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Triton backend
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
-    DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16,
+    DType.FP16: DType.FP32 if gpu_supports_float16_acc() else DType.FP16,
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.FP8: DType.FP32,
