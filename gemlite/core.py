@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Triton backend
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
-    DType.FP16: DType.FP32 if gpu_supports_float16_acc() else DType.FP16,
+    DType.FP16: DType.FP16 if gpu_supports_float16_acc() else DType.FP32,
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.FP8: DType.FP32,
