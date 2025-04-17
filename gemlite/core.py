@@ -16,7 +16,7 @@ from .dtypes import *
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_has_more_shared_memory
+from .triton_kernels.utils import gpu_supports_float16_acc
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Triton backend
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
-    DType.FP16: DType.FP32 if gpu_has_more_shared_memory() else DType.FP16,
+    DType.FP16: DType.FP16 if gpu_supports_float16_acc() else DType.FP32,
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.FP8: DType.FP32,
@@ -41,7 +41,7 @@ GEMLITE_TRITON_KERNELS = [
     gemv_A16fWnO16f,
     gemv_revsplitK_A16fWnO16f,
     gemv_splitK_A16fWnO16f,
-    gemm_splitK_A16fWnO16f,
+    gemm_splitK_A16fWnO16f, #gemm_splitK_A16fWnO16f / gemm_splitK_persistent_A16fWnO16f
     gemm_A16fWnO16f,
 ]
 
@@ -100,7 +100,6 @@ def set_autotune_setting(fct): #fct = lambda M: M for max-autotune
 
 #set default packing format
 def set_packing_bitwidth(packing_bitwidth : int):
-    assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)."
     GemLiteLinearTriton.PACKING_BITWIDTH = packing_bitwidth
 
 #Set accumulation dtype
@@ -237,8 +236,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
 
-        assert packing_bitwidth in [8, 32], "Unsupported packing bitwidth (should be 32 or 8)"
-
         #Unpacked weights
         self.W_q = None
         if(W_q.dtype in [torch.float16, torch.bfloat16, torch.int8, torch.float8_e4m3fn, torch.float8_e5m2]):
@@ -340,12 +337,13 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(contiguous):
             self.data_contiguous = True
             self.W_q = self.W_q.contiguous()
-            if(isinstance(self.scales, torch.Tensor)):
-                self.scales = self.scales.contiguous()
-            if(isinstance(self.zeros, torch.Tensor)):
-                self.zeros = self.zeros.contiguous()
         else:
             self.data_contiguous = False
+
+        if(isinstance(self.scales, torch.Tensor)):
+            self.scales = self.scales.contiguous()
+        if(isinstance(self.zeros, torch.Tensor)):
+            self.zeros = self.zeros.contiguous()
 
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q,   requires_grad=False)

@@ -58,10 +58,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(block_area > 4096 * 4): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
-        num_warps  = config.num_warps
         num_stages = config.num_stages
+        num_warps  = config.num_warps
 
-        #if(e > 1): num_stages = 1 #TODO: Remove this after fix
+        #Nvidia
+        if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']
@@ -99,8 +100,8 @@ def get_autotune_config():
             for _K in [32, 64, 128, 256]:
                 for _w in [4, 8]:
                     for _s in _stages:
-                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100 
-                            for _meta_evict_policy in ['']: #[', 'evict_last'] - ['']: default 4090
+                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100 
+                            for _meta_evict_policy in ['']: #[', 'evict_last']
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
@@ -186,15 +187,13 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    offs_am = offs_m
-    offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-
-    if(data_contiguous):
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-        offs_bk = offs_k
+    if data_contiguous:
+        offs_bn = offs_n  
     else:
-        offs_bn = offs_n
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    offs_ak = offs_k
+    offs_bk = offs_k
     ###############################
 
     #Inputs
