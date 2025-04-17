@@ -41,7 +41,7 @@ GEMLITE_TRITON_KERNELS = [
     gemv_A16fWnO16f,
     gemv_revsplitK_A16fWnO16f,
     gemv_splitK_A16fWnO16f,
-    gemm_splitK_A16fWnO16f,
+    gemm_splitK_A16fWnO16f, #gemm_splitK_A16fWnO16f / gemm_splitK_persistent_A16fWnO16f
     gemm_A16fWnO16f,
 ]
 
@@ -347,7 +347,6 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = self.scales.contiguous()
         if(isinstance(self.zeros, torch.Tensor)):
             self.zeros = self.zeros.contiguous()
-
 
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q,   requires_grad=False)
