@@ -52,7 +52,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 ```
 pip install gemlite
 ```
-### Latest
+### Latest (Recommended)
 ```
 pip install git+https://github.com/mobiusml/gemlite/
 ```
@@ -64,6 +64,9 @@ from gemlite import DType, GemLiteLinear
 
 #Reset the default cache to get the best perf but warm-up will be slow. 
 #gemlite.reset_cache()
+
+#Force fp16 acc (faster on consumer gpus - automatically set)
+#gemlite.set_acc_dtype(DType.FP16)
 
 #Main constructor
 gemlite_linear = GemLiteLinear(
@@ -102,6 +105,10 @@ gemlite_linear = A8W8_fp8_dynamic(device='cuda:0').from_linear(linear_layer) #FP
 #Packed weights for 4-bit/2-bit/1-bit (HQQ format)
 gemlite_linear = A16Wn(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP16 activations
 gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP8 activations
+
+#Packed weights for 1.58 bitnet (Bitlinear format)
+gemlite_linear = A16W158(device='cuda:0').from_bitlinear(bitlinear_layer) #FP16 activations
+gemlite_linear = A8W158(device='cuda:0').from_bitlinear(bitlinear_layer) #int8 activations
 
 ```
 ### Config Caching
