@@ -88,7 +88,7 @@ def init_to_zero(name):
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
 
-def gpu_has_more_shared_memory(ref_gpus = ["a100", "h100", "h200", "h800", "b100", "b200"]): 
+def gpu_has_more_shared_memory(ref_gpus = ["a100", "h100", "h200", "h20", "h800", "b100", "b200"]): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
 
