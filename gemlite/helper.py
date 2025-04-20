@@ -5,6 +5,13 @@ import torch, gc
 from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
 
+#default_fp8 = torch.float8_e4m3fn #Nvidia 
+#default_fp8 = torch.float8_e5m2 #Nvidia
+
+default_fp8 = torch.float8_e4m3fnuz #AMD
+#default_fp8 = torch.float8_e5m2fnuz #AMD
+#default_fp8 = torch.float8_e5m2 #AMD - fp16 emulated
+
 ####################################################################################################
 #16-bit activations / 8-bit weigths
 class A16W8:
@@ -52,10 +59,7 @@ class A8W8_dynamic:
 
     def from_weights(self, weight, bias=None):
         if(self.fp8 is not False): #FP8
-            if(self.fp8 in [torch.float8_e4m3fn]):
-                w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
-            if(self.fp8 in [torch.float8_e5m2]):
-                w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
+            w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
 
@@ -109,14 +113,12 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', weight_scale=1., use_fp8e5=True):
+    def __init__(self, device='cuda:0', weight_scale=1., fp8=default_fp8):
         super().__init__()
         self.device = device
         self.weight_scale = weight_scale
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8 = fp8
+
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
@@ -187,26 +189,19 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=True, use_fp8e5=True):
+    def __init__(self, device='cuda:0', post_scale=True, fp8=default_fp8):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8        = fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
         dtype = scales.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-        if(self.fp8 in [torch.float8_e4m3fn]):
-            w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
-            fp32_scale = False
-        if(self.fp8 in [torch.float8_e5m2]):
-            w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
-            fp32_scale = True
+        w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
+        fp32_scale = True
 
 
         in_features, out_features = W_q.shape[::-1]

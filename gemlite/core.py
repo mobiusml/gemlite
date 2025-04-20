@@ -32,9 +32,11 @@ GEMLITE_ACC_DTYPE = {
     DType.FP16: DType.FP32, #AMD
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
-    DType.FP8: DType.FP32,
-    DType.FP8e5: DType.FP32,
     DType.INT8: DType.INT32,
+    DType.FP8e4: DType.FP32,
+    DType.FP8e4nuz: DType.FP32,
+    DType.FP8e5: DType.FP32, 
+    DType.FP8e5nuz: DType.FP32,
 }
 
 GEMLITE_TRITON_KERNELS = [
@@ -116,7 +118,7 @@ def get_default_gemv(W_nbits: int) -> str:
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e5, DType.INT8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8]
     MIN_SIZE              = 64
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
@@ -143,7 +145,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #Warning: Input dtype should be the same as dequantize() weights dtype.
         if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
-            raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
+            raise NotImplementedError("Unsupport input dtype: " + str(input_dtype))
 
         if(group_size is not None):
             if(group_size < 32):
@@ -200,8 +202,10 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         #Unpacked weights
         self.W_q = None
-        if(W_q.dtype in [torch.float16, torch.bfloat16, torch.int8, torch.float8_e4m3fn, torch.float8_e5m2]):
-            if(W_q.dtype in [torch.float16, torch.bfloat16]): 
+        if(W_q.dtype in [torch.int8] or W_q.is_floating_point()):
+            if(W_q.dtype in [torch.float32]):
+                assert self.W_nbits == 32, "Invalid fp32 weights."
+            elif(W_q.dtype in [torch.float16, torch.bfloat16]): 
                 assert self.W_nbits == 16, "Invalid fp16 weights."
             else: 
                 assert self.W_nbits == 8, "Invalid 8-bit weights."
