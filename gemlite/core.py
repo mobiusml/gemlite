@@ -116,7 +116,7 @@ def get_default_gemv(W_nbits: int) -> str:
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
     SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e5, DType.INT8]
-    MIN_SIZE              = 64
+    MIN_SIZE              = 32
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
     def __init__(
@@ -136,14 +136,13 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
-        
-        if((in_features is not None) and (out_features is not None)):
-            if in_features % GemLiteLinearTriton.MIN_SIZE != 0 or out_features % GemLiteLinearTriton.MIN_SIZE != 0:
-                raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. Should be >= ' + str(GemLiteLinearTriton.MIN_SIZE))
+
+        if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (in_features % group_size !=0 if (group_size is not None) else False):
+            raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. in_features should be divisible by 32 or the group_size')
 
         #Warning: Input dtype should be the same as dequantize() weights dtype.
         if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
-            raise NotImplementedError("Unsupport input dtype: " + str(self.input_dtype))
+            raise NotImplementedError("Unsupport input dtype: " + str(input_dtype))
 
         if(group_size is not None):
             if(group_size < 32):

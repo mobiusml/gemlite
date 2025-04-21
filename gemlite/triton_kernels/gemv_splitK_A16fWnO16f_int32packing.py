@@ -55,7 +55,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Skip larger blocks
         if(block_size_k > k or block_size_n > n):
             continue
-            
+
         #Only 1 is supported
         block_size_m = 1 
         
@@ -67,6 +67,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Constraints
         #BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
+
+        #Block size should be compatible with minimum-packing
+        if(block_size_k < e):
+            continue
 
         #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
         if(not is_divisible(k, block_size_k * split_k)):
@@ -112,7 +116,7 @@ def get_autotune_config():
     _configs = []
     for _M in [1]: 
         for _N in [1, 2, 4, 8, 16, 32, 64]:
-            for _K in [64, 128, 256, 512, 1024, 2048, 4096]:
+            for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
                 for _w in [4, 8]:
                     for _s in [1, 2]:
                         for _sK in [1]:

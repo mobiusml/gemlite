@@ -7,7 +7,7 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize
+from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize, is_divisible
 
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"
@@ -44,6 +44,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
         block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
+
+        #K needs to be divisible by BLOCK_SIZE_K 
+        if(not is_divisible(k, block_size_k)):
+            continue
 
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
         if(m <= 16) : block_size_m = 16

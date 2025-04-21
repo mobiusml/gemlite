@@ -58,6 +58,14 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Constraints
         block_size_k = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
 
+        #Since we load the scales / zeros once per split_k pass, we need this
+        if(not (block_size_k <= g)):
+            continue
+        
+        #Block size should be compatible with minimum-packing
+        if(block_size_k < e):
+            continue
+             
         #K needs to be devisible by BLOCK_SIZE_K 
         if(not is_divisible(k, block_size_k)):
             continue
