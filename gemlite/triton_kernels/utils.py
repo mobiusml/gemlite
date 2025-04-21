@@ -97,6 +97,7 @@ def gpu_supports_float16_acc(
               "4090", "4080", "4070", "4060", 
               "3090", "3080", "3070", "3060",
               "4000", "5000", '6000',
+              '2080', 'titan rtx',
               "a40",  "a10",  "l40"]
 ):
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
