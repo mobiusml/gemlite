@@ -7,7 +7,7 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize
+from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize, is_divisible
 
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"
@@ -45,6 +45,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         block_size_k = min(block_size_k, g) #Makes BLOCK_SIZE_K compatible with the group_size
 
+        #K needs to be divisible by BLOCK_SIZE_K 
+        if(not is_divisible(k, block_size_k)):
+            continue
+
         #Makes autotune a bit faster: NOT optimal at larger batch-sizes > 128
         if(m <= 16) : block_size_m = 16
         if(m >= 32) : block_size_m = min(max(block_size_m, 16), 32)   #[16, 32]
@@ -60,10 +64,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         num_warps  = config.num_warps
         num_stages = config.num_stages
-
         
         #if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
-
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']

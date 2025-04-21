@@ -69,6 +69,10 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
 
+        #Block size should be compatible with minimum-packing
+        if(block_size_k < e):
+            continue
+
         #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
         if(not is_divisible(k, block_size_k * split_k)):
             continue
@@ -169,7 +173,7 @@ def get_autotune_config():
     _configs = []
     for _M in [1]: 
         for _N in [1, 2, 4, 8, 16, 32, 64]:
-            for _K in [128, 256, 512, 1024, 2048, 4096]:
+            for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
                 for _w in [4]: #4
                     for _s in [2]: #2
                         for _sK in [1]:
@@ -369,7 +373,7 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
 
     #Inputs
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
-    a_mask  = offs_am[:, None] < M
+    a_mask  = (offs_am[:, None] < M) 
     b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn)
 
     #Meta data stuff
@@ -397,16 +401,16 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
             #a = tl.load(a_ptrs) #AMD
 
-        #b = tl.load(b_ptrs, eviction_policy='evict_first')
-        b = tl.load(b_ptrs) #AMD
+        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        #b = tl.load(b_ptrs) #AMD
 
         if(A_load_order == 1): #Early load
-            #a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
+            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
         if(W_group_mode > 0):
             k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
