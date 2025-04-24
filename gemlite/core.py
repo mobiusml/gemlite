@@ -513,6 +513,7 @@ def get_default_cache_config():
 
     name = torch.cuda.get_device_properties(0).name.lower().replace(' ', '_')
     tags = get_tags(root_path)
+    tags.sort(key=len, reverse=True)
 
     selected_tag = None
     for tag in tags:
@@ -522,6 +523,5 @@ def get_default_cache_config():
     
     return selected_tag
 
-selected_tag = get_default_cache_config()
-if(GemLiteLinear.load_config(selected_tag)):
+if(GemLiteLinear.load_config(get_default_cache_config())):
     logger.warning('Loaded ' + selected_tag + ' config.')
