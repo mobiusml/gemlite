@@ -525,4 +525,4 @@ def get_default_cache_config():
 
 selected_tag = get_default_cache_config()
 if(GemLiteLinear.load_config(selected_tag)):
-    logger.info('Loaded ' + selected_tag + ' config.')
+    logger.warning('Loaded ' + selected_tag + ' config.')
