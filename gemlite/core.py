@@ -185,12 +185,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         #Default GEMV for packed vs. non-packed data
         self.default_gemv = get_default_gemv(self.W_nbits)
             
-        #Set torch flags
-        try:
-            torch._dynamo.config.inline_inbuilt_nn_modules = False #2.5.0 fix
-        except:
-            pass
-
     def load_state_dict(self, state_dict, strict=True, assign=False):
         self.W_q        = state_dict.pop("W_q", None)
         self.bias       = state_dict.pop("bias", None)
