@@ -7,7 +7,16 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize, is_divisible, is_hip
+from .utils import (
+    DTYPE_TO_TORCH,
+    DTYPE_TO_TRITON,
+    swizzle_tile,
+    linear_tile,
+    dequantize,
+    is_divisible,
+    is_hip,
+)
+
 
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"

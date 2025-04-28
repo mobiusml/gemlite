@@ -7,7 +7,19 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, gpu_supports_bfloat16_atomicadd, is_hip
+from .utils import (
+    DType,
+    DTYPE_TO_TORCH,
+    DTYPE_TO_TRITON,
+    init_to_zero,
+    is_divisible,
+    swizzle_tile,
+    linear_tile,
+    dequantize,
+    gpu_supports_bfloat16_atomicadd,
+    is_hip,
+)
+
 
 KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE   = "GEMM_SPLITK"
@@ -179,7 +191,7 @@ compute_capability = torch.cuda.get_device_capability(0)
 def get_default_config():
     config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 
                            'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
+                            num_warps=4, num_stages=1, pre_hook=None)
     return [config]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
