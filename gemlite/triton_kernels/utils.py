@@ -41,7 +41,7 @@ def swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M: 
     pid_n = (tile_id % num_pid_in_group) // group_size_m
     return pid_m, pid_n
 
-swizzle_tile = swizzle_tile_v1 #v1
+swizzle_tile = swizzle_tile_v1
 
 @triton.jit
 def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, GROUP_SIZE_M: tl.constexpr):
@@ -87,6 +87,9 @@ def init_to_zero(name):
 
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
+
+def is_hip():
+    return triton.runtime.driver.active.get_current_target().backend == "hip"
 
 def gpu_has_more_shared_memory(ref_gpus = ['a100', 'h100', 'h200', 'h800', 'b100', 'b200']): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
