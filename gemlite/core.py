@@ -18,7 +18,7 @@ from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 from .triton_kernels.utils import gpu_supports_float16_acc
 from .triton_kernels import utils
-from .bitpack import pack_weights_over_cols
+from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
 
 import threading
 FILE_LOCK = threading.Lock()
@@ -243,7 +243,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(contiguous is None): contiguous = False
 
         if(W_q.dtype == torch.uint8): #Packed weigths
-            self.W_q, self.elements_per_sample = pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-K
+            _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == 'cuda') else pack_weights_over_cols_torch
+            self.W_q, self.elements_per_sample = _pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-K
             if(contiguous is None): contiguous = True
 
         if(self.W_q is None):

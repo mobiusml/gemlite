@@ -13,12 +13,10 @@ def pack_weights_over_rows_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwid
     W_q     = W_q.to(torch.int32)
     W_q_out = torch.zeros((W_q.shape[0] // elements_per_sample, W_q.shape[1]), dtype=torch.int32 if packing_bitwidth <=32 else torch.int64, device=W_q.device) 
 
-    i, row = 0, 0
-    while row < W_q_out.shape[0]:
-        for j in range(i, i + (packing_bitwidth // W_nbits)):
-            W_q_out[row] |= W_q[j] << (W_nbits * (j - i))
-        i += elements_per_sample
-        row += 1
+    for j in range(W_q.shape[0]):
+        row = j // elements_per_sample
+        offset = j % elements_per_sample
+        W_q_out[row] |= W_q[j] << (W_nbits * offset)
 
     if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
     if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
@@ -37,14 +35,10 @@ def pack_weights_over_cols_torch(W_q: torch.Tensor, W_nbits: int, packing_bitwid
     W_q     = W_q.to(torch.int32)
     W_q_out = torch.zeros((W_q.shape[0], W_q.shape[1] // elements_per_sample), dtype=torch.int32 if packing_bitwidth <=32 else torch.int64, device=W_q.device) 
 
-    i, col = 0, 0
-    while col <  W_q_out.shape[1]: 
-        shift = 0
-        for j in range(i, i + elements_per_sample):
-            W_q_out[:, col] |= (W_q[:, j] << shift)
-            shift += W_nbits
-        i += elements_per_sample
-        col += 1
+    for j in range(W_q.shape[1]):
+        col = j // elements_per_sample
+        shift = (j % elements_per_sample) * W_nbits
+        W_q_out[:, col] |= W_q[:, j] << shift
 
     if(packing_bitwidth == 8) : W_q_out = W_q_out.to(torch.uint8)
     if(packing_bitwidth == 16): W_q_out = W_q_out.to(torch.int16)
