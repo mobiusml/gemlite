@@ -1,9 +1,8 @@
 from setuptools import setup, find_packages
-from torch.utils.cpp_extension import BuildExtension
 
 setup(
     name='gemlite',
-    version="0.4.5",
+    version="0.5.0",
     url="https://github.com/mobiusml/gemlite/",
     author="Dr. Hicham Badri",
     author_email="hicham@mobiuslabs.com",
@@ -13,8 +12,4 @@ setup(
         "gemlite": ["gemlite/*.py", "configs/*.json"],
     },
     include_package_data=True,
-    cmdclass={'build_ext': BuildExtension},
-    install_requires=["numpy", "pytorch-triton-rocm"],
 )
-
-# python3 setup.py install
