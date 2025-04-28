@@ -7,7 +7,7 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize, is_divisible
+from .utils import DTYPE_TO_TORCH, DTYPE_TO_TRITON, swizzle_tile, linear_tile, dequantize, is_divisible, is_hip
 
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE = "GEMM"
@@ -23,19 +23,19 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
-        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
-            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
-            _num_stages = _config.pop('num_stages')
-            _num_warps  = _config.pop('num_warps')
-            _num_ctas   = _config.pop('num_ctas')
+        signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
+        if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
+            num_stages = config.pop('num_stages')
+            num_warps  = config.pop('num_warps')
+            num_ctas   = config.pop('num_ctas')
 
-            _config.pop('num_buffers_warp_spec', None)
-            _config.pop('num_consumer_groups', None)
-            _config.pop('reg_dec_producer', None)
-            _config.pop('reg_inc_consumer', None)
+            config.pop('num_buffers_warp_spec', None)
+            config.pop('num_consumer_groups', None)
+            config.pop('reg_dec_producer', None)
+            config.pop('reg_inc_consumer', None)
 
-            yield triton.Config(_config, num_stages=_num_stages, num_warps=_num_warps)
+            yield triton.Config(config, num_stages=num_stages, num_warps=num_warps)
             return
             
     used = set()
@@ -62,52 +62,76 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(block_area >= 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
             continue
 
-        num_warps  = config.num_warps
         num_stages = config.num_stages
-        
-        #if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+        num_warps  = config.num_warps
+
+        #Nvidia
+        if is_hip() is False:
+            if(e > 1): num_stages = 1 #skip num_stages>1 for packed data on nvidia gpus
+            if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         group_size_m      = config.kwargs['GROUP_SIZE_M']
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
-        waves_per_eu      = config.kwargs['waves_per_eu']
 
-        _key = (block_size_m, block_size_n, block_size_k, group_size_m, 
-                A_load_order, meta_evict_policy, waves_per_eu,
-                num_stages, num_warps)
-        
-        if _key in used:
-            continue
+        key = [block_size_m, block_size_n, block_size_k, group_size_m, 
+                A_load_order, meta_evict_policy, 
+                num_stages, num_warps]
 
-        used.add(_key)
-        yield triton.Config(
-            {
+        new_config = {
                 'BLOCK_SIZE_M': block_size_m,
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
 
-                'A_load_order'     : A_load_order,
+                'A_load_order': A_load_order,
                 'meta_evict_policy': meta_evict_policy,
-                'waves_per_eu'     : waves_per_eu,
-            },
-            num_stages=num_stages,
-            num_warps=num_warps
-        )
+            }
+
+        if is_hip():
+            new_config['waves_per_eu'] = config.kwargs.pop('waves_per_eu', 0)
+            key.append(new_config['waves_per_eu'])
+
+        key = tuple(key)
+        
+        if key in used:
+            continue
+
+        used.add(key)
+        yield triton.Config(new_config, num_stages=num_stages, num_warps=num_warps)
 
 
-#HIP - Instinct MI300X
-def get_autotune_config():
-    _stages  = [1, 2] #[2] -----------------> [1, 2]
+def get_autotune_config_nvidia():
+    _stages  = [1, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
-    for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
+    for _M in [16, 32, 64, 128, 256]:
         for _N in [32, 64, 128, 256]: 
             for _K in [32, 64, 128, 256]:
-                for _w in [4, 8]: #[4] -----------------> [4, 8]
+                for _w in [4, 8]:
+                    for _s in _stages:
+                        for _A_load_order in [0, 2]:
+                            for _meta_evict_policy in ['']:
+                                _configs.append(
+                                        triton.Config(
+                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
+                                            'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy}, 
+                                            num_stages=_s, num_warps=_w)
+                                        )
+
+    return _configs
+
+#HIP - Instinct MI300X
+def get_autotune_config_amd():
+    _stages  = [1, 2]
+    _configs = []
+    for _M in [16, 32, 64, 128, 256]:
+        for _N in [32, 64, 128, 256]: 
+            for _K in [32, 64, 128, 256]:
+                for _w in [4, 8]:
                     for _s in _stages:
                         for _A_load_order in [0]:
                             for _meta_evict_policy in ['']: 
-                                for _waves in [0, 2, 4]: #[0] -----------------> [0, 2, 4]
+                                for _waves in [0, 2, 4]:
                                     _configs.append(
                                             triton.Config(
                                                 {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
@@ -117,12 +141,11 @@ def get_autotune_config():
 
     return _configs
 
+get_autotune_config = get_autotune_config_amd if is_hip() else get_autotune_config_nvidia
 
-#MI300X
 def get_default_config():
-    #small batch, not sure what is the right default cnnfig here.
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':0, 'meta_evict_policy':''}, 
-                            num_warps=4, num_stages=2),]
+                            num_warps=4, num_stages=1),]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
 
@@ -193,22 +216,13 @@ def gemm_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    #AMD
-    #data_contiguous = False
+    if data_contiguous:
+        offs_bn = offs_n  
+    else:
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
-    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
     offs_ak = offs_k
     offs_bk = offs_k
-
-    # offs_am = offs_m
-    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-
-    # if(data_contiguous):
-    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-    #     offs_bk = offs_k
-    # else:
-    #     offs_bn = offs_n
-    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     #Inputs
@@ -266,8 +280,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) #HIP
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype)
 
         #Advance
         a_ptrs += BLOCK_SIZE_K * stride_ak
