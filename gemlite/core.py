@@ -41,9 +41,9 @@ GEMLITE_ACC_DTYPE = {
 
 GEMLITE_TRITON_KERNELS = [
     gemv_A16fWnO16f,
-    gemv_revsplitK_A16fWnO16f,
+    gemv_revsplitK_A16fWnO16f, 
     gemv_splitK_A16fWnO16f,
-    gemm_splitK_A16fWnO16f,
+    gemm_splitK_A16fWnO16f, #gemm_splitK_A16fWnO16f / gemm_splitK_persistent_A16fWnO16f
     gemm_A16fWnO16f,
 ]
 
@@ -421,8 +421,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         from .triton_kernels.gemv_splitK_A16fWnO16f_int32packing import gemv_splitK_A16fWnO16f
         _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK_A16fWnO16f
 
-        from .triton_kernels.gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK_A16fWnO16f
+        from .triton_kernels.gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f 
+        from .triton_kernels.gemm_splitK_persistent_A16fWnO16f_int32packing import gemm_splitK_persistent_A16fWnO16f
+        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK_A16fWnO16f #TODO: manage splitK persistent cache
 
         from .triton_kernels.gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f
         _GEMLITE_TRITON_MAPPING['GEMM'] = gemm_A16fWnO16f

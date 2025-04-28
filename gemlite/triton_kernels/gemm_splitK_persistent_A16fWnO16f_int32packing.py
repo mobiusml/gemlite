@@ -205,7 +205,7 @@ ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
 )
 
 @triton.jit
-def gemm_splitK_A16fWnO16f_int32packing_kernel(
+def gemm_splitK_persistent_A16fWnO16f_int32packing_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, M_CLOSEST, 
@@ -265,8 +265,13 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         pid_m, pid_n = swizzle_tile_persistent(tile_id, num_pid_in_group, num_pid_m, GROUP_SIZE_M)
         offs_m  = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
         offs_n  = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+
+        if data_contiguous:
+            offs_bn = offs_n  
+        else:
+            offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+
         offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
 
         #Meta data stuff
         scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
@@ -318,7 +323,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
                 q_shift = ((offs_ak % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
                 b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
 
-            acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) 
+            acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
 
         ##################################################################
         #Channel-wise scaling
@@ -353,8 +358,8 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
 _costum_op_id = '_' + str(int(random.random()*10000))
 
-@torch.library.custom_op("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
-def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+@torch.library.custom_op("gemlite::gemm_splitK_persistent_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
+def gemm_splitK_persistent_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                                 W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
                                                 input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                                 channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
@@ -372,7 +377,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
     grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), META['SPLIT_K']) #V1
     #grid = lambda META: (min(triton.cdiv(NUM_SMS, META['SPLIT_K']), triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N'])), META['SPLIT_K']) #V2
 
-    gemm_splitK_A16fWnO16f_int32packing_kernel[grid](
+    gemm_splitK_persistent_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,
@@ -399,8 +404,8 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
 
     return output
 
-@torch.library.register_fake("gemlite::gemm_splitK_A16fWnO16f_int32packing_forward" + _costum_op_id)
-def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+@torch.library.register_fake("gemlite::gemm_splitK_persistent_A16fWnO16f_int32packing_forward" + _costum_op_id)
+def gemm_splitK_persistent_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                               W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                               input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                               channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
@@ -410,9 +415,9 @@ def gemm_splitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, sca
     return torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
 
-class gemm_splitK_A16fWnO16f:
-    kernel = gemm_splitK_A16fWnO16f_int32packing_kernel
-    forward = gemm_splitK_A16fWnO16f_int32packing_forward
+class gemm_splitK_persistent_A16fWnO16f:
+    kernel = gemm_splitK_persistent_A16fWnO16f_int32packing_kernel
+    forward = gemm_splitK_persistent_A16fWnO16f_int32packing_forward
     matmul_type = MATMUL_TYPE
 
-__all__ = ["gemm_splitK_A16fWnO16f"]
+__all__ = ["gemm_splitK_persistent_A16fWnO16f"]
