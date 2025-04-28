@@ -16,7 +16,7 @@ from .dtypes import *
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_has_more_shared_memory
+from .triton_kernels.utils import gpu_has_more_shared_memory, is_hip
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Triton backend
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
-    DType.FP16: DType.FP32, #AMD
+    DType.FP16: DType.FP16 if gpu_supports_float16_acc() else DType.FP32,
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.INT8: DType.INT32,
@@ -112,8 +112,10 @@ def set_acc_dtype(dtype):
 
 #Return the default gemv kernel to use for M==1
 def get_default_gemv(W_nbits: int) -> str:
-    #return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
-    return 'GEMV_REVSPLITK'
+    if is_hip():
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_REVSPLITK'
+    else:
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 ###################################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
@@ -139,7 +141,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
-        
+
         if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (in_features % group_size !=0 if (group_size is not None) else False):
             raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. in_features should be divisible by 32 or the group_size')
 
@@ -303,21 +305,13 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(contiguous):
             self.data_contiguous = True
             self.W_q = self.W_q.contiguous()
-
-            if(isinstance(self.scales, torch.Tensor)):
-                self.scales = self.scales.contiguous()
-            if(isinstance(self.zeros, torch.Tensor)):
-                self.zeros = self.zeros.contiguous()
         else:
             self.data_contiguous = False
 
-            #AMD
-            if(isinstance(self.scales, torch.Tensor)):
-                self.scales = self.scales.contiguous()
-            if(isinstance(self.zeros, torch.Tensor)):
-                self.zeros = self.zeros.contiguous()
-            #########################################
-
+        if(isinstance(self.scales, torch.Tensor)):
+            self.scales = self.scales.contiguous()
+        if(isinstance(self.zeros, torch.Tensor)):
+            self.zeros = self.zeros.contiguous()
 
         #Register buffers
         self.W_q      = torch.nn.Parameter(self.W_q,   requires_grad=False)
