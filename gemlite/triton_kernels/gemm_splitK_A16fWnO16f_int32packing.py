@@ -7,7 +7,7 @@ import triton.language as tl
 
 from .config import AUTOTUNE_ENABLE
 from . import utils
-from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, gpu_supports_bfloat16_atomicadd
+from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, gpu_supports_bfloat16_atomicadd, is_hip
 
 KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
 MATMUL_TYPE   = "GEMM_SPLITK"
@@ -24,22 +24,22 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
-        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
-            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
-            _num_stages = _config.pop('num_stages')
-            _num_warps  = _config.pop('num_warps')
-            _num_ctas   = _config.pop('num_ctas')
+        signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
+        if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][signature])
+            num_stages = config.pop('num_stages')
+            num_warps  = config.pop('num_warps')
+            num_ctas   = config.pop('num_ctas')
 
-            _config.pop('num_buffers_warp_spec', None)
-            _config.pop('num_consumer_groups', None)
-            _config.pop('reg_dec_producer', None)
-            _config.pop('reg_inc_consumer', None)
+            config.pop('num_buffers_warp_spec', None)
+            config.pop('num_consumer_groups', None)
+            config.pop('reg_dec_producer', None)
+            config.pop('reg_inc_consumer', None)
 
-            yield triton.Config(_config,
-                num_stages=_num_stages,
-                num_warps=_num_warps,
-                pre_hook=init_to_zero("c_ptr") if (_config['SPLIT_K'] > 1) else None,
+            yield triton.Config(config,
+                num_stages=num_stages,
+                num_warps=num_warps,
+                pre_hook=init_to_zero("c_ptr") if (config['SPLIT_K'] > 1) else None,
             )
 
             return
@@ -60,7 +60,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Only use higher split_k values for smaller m
         if(m >= 32): split_k = min(split_k, 8)
         #Only use lower split_k values for larger m
-        if(m <= 16): split_k = max(split_k, 1) #EDIT: max(split_k, 2)
+        if(m <= 16): split_k = max(split_k, 1) if is_hip() else max(split_k, 2)
 
         #Filter 
         block_area = block_size_k * block_size_n
@@ -75,28 +75,23 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(not is_divisible(k, block_size_k * split_k)):
             continue
 
-        num_warps  = config.num_warps
         num_stages = config.num_stages
+        num_warps  = config.num_warps
 
-
-        #if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+        #Nvidia
+        if(is_hip() is False):
+            if(e > 1): num_stages = 1 
+            if(e == 1 and num_stages == 1): continue
 
         A_load_order      = config.kwargs['A_load_order']
         meta_evict_policy = config.kwargs['meta_evict_policy']
         atomic_mode       = config.kwargs['atomic_mode']
-        waves_per_eu      = config.kwargs['waves_per_eu']
 
-        _key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, 
-                A_load_order, meta_evict_policy, atomic_mode, waves_per_eu,
-                config.num_stages, config.num_warps,
-                )
-        
-        if _key in used:
-            continue
+        key = [block_size_m, block_size_n, block_size_k, group_size_m, split_k, 
+               A_load_order, meta_evict_policy, atomic_mode,
+               num_stages, num_warps]
 
-        used.add(_key)
-        yield triton.Config(
-            {
+        new_config =  {
                 'BLOCK_SIZE_M': block_size_m,
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
@@ -106,54 +101,63 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'A_load_order'      : A_load_order,
                 'meta_evict_policy' : meta_evict_policy,
                 'atomic_mode'       : atomic_mode,
-                'waves_per_eu'      : waves_per_eu,
-            },
-            num_stages=config.num_stages,
-            num_warps=config.num_warps,
+            }
+
+        if is_hip():
+            new_config['waves_per_eu'] = config.kwargs.get('waves_per_eu', 0)
+            key.append(new_config['waves_per_eu'])
+
+        key = tuple(key)
+
+        if key in used:
+            continue
+
+        used.add(key)
+        yield triton.Config(
+            new_config,
+            num_stages=num_stages,
+            num_warps=num_warps,
             pre_hook=init_to_zero("c_ptr") if (split_k > 1) else None, 
         )
 
-#These autotunes are optimized for batch-size 1 to 64 (!)
-
-## Nvidia
-# def get_autotune_config():
-#     _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
-#     _configs = []
-#     for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
-#         for _N in [32, 64, 128, 256]:
-#             for _K in [32, 64, 128, 256]:
-#                 for _w in [4, 8]:
-#                     for _s in _stages:
-#                         for _sK in [1, 2, 4, 8, 16]: 
-#                             for _a_load_order in [0, 2]: #[0, 2], [0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100
-#                                 for _meta_evict_policy in ['']: #[', 'evict_last']
-#                                     for _atomic_mode in ['relaxed']: #['release', 'relaxed']:
-#                                         _configs.append(
-#                                                 triton.Config(
-#                                                     {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-#                                                     'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
-#                                                     }, 
-#                                                     num_stages=_s, num_warps=_w,
-#                                                     pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
-#                                                     )
-#                                                 )
-#     return _configs
-
-
-#HIP - Instinct MI300X
-def get_autotune_config():
-    _stages  = [1, 2] #[2] ------------------> [1, 2]
+#These autotunes are optimized for batch-size 1 to 64
+def get_autotune_config_nvidia():
+    _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
     for _M in [16, 32, 64]: #for better performance at batch-sizes [4-64]
         for _N in [32, 64, 128, 256]:
-            for _K in [32, 64, 128, 256]: #[512]
-                for _w in [4, 8]: #[4] -----------> [4, 8]
+            for _K in [32, 64, 128, 256]:
+                for _w in [4, 8]:
+                    for _s in _stages:
+                        for _sK in [1, 2, 4, 8, 16]: 
+                            for _a_load_order in [0, 2]:
+                                for _meta_evict_policy in ['']:
+                                    for _atomic_mode in ['relaxed']:
+                                        _configs.append(
+                                                triton.Config(
+                                                    {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+                                                    'A_load_order': _a_load_order, 'meta_evict_policy': _meta_evict_policy, 'atomic_mode': _atomic_mode,
+                                                    }, 
+                                                    num_stages=_s, num_warps=_w,
+                                                    pre_hook=init_to_zero("c_ptr") if (_sK > 1) else None,
+                                                    )
+                                                )
+    return _configs
+
+#HIP - Instinct MI300X
+def get_autotune_config_hip():
+    _stages  = [1, 2]
+    _configs = []
+    for _M in [16, 32, 64]: 
+        for _N in [32, 64, 128, 256]:
+            for _K in [32, 64, 128, 256]:
+                for _w in [4, 8]:
                     for _s in _stages:
                         for _sK in [1, 2, 4, 8]: 
                             for _a_load_order in [0]:
-                                for _meta_evict_policy in ['']: #[', 'evict_last']
+                                for _meta_evict_policy in ['']:
                                     for _atomic_mode in ['relaxed']: 
-                                        for _waves in [0, 2, 4]: #[0] -----------------> [0, 2, 4]
+                                        for _waves in [0, 2, 4]:
                                             _configs.append(
                                                     triton.Config(
                                                         {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
@@ -167,15 +171,15 @@ def get_autotune_config():
     return _configs
 
 
+get_autotune_config = get_autotune_config_hip if is_hip() else get_autotune_config_nvidia
+
 compute_capability = torch.cuda.get_device_capability(0)
 
-#Optimized for low-batch size decoding: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K = 256 !!!
-def get_default_config():
-    #4090: MI300X
-    config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 
-                           'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
-                            num_warps=4, num_stages=2, pre_hook=init_to_zero("c_ptr"))
 
+def get_default_config():
+    config = triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':32, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 
+                           'A_load_order':0, 'meta_evict_policy':'', 'atomic_mode':'relaxed'}, 
+                            num_warps=4, num_stages=1, pre_hook=init_to_zero("c_ptr"))
     return [config]
 
 ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM_SPLITK
@@ -251,22 +255,13 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    #AMD
-    #data_contiguous = False
+    if data_contiguous:
+        offs_bn = offs_n  
+    else:
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
-    offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N)
     offs_ak = offs_k
     offs_bk = offs_k
-
-    # offs_am = offs_m
-    # offs_ak = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
-
-    # if(data_contiguous):
-    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-    #     offs_bk = offs_k
-    # else:
-    #     offs_bn = offs_n
-    #     offs_bk = tl.max_contiguous(tl.multiple_of(offs_k, BLOCK_SIZE_K), BLOCK_SIZE_K)
     ###############################
 
     b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
@@ -294,14 +289,11 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
         if(A_load_order == 0): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
 
         b = tl.load(b_ptrs, eviction_policy='evict_first')
-        #b = tl.load(b_ptrs) #AMD
 
         if(A_load_order == 1): #Early load
             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD 
         
         #Meta-data loading policy
         if(W_group_mode > 0):
@@ -321,21 +313,18 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
             zeros = None
         
         if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
         #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
 
         if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last') 
-            #a = tl.load(a_ptrs, mask=a_mask, other=0.) #AMD
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         
         #Dot
-        #acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) #HIP
-
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) 
+        
         #Advance
         a_ptrs += BLOCK_SIZE_K_U * stride_ak
         b_ptrs += BLOCK_SIZE_K_P * stride_bk
@@ -388,8 +377,6 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
-
-    #print('x.dtype', x.dtype, 'W_q.dtype', W_q.dtype, 'acc_dtype', DTYPE_TO_TRITON[acc_dtype], 'input_dtype', DTYPE_TO_TRITON[input_dtype], 'output_dtype', DTYPE_TO_TRITON[output_dtype])
 
     gemm_splitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,

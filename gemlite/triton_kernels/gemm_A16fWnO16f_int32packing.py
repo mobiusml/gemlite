@@ -25,7 +25,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
         signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
         if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
-            config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
+            config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][signature])
             num_stages = config.pop('num_stages')
             num_warps  = config.pop('num_warps')
             num_ctas   = config.pop('num_ctas')
@@ -75,8 +75,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         meta_evict_policy = config.kwargs['meta_evict_policy']
 
         key = [block_size_m, block_size_n, block_size_k, group_size_m, 
-                A_load_order, meta_evict_policy, 
-                num_stages, num_warps]
+               A_load_order, meta_evict_policy, 
+               num_stages, num_warps]
 
         new_config = {
                 'BLOCK_SIZE_M': block_size_m,
@@ -89,7 +89,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             }
 
         if is_hip():
-            new_config['waves_per_eu'] = config.kwargs.pop('waves_per_eu', 0)
+            new_config['waves_per_eu'] = config.kwargs.get('waves_per_eu', 0)
             key.append(new_config['waves_per_eu'])
 
         key = tuple(key)
@@ -121,7 +121,7 @@ def get_autotune_config_nvidia():
     return _configs
 
 #HIP - Instinct MI300X
-def get_autotune_config_amd():
+def get_autotune_config_hip():
     _stages  = [1, 2]
     _configs = []
     for _M in [16, 32, 64, 128, 256]:
@@ -141,7 +141,7 @@ def get_autotune_config_amd():
 
     return _configs
 
-get_autotune_config = get_autotune_config_amd if is_hip() else get_autotune_config_nvidia
+get_autotune_config = get_autotune_config_hip if is_hip() else get_autotune_config_nvidia
 
 def get_default_config():
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':64, 'GROUP_SIZE_M':8, 'A_load_order':0, 'meta_evict_policy':''}, 
