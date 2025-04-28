@@ -4,13 +4,17 @@
 import torch, gc
 from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
+from .triton_kernels.utils import is_hip
 
-#default_fp8 = torch.float8_e4m3fn #Nvidia 
-#default_fp8 = torch.float8_e5m2 #Nvidia
-
-default_fp8 = torch.float8_e4m3fnuz #AMD
-#default_fp8 = torch.float8_e5m2fnuz #AMD
-#default_fp8 = torch.float8_e5m2 #AMD - fp16 emulated
+if is_hip():
+    default_fp8 = torch.float8_e4m3fnuz #AMD
+    #default_fp8 = torch.float8_e5m2fnuz #AMD
+    #default_fp8 = torch.float8_e5m2 #AMD - fp16 emulated
+    post_scale = True
+else:
+    default_fp8 = torch.float8_e4m3fn #Nvidia 
+    #default_fp8 = torch.float8_e5m2 #Nvidia
+    post_scale = False
 
 ####################################################################################################
 #16-bit activations / 8-bit weigths
@@ -122,7 +126,7 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
 ####################################################################################################
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', post_scale=True):
+    def __init__(self, device='cuda:0', post_scale=post_scale):
         self.post_scale = post_scale
         self.device     = device
 
@@ -189,7 +193,7 @@ class A16Wn:
 ####################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=True, fp8=default_fp8):
+    def __init__(self, device='cuda:0', post_scale=post_scale, fp8=default_fp8):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
