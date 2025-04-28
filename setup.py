@@ -1,5 +1,4 @@
 from setuptools import setup, find_packages
-
 setup(
     name='gemlite',
     version="0.5.0",
@@ -12,4 +11,5 @@ setup(
         "gemlite": ["gemlite/*.py", "configs/*.json"],
     },
     include_package_data=True,
+    install_requires=["numpy", "torch>=2.5.0"],
 )
