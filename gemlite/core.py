@@ -16,7 +16,7 @@ from .dtypes import *
 import triton.language as tl
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_has_more_shared_memory, is_hip
+from .triton_kernels.utils import gpu_supports_float16_acc, is_hip
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols
 
