@@ -2,9 +2,6 @@ import torch
 import triton.language as tl
 from enum import Enum
 
-#torch_fp8_e4, triton_fp8_e4 = torch.float8_e4m3fn, tl.float8e4nv #Nvidia
-torch_fp8_e4, triton_fp8_e4 = torch.float8_e4m3fnuz, tl.float8e4nv #AMD
-
 class DType(Enum):
     FP32   = 0
     FP16   = 1
