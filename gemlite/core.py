@@ -7,7 +7,7 @@ from enum import Enum
 import math, json, os
 import warnings, random
 from typing import List, Union, Tuple, Callable
-import logging, random
+import logging
     
 #Dtypes
 from .dtypes import *
@@ -52,39 +52,6 @@ GEMLITE_TRITON_CONFIG_CACHE  = {} #Global config cache for all the kernels
 GEMLITE_TRITON_CACHE         = {} #Cache used forward with warmup
 _GROUP_SIZE_WARNED           = False
 
-def eval_time_triton(fct, params):
-    return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
-
-def eval_time_torch(fct, params, rep=100, return_mode='min'):
-    cache = torch.empty(int(256 * 1024 * 1024 // 4), dtype=torch.int, device='cuda')
-
-    t = []
-    for _ in range(rep):
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-
-        cache.zero_() #fast_flush
-        start_event.record()
-        fct(*params)
-        end_event.record()
-        torch.cuda.synchronize()
-        t.append(start_event.elapsed_time(end_event))
-        cache += int(random.random()*1000)  #change cache
-
-    return np.min(t) if return_mode=='min' else np.mean(t[rep//2:])
-
-eval_time = eval_time_torch
-
-def eval_time_for_auto_mode(fct, params):
-    for _ in range(10): fct(*params) #Run first to kick-off Triton autotune
-    if(AUTOTUNE_ENABLE.USE_CUDA_GRAPH):
-        stream = torch.cuda.Stream()
-        torch.cuda.set_stream(stream)
-        out = do_bench_cudagraph(lambda: fct(*params), rep=50, return_mode='mean')
-    else:
-        out = eval_time(fct, params)
-    return out
-
 def cache_kernel_config(kernel, num_keys):
     kernel_cache = kernel.cache
     k_config = {}
@@ -123,6 +90,7 @@ def get_matmul_type(batch_size: int, W_nbits: int):
     else:
         return get_default_gemv(W_nbits)
 
+#Main functional forward call
 @torch.library.custom_op("gemlite::forward_functional", mutates_args=())
 def forward_functional(
     x: Tensor,
@@ -272,8 +240,16 @@ class GemLiteLinearTriton(torch.nn.Module):
         return x, self.scales_x
 
     #Make sure to feed UINT8 W_q for packing
-    def pack(self, W_q: Tensor, scales: Tensor, zeros: Union[Tensor, int], bias: Union[Tensor, None]=None, fma_mode: bool=False, contiguous: Union[int,None]=None, packing_bitwidth: Union[int,None]=None):
-
+    def pack(
+        self,
+        W_q: Tensor,
+        scales: Tensor,
+        zeros: Union[Tensor, int],
+        bias: Union[Tensor, None] = None,
+        fma_mode: bool = False,
+        contiguous: Union[int, None] = None,
+        packing_bitwidth: Union[int, None] = None,
+    ):
         #Set packing bitwidth
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
@@ -291,10 +267,17 @@ class GemLiteLinearTriton(torch.nn.Module):
 
             if(contiguous is None): contiguous = False
 
-        if(W_q.dtype == torch.uint8): #Packed weigths
-            _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == 'cuda') else pack_weights_over_cols_torch
-            self.W_q, self.elements_per_sample = _pack_weights_over_cols(W_q.view(self.orig_shape), W_nbits=self.W_nbits, packing_bitwidth=packing_bitwidth, transpose=True) #Over-K
-            if(contiguous is None): contiguous = True
+        if W_q.dtype == torch.uint8:  # Packed weigths
+            _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == "cuda") else pack_weights_over_cols_torch
+            
+            self.W_q, self.elements_per_sample = _pack_weights_over_cols(
+                W_q.view(self.orig_shape),
+                W_nbits=self.W_nbits,
+                packing_bitwidth=packing_bitwidth,
+                transpose=True,
+            )  # Over-K
+            if contiguous is None:
+                contiguous = True
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
