@@ -288,16 +288,12 @@ def gemm_A16fWnO16f_int32packing_kernel(
     tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
 
 
-_costum_op_id = '_' + str(int(random.random()*10000))
-
-@torch.library.custom_op("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
                                         ) -> Tensor:
     
-
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
 
     M_CLOSEST = utils.get_closest_m(M)
@@ -330,17 +326,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     return output
 
-@torch.library.register_fake("gemlite::gemm_A16fWnO16f_int32packing_forward" + _costum_op_id)
-def gemm_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                              W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                              input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-                                              channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
-                                              ) -> Tensor:
-
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-    return torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
-
-
+    
 class gemm_A16fWnO16f:
     kernel = gemm_A16fWnO16f_int32packing_kernel
     forward = gemm_A16fWnO16f_int32packing_forward

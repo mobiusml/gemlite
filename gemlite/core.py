@@ -6,8 +6,8 @@ import numpy as np
 from enum import Enum
 import math, json, os
 import warnings, random
-from typing import Union, Tuple, Callable
-import logging
+from typing import List, Union, Tuple, Callable
+import logging, random
     
 #Dtypes
 from .dtypes import *
@@ -45,10 +45,12 @@ GEMLITE_TRITON_KERNELS = [
     gemm_A16fWnO16f,
 ]
 
-GEMLITE_TRITON_MAPPING      = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
-GEMLITE_TRITON_CONFIG_CACHE = {} #Global config cache for all the kernels
-GEMLITE_TRITON_CACHE        = {} #Cache used forward with warmup
-_GROUP_SIZE_WARNED          = False
+GEMLITE_TRITON_MAPPING       = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
+GEMLITE_MATMUL_TYPES         = [kernel.matmul_type for kernel in GEMLITE_TRITON_KERNELS]
+GEMLITE_MATMUL_TYPES_MAPPING = {GEMLITE_MATMUL_TYPES[i]: i for i in range(len(GEMLITE_MATMUL_TYPES))}
+GEMLITE_TRITON_CONFIG_CACHE  = {} #Global config cache for all the kernels
+GEMLITE_TRITON_CACHE         = {} #Cache used forward with warmup
+_GROUP_SIZE_WARNED           = False
 
 def eval_time_triton(fct, params):
     return do_bench(lambda: fct(*params), warmup=200, rep=50, return_mode='mean')
@@ -111,6 +113,57 @@ def set_acc_dtype(dtype):
 #Return the default gemv kernel to use for M==1
 def get_default_gemv(W_nbits: int) -> str:
     return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+
+#matmul type selection logic
+def get_matmul_type(batch_size: int, W_nbits: int):
+    if batch_size > 64:
+        return "GEMM"
+    if batch_size > 1:
+        return "GEMM_SPLITK"
+    else:
+        return get_default_gemv(W_nbits)
+
+@torch.library.custom_op("gemlite::forward_functional", mutates_args=())
+def forward_functional(
+    x: Tensor,
+    scales_x: Union[None, Tensor],
+    bias: Union[None, Tensor],
+    out_features: int,
+    tensor_args: List[Tensor],
+    meta_args: List[int],
+    data_contiguous: bool,
+    matmul_type: int = -1,
+) -> Tensor:
+    
+    out_shape = x.shape[:-1] + (out_features,)
+    x = x.view(-1, x.shape[-1])
+
+    if(matmul_type >= 0):
+        matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
+    else:
+        matmul_type_str = get_matmul_type(x.shape[0], meta_args[0]) #batch_size, W_nbits
+
+    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args, data_contiguous).view(out_shape)
+
+    if bias is not None:
+        out += bias
+
+    return out
+
+@torch.library.register_fake("gemlite::forward_functional")
+def forward_functional_fake(
+    x: Tensor,
+    scales_x: Union[None, Tensor],
+    bias: Union[None, Tensor],
+    out_features: int,
+    tensor_args: List[Tensor],
+    meta_args: List[int],
+    data_contiguous: bool,
+    matmul_type: int = -1,
+) -> Tensor:
+
+    return torch.empty(x.shape[:-1] + (out_features,), device=x.device, dtype=x.dtype)
+
 ###################################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
@@ -168,23 +221,21 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.acc_dtype = GEMLITE_ACC_DTYPE[self.input_dtype] if(acc_dtype is None) else acc_dtype
 
         #Scales activations
+        self.scales_x = None
         self.scaled_activations = scaled_activations
 
-        self.post_set_default()
+        if(self.scaled_activations):
+            #TODO: automatically set fp32_scale
+            from .helper import scale_activations
+            if(self.compute_dtype.is_floating_point):
+                max_val = torch.finfo(self.compute_dtype).max
+            else:
+                max_val = torch.iinfo(self.compute_dtype).max
+            self.scale_activations = lambda x: scale_activations(x, w_dtype=self.compute_dtype, max_val=max_val)
 
+        #Default forward        
+        self.forward = self.forward_auto_no_warmup
 
-    def post_set_default(self):
-        #self.kernels  = GEMLITE_TRITON_KERNELS
-        self.scales_x = None
-
-        if(AUTOTUNE_ENABLE.EXHAUSTIVE):
-            self.forward = self.forward_auto_with_warmup
-        else:
-            self.forward = self.forward_auto_no_warmup
-
-        #Default GEMV for packed vs. non-packed data
-        self.default_gemv = get_default_gemv(self.W_nbits)
-            
     def load_state_dict(self, state_dict, strict=True, assign=False):
         self.W_q        = state_dict.pop("W_q", None)
         self.bias       = state_dict.pop("bias", None)
@@ -215,8 +266,6 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.out_features, self.in_features = self.orig_shape
         self.compute_dtype = DTYPE_TO_TORCH[self.input_dtype.value]
-
-        self.post_set_default()
 
     #Override this function to perform dynamic activation quantization
     def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
@@ -347,19 +396,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device='cpu', dtype=torch.int32), requires_grad=False)
         return self
 
-    #Main function forward function
-    @staticmethod
-    @torch.no_grad()
-    def forward_functional(x: Tensor, bias: Union[None, Tensor], out_features: int, scale_activations: Callable, matmul_type: str, tensor_args: list, meta_args: list) -> Tensor:
-        x, scaled_x = scale_activations(x)
-        out_shape   = x.shape[:-1] + (out_features,)
-        out         = GEMLITE_TRITON_MAPPING[matmul_type].forward(x.view(-1, x.shape[-1]), *tensor_args, scaled_x, *meta_args).view(out_shape)
-
-        if bias is not None:
-            out += bias
-
-        return out
-
     #Return the main arguments
     def get_tensor_args(self):
         return [self.W_q, self.scales, self.zeros]
@@ -380,53 +416,30 @@ class GemLiteLinearTriton(torch.nn.Module):
 
     # #Main manual call
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
-        return GemLiteLinearTriton.forward_functional(x, self.bias, self.out_features, self.scale_activations, matmul_type, self.get_tensor_args(), self.get_meta_args())
+        x, scales_x = self.scale_activations(x)
+        return forward_functional(
+            x,
+            scales_x,
+            self.bias,
+            self.out_features,
+            self.get_tensor_args(),
+            self.get_meta_args()[:-1],
+            self.data_contiguous,
+            GEMLITE_MATMUL_TYPES_MAPPING[matmul_type],
+        )
 
-    #Main auto call without exhaustive search
+    # #Main auto call without exhaustive search
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
-        _batch_size = x.view(-1, x.shape[-1]).shape[0]
-        if(_batch_size > 64):
-            return self.forward_manual(x, matmul_type='GEMM') #GEMM
-        if(_batch_size > 1):
-            return self.forward_manual(x, matmul_type='GEMM_SPLITK') #GEMM_SPLITK
-        else:
-            return self.forward_manual(x, matmul_type=self.default_gemv) #GEMV / GEMV_REVSPLITK / GEMV_SPLITK
-
-    # Warm up all the selected kernels
-    def warmup(self, signature, x):
-        global GEMLITE_TRITON_CACHE, GEMLITE_TRITON_KERNELS
-        self.kernels = GEMLITE_TRITON_KERNELS
-        t = [np.inf] * len(self.kernels)
-        M = signature[0]
-        for i, _kernel in enumerate(self.kernels):
-            _matmul_type = _kernel.matmul_type
-            if M > 1 and _matmul_type == "GEMV": #skip gemvs for larger batch-sizes: GEMV 
-                continue 
-            if M > 1 and _matmul_type == "GEMV_SPLITK": #skip gemvs for larger batch-sizes: GEMV_SPLTIK
-                continue 
-            if M > 2 and _matmul_type == "GEMV_REVSPLITK": #skip gemvs for larger batch-sizes: GEMV_REVSPLITK
-                continue 
-            if M > 32 and _matmul_type == "GEMM_SPLITK": #skip SPLIT_K for larger batch-
-                continue
-            if M < 16 and _matmul_type == "GEMM": #skip GEMM for smaller matrices
-                continue  
-            #t[i] = eval_time_for_auto_mode(lambda x: self.forward_manual(x, matmul_type=_matmul_type), x)
-            t[i] = eval_time_for_auto_mode(self.forward_manual, [x, _matmul_type])
-
-        indx = np.argmin(t)
-        GEMLITE_TRITON_CACHE[signature] = {
-            "matmul_type": self.kernels[indx].matmul_type,
-            "time": t[indx],
-            "time_all": list(zip([k.matmul_type for k in self.kernels] , t))
-        }
-
-    #Exhaustive search 
-    def forward_auto_with_warmup(self, x: Tensor) -> Tensor:
-        _batch_size = x.view(-1, x.shape[-1]).shape[0]
-        _signature = (get_closest_m(_batch_size),) + self.signature
-        if _signature not in GEMLITE_TRITON_CACHE:
-            self.warmup(_signature, x)
-        return self.forward_manual(x, GEMLITE_TRITON_CACHE[_signature]["matmul_type"])
+        x, scales_x = self.scale_activations(x)
+        return forward_functional(
+            x,
+            scales_x,
+            self.bias,
+            self.out_features,
+            self.get_tensor_args(),
+            self.get_meta_args()[:-1],
+            self.data_contiguous,
+        )
 
     @staticmethod
     def cache_config(filename: str):
