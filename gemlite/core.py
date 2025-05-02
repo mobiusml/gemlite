@@ -8,6 +8,7 @@ import math, json, os
 import warnings, random
 from typing import List, Union, Tuple, Callable
 import logging
+from functools import partial
     
 #Dtypes
 from .dtypes import *
@@ -199,7 +200,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 max_val = torch.finfo(self.compute_dtype).max
             else:
                 max_val = torch.iinfo(self.compute_dtype).max
-            self.scale_activations = lambda x: scale_activations(x, w_dtype=self.compute_dtype, max_val=max_val)
+            self.scale_activations = partial(scale_activations, w_dtype=self.compute_dtype, max_val=max_val)
 
         #Default forward        
         self.forward = self.forward_auto_no_warmup
@@ -269,7 +270,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         if W_q.dtype == torch.uint8:  # Packed weigths
             _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == "cuda") else pack_weights_over_cols_torch
-            
+
             self.W_q, self.elements_per_sample = _pack_weights_over_cols(
                 W_q.view(self.orig_shape),
                 W_nbits=self.W_nbits,

@@ -4,6 +4,7 @@
 import torch, gc
 from typing import Tuple
 from tqdm import tqdm
+from functools import partial
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
 
 def scale_activations(x: torch.Tensor, w_dtype: torch.dtype, max_val: float, fp32_scale: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -163,7 +164,7 @@ class A8W8_dynamic:
 
 
         gemlite_linear.meta_dtype         = DType.FP32
-        gemlite_linear.scale_activationss = lambda x: scale_activations(x, w_dtype=w_dtype, max_val=max_val, fp32_scale=True) 
+        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=True) 
 
         gemlite_linear.pack(W_q, scales / self.weight_scale, 
                             zeros=None, 
@@ -242,7 +243,7 @@ class A8Wn_dynamic(A16Wn):
         if(fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
 
-        gemlite_linear.scale_activationss = lambda x: scale_activations(x, w_dtype=w_dtype, max_val=max_val, fp32_scale=fp32_scale)
+        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=fp32_scale) 
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -362,7 +363,7 @@ class A8W158:
             gemlite_linear.meta_dtype = DType.FP32
 
         #post-scale
-        gemlite_linear.scale_activationss  = lambda x: scale_activations(x, w_dtype=w_dtype, max_val=max_val, fp32_scale=self.fp32_scale)
+        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=self.fp32_scale) 
         gemlite_linear.W_group_mode       = 1 #shift only
         gemlite_linear.channel_scale_mode = 3 #activations + weight
 
