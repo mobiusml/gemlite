@@ -55,10 +55,10 @@ GEMLITE_TRITON_CONFIG_CACHE  = {} #Global config cache for all the kernels
 GEMLITE_TRITON_CACHE         = {} #Cache used forward with warmup
 _GROUP_SIZE_WARNED           = False
 
-
 ###################################################################################
 #Utils
 
+#Main function to cache kernel autotune config
 def cache_kernel_config(kernel, num_keys):
     kernel_cache = kernel.cache
     k_config = {}
@@ -110,7 +110,7 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
 
 #Main activation scaling functions
 @torch.compile(fullgraph=True)
-def scale_activations_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     if(fp32_scale):
         x = x.to(torch.float32, copy=False)
@@ -126,66 +126,70 @@ def scale_activations_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = 
     return out_x.view(x_shape), scales_x
 
 @triton.jit
-def scale_activations_kernel(
+def scale_activations_per_token_kernel(
     x_ptr, scale_ptr, y_ptr, 
     M, K,
     stride_m, stride_k, stride_sm, 
+    UNROLL: tl.constexpr,
     max_val: tl.constexpr,
     fp32_scale: tl.constexpr, 
     BLOCK_M: tl.constexpr, 
     BLOCK_K: tl.constexpr 
 ):
-    pid_m = tl.program_id(0)
+    pid_m = tl.program_id(0) * UNROLL
     pid_k = tl.program_id(1)
 
-    offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
     offs_k  = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
-    mask    = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
-    in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
+    offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
 
-    x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
-    if(fp32_scale):
-        x = x.to(tl.float32)
+    for m in range(UNROLL):    
+        mask    = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
+        in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
+        x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
+        if(fp32_scale):
+            x = x.to(tl.float32)
 
-    scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True) #/ max_val
-    scales_x /= max_val
-    x /= scales_x
+        scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True)
+        scales_x /= max_val
+        x /= scales_x
+        x = libdevice.round(x)
 
-    y = libdevice.round(x)
+        tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
+        tl.store(y_ptr + in_ptrs, x, mask=mask)
+        offs_m += BLOCK_M 
 
-    tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
-    tl.store(y_ptr + in_ptrs, y, mask=mask)
-
-@torch.library.custom_op("gemlite::scale_activations_triton", mutates_args=())
-def scale_activations_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
-    
-    M, K   = x.shape
+    x_shape = x.shape
+    x       = x.view(-1, x.shape[-1]) 
+    M, K    = x.shape
     scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
     y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
 
-    BLOCK_M = 1
+    UNROLL  = 1 #max(1, M // 128)
+    BLOCK_M = 1 
     BLOCK_K = triton.next_power_of_2(K)
-    grid    = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_K))
+    grid    = (triton.cdiv(M, BLOCK_M * UNROLL), triton.cdiv(K, BLOCK_K)) 
 
-    scale_activations_kernel[grid](
+    scale_activations_per_token_kernel[grid](
         x, scales, y,
         M, K,
-        x.stride(0), x.stride(1),
+        x.stride(0), 
+        x.stride(1),
         scales.stride(0),
         max_val=max_val,
         fp32_scale=fp32_scale,
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+        UNROLL=UNROLL,
+        BLOCK_M=BLOCK_M,
+        BLOCK_K=BLOCK_K,
+        num_stages=1,
+        num_warps=4,
     )
 
-    return y, scales
+    return y.view(x_shape), scales
 
-@torch.library.register_fake("gemlite::scale_activations_triton")
-def scale_activations_triton_fake(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    M, K = x.shape
-    return torch.empty((M, K), dtype=w_dtype, device=x.device), torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
 
-scale_activations = scale_activations_triton
+scale_activations = scale_activations_per_token_triton
 #######################################################################################################################
 
 #Main functional forward call
@@ -197,7 +201,6 @@ def forward_functional(
     meta_args: List[int],
     matmul_type: int = -1, #-1: auto
 ) -> Tensor:
-    
     
     scaled_activations = bool(meta_args[0])
     data_contiguous = bool(meta_args[1])
