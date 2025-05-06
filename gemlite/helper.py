@@ -151,13 +151,12 @@ class A8W8_dynamic:
                         scaled_activations=True,
                         )
 
-
-        gemlite_linear.meta_dtype = DType.FP32
         gemlite_linear.pack(W_q, scales / self.weight_scale, 
                             zeros=None, 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
                             contiguous=False)
-        
+
+        gemlite_linear.meta_dtype         = DType.FP32
         gemlite_linear.W_group_mode       = 0
         gemlite_linear.channel_scale_mode = 3 #activation[:,None] + weight[None,:]
         return gemlite_linear
