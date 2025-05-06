@@ -14,7 +14,9 @@ from functools import partial
 from .dtypes import *
 
 # Triton
+import triton
 import triton.language as tl
+from triton.language.extra import libdevice
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 from .triton_kernels.utils import gpu_supports_float16_acc
@@ -52,6 +54,10 @@ GEMLITE_MATMUL_TYPES_MAPPING = {GEMLITE_MATMUL_TYPES[i]: i for i in range(len(GE
 GEMLITE_TRITON_CONFIG_CACHE  = {} #Global config cache for all the kernels
 GEMLITE_TRITON_CACHE         = {} #Cache used forward with warmup
 _GROUP_SIZE_WARNED           = False
+
+
+###################################################################################
+#Utils
 
 def cache_kernel_config(kernel, num_keys):
     kernel_cache = kernel.cache
@@ -91,28 +97,129 @@ def get_matmul_type(batch_size: int, W_nbits: int):
     else:
         return get_default_gemv(W_nbits)
 
+#######################################################################################################################
+#Activation scaling
+
+#Get max val based on compute type
+def get_max_val(compute_dtype: torch.dtype) -> float:
+    if(compute_dtype.is_floating_point):
+        max_val = torch.finfo(compute_dtype).max
+    else:
+        max_val = torch.iinfo(compute_dtype).max
+    return max_val
+
+#Main activation scaling functions
+@torch.compile(fullgraph=True)
+def scale_activations_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+    max_val = get_max_val(w_dtype)
+    if(fp32_scale):
+        x = x.to(torch.float32, copy=False)
+    x_shape  = x.shape
+    out_x    = x.view(-1, x.shape[-1]) 
+    scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
+    # if(fp32_scale):
+    #     scales_x = scales_x.to(torch.float32)
+    scales_x.div_(max_val)
+    out_x = x / scales_x
+    out_x.round_()    
+    out_x = out_x.to(dtype=w_dtype)
+    return out_x.view(x_shape), scales_x
+
+@triton.jit
+def scale_activations_kernel(
+    x_ptr, scale_ptr, y_ptr, 
+    M, K,
+    stride_m, stride_k, stride_sm, 
+    max_val: tl.constexpr,
+    fp32_scale: tl.constexpr, 
+    BLOCK_M: tl.constexpr, 
+    BLOCK_K: tl.constexpr 
+):
+    pid_m = tl.program_id(0)
+    pid_k = tl.program_id(1)
+
+    offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_k  = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
+    mask    = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
+    in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
+
+    x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
+    if(fp32_scale):
+        x = x.to(tl.float32)
+
+    scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True) #/ max_val
+    scales_x /= max_val
+    x /= scales_x
+
+    y = libdevice.round(x)
+
+    tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
+    tl.store(y_ptr + in_ptrs, y, mask=mask)
+
+@torch.library.custom_op("gemlite::scale_activations_triton", mutates_args=())
+def scale_activations_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+    max_val = get_max_val(w_dtype)
+    
+    M, K   = x.shape
+    scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
+    y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
+
+    BLOCK_M = 1
+    BLOCK_K = triton.next_power_of_2(K)
+    grid    = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_K))
+
+    scale_activations_kernel[grid](
+        x, scales, y,
+        M, K,
+        x.stride(0), x.stride(1),
+        scales.stride(0),
+        max_val=max_val,
+        fp32_scale=fp32_scale,
+        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
+    )
+
+    return y, scales
+
+@torch.library.register_fake("gemlite::scale_activations_triton")
+def scale_activations_triton_fake(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+    M, K = x.shape
+    return torch.empty((M, K), dtype=w_dtype, device=x.device), torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
+
+scale_activations = scale_activations_triton
+#######################################################################################################################
+
 #Main functional forward call
 @torch.library.custom_op("gemlite::forward_functional", mutates_args=())
 def forward_functional(
     x: Tensor,
-    scales_x: Union[None, Tensor],
     bias: Union[None, Tensor],
-    out_features: int,
     tensor_args: List[Tensor],
     meta_args: List[int],
-    data_contiguous: bool,
-    matmul_type: int = -1,
+    matmul_type: int = -1, #-1: auto
 ) -> Tensor:
     
+    
+    scaled_activations = bool(meta_args[0])
+    data_contiguous = bool(meta_args[1])
+    W_nbits = meta_args[1]
+    out_features = tensor_args[0].shape[1]
+    compute_dtype = DTYPE_TO_TORCH[meta_args[5]] #input_dtype.value
+
+    #Dynamic activation quatnization
+    if(scaled_activations):
+        x, scales_x = scale_activations(x, w_dtype=compute_dtype)
+    else:
+        x, scales_x = x, None
+
     out_shape = x.shape[:-1] + (out_features,)
     x = x.view(-1, x.shape[-1])
 
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
     else:
-        matmul_type_str = get_matmul_type(x.shape[0], meta_args[0]) #batch_size, W_nbits
+        matmul_type_str = get_matmul_type(x.shape[0], W_nbits) #batch_size, W_nbits
 
-    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args, data_contiguous).view(out_shape)
+    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous).view(out_shape)
 
     if bias is not None:
         out += bias
@@ -122,18 +229,15 @@ def forward_functional(
 @torch.library.register_fake("gemlite::forward_functional")
 def forward_functional_fake(
     x: Tensor,
-    scales_x: Union[None, Tensor],
     bias: Union[None, Tensor],
-    out_features: int,
     tensor_args: List[Tensor],
     meta_args: List[int],
-    data_contiguous: bool,
     matmul_type: int = -1,
 ) -> Tensor:
-
+    out_features = tensor_args[0].shape[1]
     return torch.empty(x.shape[:-1] + (out_features,), device=x.device, dtype=x.dtype)
 
-###################################################################################################################################
+#######################################################################################################################
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
@@ -190,17 +294,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.acc_dtype = GEMLITE_ACC_DTYPE[self.input_dtype] if(acc_dtype is None) else acc_dtype
 
         #Scales activations
-        self.scales_x = None
-        self.scaled_activations = scaled_activations
-
-        if(self.scaled_activations):
-            #TODO: automatically set fp32_scale
-            from .helper import scale_activations
-            if(self.compute_dtype.is_floating_point):
-                max_val = torch.finfo(self.compute_dtype).max
-            else:
-                max_val = torch.iinfo(self.compute_dtype).max
-            self.scale_activations = partial(scale_activations, w_dtype=self.compute_dtype, max_val=max_val)
+        if(self.compute_dtype in [torch.float16, torch.bfloat16, torch.float32]):
+            self.scaled_activations = False
+        else:
+            self.scaled_activations = scaled_activations
 
         #Default forward        
         self.forward = self.forward_auto_no_warmup
@@ -216,7 +313,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.metadata   = [v.item() for v in self.metadata]
         self.orig_shape = (v.item() for v in self.orig_shape)
 
-        (self.W_nbits,
+        (self.scaled_activations,
+        self.W_nbits,
         self.group_size,
         self.unpack_mask,
         self.elements_per_sample,
@@ -235,10 +333,7 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         self.out_features, self.in_features = self.orig_shape
         self.compute_dtype = DTYPE_TO_TORCH[self.input_dtype.value]
-
-    #Override this function to perform dynamic activation quantization
-    def scale_activations(self, x: Tensor) -> Tuple[Tensor, Tensor]:
-        return x, self.scales_x
+        self.scaled_activations = bool(self.scaled_activations)
 
     #Make sure to feed UINT8 W_q for packing
     def pack(
@@ -327,19 +422,19 @@ class GemLiteLinearTriton(torch.nn.Module):
         assert self.W_group_mode > -1, "Invalid scales/zeros settings."
 
         #channel-wise scaling 
-        self.meta_is_chanenlwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
+        self.meta_is_channelwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
         #weight-only
-        if((self.scaled_activations == False) and (self.meta_is_chanenlwise == True)):
+        if((self.scaled_activations == False) and (self.meta_is_channelwise == True)):
             self.channel_scale_mode = 1
             self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
         #activation-only
-        if((self.scaled_activations == True) and (self.meta_is_chanenlwise == False)):
+        if((self.scaled_activations == True) and (self.meta_is_channelwise == False)):
             self.channel_scale_mode = 2
 
         #weight + activation mode
-        if((self.scaled_activations == True) and (self.meta_is_chanenlwise == True)):
+        if((self.scaled_activations == True) and (self.meta_is_channelwise == True)):
              self.channel_scale_mode = 3
              self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
@@ -385,7 +480,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         return [self.W_q, self.scales, self.zeros]
 
     def get_meta_args(self):
-        return [self.W_nbits,
+        return [int(self.scaled_activations),
+                self.W_nbits,
                 self.group_size,
                 self.unpack_mask,
                 self.elements_per_sample,
@@ -395,34 +491,26 @@ class GemLiteLinearTriton(torch.nn.Module):
                 self.meta_dtype.value,
                 self.channel_scale_mode,
                 self.W_group_mode,
-                self.data_contiguous,
+                int(self.data_contiguous),
                 ]
 
     # #Main manual call
     def forward_manual(self, x: Tensor, matmul_type: str="GEMM") -> Tensor:
-        x, scales_x = self.scale_activations(x)
         return forward_functional(
             x,
-            scales_x,
             self.bias,
-            self.out_features,
             self.get_tensor_args(),
-            self.get_meta_args()[:-1],
-            self.data_contiguous,
+            self.get_meta_args(),
             GEMLITE_MATMUL_TYPES_MAPPING[matmul_type],
         )
 
     # #Main auto call without exhaustive search
     def forward_auto_no_warmup(self, x: Tensor) -> Tensor:
-        x, scales_x = self.scale_activations(x)
         return forward_functional(
             x,
-            scales_x,
             self.bias,
-            self.out_features,
             self.get_tensor_args(),
-            self.get_meta_args()[:-1],
-            self.data_contiguous,
+            self.get_meta_args(),
         )
 
     @staticmethod

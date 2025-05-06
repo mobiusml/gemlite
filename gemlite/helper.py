@@ -6,83 +6,7 @@ from torch import Tensor
 from typing import Tuple
 from tqdm import tqdm
 from functools import partial
-import triton
-import triton.language as tl
-from triton.language.extra import libdevice
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
-
-#Main activation scaling functions
-def scale_activations_torch(x: Tensor, w_dtype: torch.dtype, max_val: float, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    if(fp32_scale):
-        x = x.to(dtype=torch.float32, copy=False)
-    x_shape  = x.shape
-    out_x    = x.view(-1, x.shape[-1]) 
-    scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
-    scales_x.div_(max_val)
-    out_x = x / scales_x
-    out_x.round_()    
-    out_x = out_x.to(dtype=w_dtype)
-    return out_x.view(x_shape), scales_x
-
-@triton.jit
-def scale_activations_kernel(
-    x_ptr, scale_ptr, y_ptr, 
-    M, K,
-    stride_m, stride_k, stride_sm,
-    max_val: tl.constexpr,
-    fp32_scale: tl.constexpr, 
-    BLOCK_M: tl.constexpr, 
-    BLOCK_K: tl.constexpr 
-):
-    pid_m = tl.program_id(0)
-    pid_k = tl.program_id(1)
-
-    offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-    offs_k  = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
-    mask    = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
-    in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
-
-    x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
-    if(fp32_scale):
-        x = x.to(tl.float32)
-
-    blk_max = tl.max(tl.abs(x), axis=1, keep_dims=True) / max_val
-
-    y = libdevice.round(x / blk_max)
-
-    tl.store(scale_ptr + offs_m[:, None] * stride_sm, blk_max)
-    tl.store(y_ptr + in_ptrs, y, mask=mask)
-
-
-@torch.library.custom_op("gemlite::scale_activations_triton", mutates_args=())
-def scale_activations_triton(x: Tensor, w_dtype: torch.dtype, max_val: float, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    
-    M, K   = x.shape
-    scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
-    y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
-
-    BLOCK_M = 1
-    BLOCK_K = triton.next_power_of_2(K)
-    grid    = (triton.cdiv(M, BLOCK_M), triton.cdiv(K, BLOCK_K))
-
-    scale_activations_kernel[grid](
-        x, scales, y,
-        M, K,
-        x.stride(0), x.stride(1),
-        scales.stride(0),
-        max_val=max_val,
-        fp32_scale=fp32_scale,
-        BLOCK_M=BLOCK_M, BLOCK_K=BLOCK_K,
-    )
-
-    return y, scales
-
-@torch.library.register_fake("gemlite::scale_activations_triton")
-def scale_activations_triton_fake(x: Tensor, w_dtype: torch.dtype, max_val: float, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    M, K = x.shape
-    return torch.empty((M, K), dtype=w_dtype, device=x.device), torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
-
-scale_activations = scale_activations_torch #scale_activations_torch
 
 ############################################################################################################################################################
 #16-bit activations / 8-bit weigths
@@ -228,9 +152,7 @@ class A8W8_dynamic:
                         )
 
 
-        gemlite_linear.meta_dtype         = DType.FP32
-        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=True) 
-
+        gemlite_linear.meta_dtype = DType.FP32
         gemlite_linear.pack(W_q, scales / self.weight_scale, 
                             zeros=None, 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
@@ -307,8 +229,6 @@ class A8Wn_dynamic(A16Wn):
 
         if(fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
-
-        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=fp32_scale) 
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -404,7 +324,7 @@ class A8W158:
         in_features   = W_q.shape[1]
         scales        = torch.ones((out_features, 1), dtype=torch.float32, device=self.device) * weight_scale.item() #[out_features, 1]
 
-        w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
+        w_dtype, input_dtype = torch.int8, DType.INT8
 
         gemlite_linear = GemLiteLinearTriton(2, 
                         group_size=in_features, 
@@ -427,8 +347,7 @@ class A8W158:
         if(self.fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
 
-        #post-scale
-        gemlite_linear.scale_activationss = partial(scale_activations, w_dtype=w_dtype, max_val=max_val, fp32_scale=self.fp32_scale) 
+        #post-scale 
         gemlite_linear.W_group_mode       = 1 #shift only
         gemlite_linear.channel_scale_mode = 3 #activations + weight
 
