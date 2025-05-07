@@ -12,6 +12,9 @@ class DType(Enum):
     INT32  = 6
     UINT32 = 7
     FP8e5  = 8
+    INT16  = 9
+    UINT16 = 10
+    INT64  = 11
 
 DTYPE_TO_TORCH = {
     0: torch.float32,
@@ -23,6 +26,9 @@ DTYPE_TO_TORCH = {
     6: torch.int32,
     7: torch.uint32,
     8: torch.float8_e5m2,
+    9: torch.int16,
+    10: torch.uint16,
+    11: torch.int64,
 }
 
 TORCH_TO_DTYPE = {
@@ -35,6 +41,9 @@ TORCH_TO_DTYPE = {
     torch.int32: DType.INT32,
     torch.uint32: DType.UINT32,
     torch.float8_e5m2: DType.FP8e5,
+    torch.int16: DType.INT16,
+    torch.uint16: DType.UINT16,
+    torch.int64: DType.INT64,
 }
 
 TORCH_DTYPE_TO_TRITON = {
@@ -49,6 +58,16 @@ TORCH_DTYPE_TO_TRITON = {
     torch.uint32:        tl.uint32,
     torch.float8_e4m3fn: tl.float8e4nv,
     torch.float8_e5m2:   tl.float8e5,
+    torch.int16:         tl.int16,
+    torch.uint16:        tl.uint16,
+    torch.int64:         tl.int64,
 }
 
 DTYPE_TO_TRITON = {k:TORCH_DTYPE_TO_TRITON[d] for k,d in DTYPE_TO_TORCH.items()}
+
+PACKING_BITWIDTH_TO_TORCH_DTYPE = {
+    8: torch.uint8,
+    16: torch.int16,
+    32: torch.int32,
+    64: torch.int64,
+}
