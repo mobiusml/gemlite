@@ -2,7 +2,7 @@
 
 import unittest
 import torch
-from gemlite.core import GemLiteLinearTriton, DType, set_autotune, TORCH_TO_DTYPE, scale_activations
+from gemlite.core import GemLiteLinearTriton, DType, set_autotune, TORCH_TO_DTYPE, scale_activations, forward_functional
 
 def is_fp8_supported():
     if not torch.cuda.is_available():
@@ -47,6 +47,44 @@ def scale_fct(x, max_val, w_dtype):
     return out_x.view(x_shape), scaled_x
 
 class TestGemLiteLinearTriton(unittest.TestCase):
+
+	def test_serialization(self):
+		gemlite_linear = GemLiteLinearTriton(W_nbits, 
+						group_size=group_size, 
+						in_features=in_features, 
+						out_features=out_features, 
+						input_dtype=gemlite_dtype, 
+						output_dtype=gemlite_dtype)
+
+
+		gemlite_linear.pack(W_q, scales, zeros, None)
+
+		torch.save(gemlite_linear.state_dict(), 'tmp.pt')
+
+		gemlite_linear_loaded = GemLiteLinearTriton()
+		gemlite_linear_loaded.load_state_dict(torch.load('tmp.pt'))
+
+		ref_args = gemlite_linear.get_meta_args()
+		loaded_args = gemlite_linear_loaded.get_meta_args()
+		for i in range(len(ref_args)):
+			assert ref_args[i] == loaded_args[i], "meta_args mismatch at " + str(i)
+
+		ref_args = gemlite_linear.get_tensor_args()
+		loaded_args = gemlite_linear_loaded.get_tensor_args()
+		for i in range(len(ref_args)):
+			assert (ref_args[i] - loaded_args[i]).float().abs().mean() == 0, "tensor_args mismatch at " + str(i)
+
+		tol = 1e-7
+		for batch_size in batch_sizes:
+			x = torch.randn((batch_size, in_features), dtype=compute_dtype, device=device) / 10.
+			for matmul_type in ['GEMM']:
+				if(batch_size>1  and 'GEMV' in matmul_type): continue
+				
+				y_ref = gemlite_linear.forward_manual(x, matmul_type=matmul_type)
+				y_gem = gemlite_linear_loaded.forward_manual(x, matmul_type=matmul_type)
+
+				err   = (y_ref - y_gem).abs().mean().item()
+				self.assertTrue(err < tol, str(err) + ', expected < ' + str(tol))
 
 	def test_fp16xfp16(self):
 		gemlite_linear = GemLiteLinearTriton(W_nbits=16, 

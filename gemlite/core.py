@@ -266,8 +266,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
             raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
 
-        if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (in_features % group_size !=0 if (group_size is not None) else False):
-            raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. in_features should be divisible by 32 or the group_size')
+        if (in_features is not None and out_features is not None):
+            if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (in_features % group_size !=0 if (group_size is not None) else False):
+                raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. in_features should be divisible by 32 or the group_size')
 
         #Warning: Input dtype should be the same as dequantize() weights dtype.
         if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
