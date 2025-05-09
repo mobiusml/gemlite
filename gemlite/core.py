@@ -52,7 +52,6 @@ GEMLITE_TRITON_MAPPING       = {kernel.matmul_type : kernel for kernel in GEMLIT
 GEMLITE_MATMUL_TYPES         = [kernel.matmul_type for kernel in GEMLITE_TRITON_KERNELS]
 GEMLITE_MATMUL_TYPES_MAPPING = {GEMLITE_MATMUL_TYPES[i]: i for i in range(len(GEMLITE_MATMUL_TYPES))}
 GEMLITE_TRITON_CONFIG_CACHE  = {} #Global config cache for all the kernels
-GEMLITE_TRITON_CACHE         = {} #Cache used forward with warmup
 _GROUP_SIZE_WARNED           = False
 
 ###################################################################################
@@ -158,6 +157,7 @@ def scale_activations_per_token_kernel(
         tl.store(y_ptr + in_ptrs, x, mask=mask)
         offs_m += BLOCK_M 
 
+
 def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     x_shape = x.shape
@@ -188,7 +188,6 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
 
     return y.view(x_shape), scales
 
-
 scale_activations = scale_activations_per_token_triton
 #######################################################################################################################
 
@@ -199,17 +198,17 @@ def forward_functional(
     bias: Union[None, Tensor],
     tensor_args: List[Tensor],
     meta_args: List[int],
-    matmul_type: int = -1, #-1: auto
+    matmul_type: int = -1, #-1: auto, >=0: manual
 ) -> Tensor:
     
     scaled_activations = bool(meta_args[0])
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
     out_features = tensor_args[0].shape[1]
-    compute_dtype = DTYPE_TO_TORCH[meta_args[5]] #input_dtype.value
-
-    #Dynamic activation quatnization
+    
+    #Dynamic activation quantization
     if(scaled_activations):
+        compute_dtype = DTYPE_TO_TORCH[meta_args[5]] #input_dtype.value
         x, scales_x = scale_activations(x, w_dtype=compute_dtype)
     else:
         x, scales_x = x, None
@@ -338,6 +337,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.out_features, self.in_features = self.orig_shape
         self.compute_dtype = DTYPE_TO_TORCH[self.input_dtype.value]
         self.scaled_activations = bool(self.scaled_activations)
+        self.data_contiguous = bool(self.data_contiguous)
 
     #Make sure to feed UINT8 W_q for packing
     def pack(
