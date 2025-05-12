@@ -124,7 +124,7 @@ def pack_weights_over_cols_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
 
     return W_q_out, elements_per_sample
 
-
+@torch.library.custom_op("gemlite::unpack_over_cols_torch", mutates_args=())
 def unpack_over_cols_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_cols: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
     num_rows, num_cols = W_q_packed.shape
     elements_per_sample = num_output_cols // num_cols
@@ -135,6 +135,11 @@ def unpack_over_cols_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_co
     W_q_unpacked = W_q_unpacked.view(num_rows, num_output_cols)
 
     return W_q_unpacked
+
+@torch.library.register_fake("gemlite::unpack_over_cols_torch")
+def unpack_over_cols_torch_fake(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols  = W_q_packed.shape
+    return torch.empty((num_rows, num_output_cols), dtype=dtype, device=W_q_packed.device)
 
 @triton.jit
 def unpack_over_cols_kernel(
@@ -168,6 +173,7 @@ def unpack_over_cols_kernel(
     unpacked_offsets = pid_row * num_output_cols + cols
     tl.store(W_q_unpacked_ptr + unpacked_offsets, unpacked_values)
 
+@torch.library.custom_op("gemlite::unpack_over_cols_triton", mutates_args=())
 def unpack_over_cols_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_cols: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
 
     # Get input dimensions
@@ -197,6 +203,11 @@ def unpack_over_cols_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_c
     )
 
     return W_q_unpacked
+
+@torch.library.register_fake("gemlite::unpack_over_cols_triton")
+def unpack_over_cols_triton_fake(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols  = W_q_packed.shape
+    return torch.empty((num_rows, num_output_cols), dtype=dtype, device=W_q_packed.device)
 
 @triton.jit
 def pack_weights_over_rows_kernel(
@@ -263,7 +274,7 @@ def pack_weights_over_rows_triton(W_q: torch.Tensor, W_nbits: int, packing_bitwi
 
     return W_q_out, elements_per_sample
 
-
+@torch.library.custom_op("gemlite::unpack_over_rows_torch", mutates_args=())
 def unpack_over_rows_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
     num_rows, num_cols = W_q_packed.shape
     elements_per_sample = num_output_rows // num_rows
@@ -275,6 +286,10 @@ def unpack_over_rows_torch(W_q_packed: torch.Tensor, W_nbits: int, num_output_ro
     
     return W_q_unpacked
 
+@torch.library.register_fake("gemlite::unpack_over_rows_torch")
+def unpack_over_rows_torch_fake(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols = W_q_packed.shape
+    return torch.empty((num_output_rows, num_cols), dtype=dtype, device=W_q_packed.device)
 
 @triton.jit
 def unpack_weights_over_rows_kernel(
@@ -310,6 +325,7 @@ def unpack_weights_over_rows_kernel(
     unpacked_offsets = pid_row * num_cols + cols
     tl.store(W_q_unpacked_ptr + unpacked_offsets, unpacked_values)
 
+@torch.library.custom_op("gemlite::unpack_over_rows_triton", mutates_args=())
 def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
     num_packed_rows, num_cols = W_q_packed.shape
     elements_per_sample = num_output_rows // num_packed_rows
@@ -319,7 +335,7 @@ def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_r
     output_dtype = TORCH_DTYPE_TO_TRITON[dtype]
 
     # Define grid
-    unroll  = highest_divisor(num_cols, max_val=256) 
+    unroll = highest_divisor(num_cols, max_val=256) 
     grid = (triton.cdiv(num_output_rows * num_cols, unroll),)
     
     # Launch kernel
@@ -339,6 +355,10 @@ def unpack_over_rows_triton(W_q_packed: torch.Tensor, W_nbits: int, num_output_r
     
     return W_q_unpacked
 
+@torch.library.register_fake("gemlite::unpack_over_rows_triton")
+def unpack_over_rows_triton_fake(W_q_packed: torch.Tensor, W_nbits: int, num_output_rows: int, dtype: torch.dtype = torch.uint8) -> torch.Tensor:
+    num_rows, num_cols = W_q_packed.shape
+    return torch.empty((num_output_rows, num_cols), dtype=dtype, device=W_q_packed.device)
 ########################################################################################################################################################
 pack_weights_over_rows = pack_weights_over_rows_triton
 pack_weights_over_cols = pack_weights_over_cols_triton
