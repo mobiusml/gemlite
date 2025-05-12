@@ -2,7 +2,10 @@
 #********************************************************
 
 import torch, gc
+from torch import Tensor
+from typing import Tuple
 from tqdm import tqdm
+from functools import partial
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
 
 ############################################################################################################################################################
@@ -148,23 +151,14 @@ class A8W8_dynamic:
                         scaled_activations=True,
                         )
 
-        def scale_fct(x):
-            x_shape  = x.shape
-            out_x    = x.view(-1, x.shape[-1]) 
-            scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) / max_val
-            out_x    = torch.round(out_x / scaled_x).to(dtype=w_dtype)
-            return out_x.view(x_shape), scaled_x
-
-        gemlite_linear.scale_activations = scale_fct
-
         gemlite_linear.pack(W_q, scales / self.weight_scale, 
                             zeros=None, 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
                             contiguous=False)
-        
+
+        gemlite_linear.meta_dtype         = DType.FP32
         gemlite_linear.W_group_mode       = 0
         gemlite_linear.channel_scale_mode = 3 #activation[:,None] + weight[None,:]
-        gemlite_linear.meta_dtype         = DType.FP32
         return gemlite_linear
 
     def from_linear(self, linear_layer):
@@ -234,18 +228,6 @@ class A8Wn_dynamic(A16Wn):
 
         if(fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
-
-        def scale_fct(x):
-            x_shape  = x.shape
-            out_x    = x.view(-1, x.shape[-1]) 
-            scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) 
-            if(fp32_scale):
-                scaled_x = scaled_x.float()
-            scaled_x /= max_val 
-            out_x    = torch.round(out_x / scaled_x).to(dtype=w_dtype)
-            return out_x.view(x_shape), scaled_x
-
-        gemlite_linear.scale_activations = scale_fct
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -329,7 +311,7 @@ class A16W158:
 class A8W158:
     def __init__(self, device='cuda:0'):
         self.device = device
-        self.fp32_scale = False
+        self.fp32_scale = True
 
     def from_weights(self, weight, weight_scale, bias=None):
         assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should floating point."
@@ -341,7 +323,7 @@ class A8W158:
         in_features   = W_q.shape[1]
         scales        = torch.ones((out_features, 1), dtype=torch.float32, device=self.device) * weight_scale.item() #[out_features, 1]
 
-        w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
+        w_dtype, input_dtype = torch.int8, DType.INT8
 
         gemlite_linear = GemLiteLinearTriton(2, 
                         group_size=in_features, 
@@ -364,18 +346,7 @@ class A8W158:
         if(self.fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
 
-        def scale_fct(x):
-            x_shape  = x.shape
-            out_x    = x.view(-1, x.shape[-1]) 
-            scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) 
-            if(fp32_scale):
-                scaled_x = scaled_x.float()
-            scaled_x /= max_val 
-            out_x    = torch.round(out_x / scaled_x).to(dtype=w_dtype)
-            return out_x.view(x_shape), scaled_x
-
-        #post-scale
-        gemlite_linear.scale_activations  = scale_fct
+        #post-scale 
         gemlite_linear.W_group_mode       = 1 #shift only
         gemlite_linear.channel_scale_mode = 3 #activations + weight
 

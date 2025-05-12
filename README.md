@@ -33,6 +33,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 - [Contributing](#contributing)
 
 # Recent Highlights
+- GemLite now supports vLLM V1 (torch.compile compatible)!
 - GemLite now supports bfloat16!
 - GemLite is now available in <a href="https://github.com/vllm-project/vllm/">vllm</a> via the <a href="https://github.com/mobiusml/hqq/">hqq</a> lib! 
 - GemLite is now integrated with <a href="https://github.com/pytorch/ao">TorchAO</a>/<a href="https://github.com/sgl-project/sglang">SGLang</a> for 4-bit quantization. Check-out the <a href="https://pytorch.org/blog/accelerating-llm-inference/">blogpost</a>!
@@ -65,9 +66,6 @@ from gemlite import DType, GemLiteLinear
 #Reset the default cache to get the best perf but warm-up will be slow. 
 #gemlite.reset_cache()
 
-#Force fp16 acc (faster on consumer gpus - automatically set)
-#gemlite.set_acc_dtype(DType.FP16)
-
 #Main constructor
 gemlite_linear = GemLiteLinear(
     W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]
@@ -81,9 +79,6 @@ gemlite_linear = GemLiteLinear(
 
 #Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
 gemlite_linear.pack(W_q, scales, zeros, bias)
-
-#For activation quantization you need to override this function which should return the activation scales:
-#gemlite_linear.scale_activations = f(x: torch.Tensor) -> x_scaled: torch.Tensor, scales: torch.Tensor # x ~ x_scaled * scaled
 
 #Forward
 out = gemlite_linear(x)

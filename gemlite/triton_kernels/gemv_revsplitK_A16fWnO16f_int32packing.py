@@ -305,9 +305,6 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     tl.atomic_add(c_ptrs, acc, sem=atomic_mode)
 
 
-_costum_op_id = '_' + str(int(random.random()*10000))
-
-@torch.library.custom_op("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id, mutates_args=())
 def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                                    W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                                    input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
@@ -356,16 +353,6 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
         output = output.to(DTYPE_TO_TORCH[output_dtype])
 
     return output
-
-@torch.library.register_fake("gemlite::gemv_revsplitK_A16fWnO16f_int32packing_forward" + _costum_op_id)
-def gemv_revsplitK_A16fWnO16f_int32packing_forward_fake(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                                        W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                                        input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-                                                        channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
-                                                        ) -> Tensor:
-
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-    return torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype])
 
 
 class gemv_revsplitK_A16fWnO16f:
