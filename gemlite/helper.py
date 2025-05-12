@@ -14,15 +14,25 @@ class A16W8:
     def __init__(self, device='cuda:0'):
         self.device = device
 
-    def from_weights(self, weight, bias=None):
-        assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should floating point."
-        dtype = weight.dtype
-        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+    def from_weights(self, weight, scales=None, bias=None):
+        if(scales is None):
+            #Raw
+            assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
+            dtype = weight.dtype
+            gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-        scales = torch.abs(weight.float()).amax(axis=1, keepdim=True) / 127.0
-        W_q    = torch.round(weight / scales).to(device=self.device, dtype=torch.int8)
-        bias   = bias.clone() if (bias is not None) else None
-        scales = scales.to(device=self.device, dtype=dtype)
+            scales = torch.abs(weight.float()).amax(axis=1, keepdim=True) / 127.0
+            W_q    = torch.round(weight / scales).to(device=self.device, dtype=torch.int8)
+            bias   = bias.clone() if (bias is not None) else None
+            scales = scales.to(device=self.device, dtype=dtype)
+        else:
+            #Pre-Quantized
+            assert weight.dtype in [torch.int8], "Invalid weight.dtype, should be int8."
+            W_q = weight
+            dtype = scales.dtype
+            if(dtype == torch.float32):
+                dtype = torch.float16
+            gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
         in_features, out_features = weight.shape[::-1]
 
