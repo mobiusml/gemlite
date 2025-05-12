@@ -66,6 +66,9 @@ from gemlite import DType, GemLiteLinear
 #Reset the default cache to get the best perf but warm-up will be slow. 
 #gemlite.reset_cache()
 
+#Set autotune mode: fast:faste start-up (default), max: long startt-up but best perf, default/False: no autotune
+#gemlite.set_autotune("fast")
+
 #Main constructor
 gemlite_linear = GemLiteLinear(
     W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]

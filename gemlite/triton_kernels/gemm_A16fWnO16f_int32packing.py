@@ -23,19 +23,19 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        _signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
-        if(_signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
-            _config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][_signature])
-            _num_stages = _config.pop('num_stages')
-            _num_warps  = _config.pop('num_warps')
-            _num_ctas   = _config.pop('num_ctas')
+        signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
+        if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
+            config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][signature])
+            num_stages = config.pop('num_stages')
+            num_warps  = config.pop('num_warps')
+            num_ctas   = config.pop('num_ctas')
 
-            _config.pop('num_buffers_warp_spec', None)
-            _config.pop('num_consumer_groups', None)
-            _config.pop('reg_dec_producer', None)
-            _config.pop('reg_inc_consumer', None)
+            config.pop('num_buffers_warp_spec', None)
+            config.pop('num_consumer_groups', None)
+            config.pop('reg_dec_producer', None)
+            config.pop('reg_inc_consumer', None)
 
-            yield triton.Config(_config, num_stages=_num_stages, num_warps=_num_warps)
+            yield triton.Config(config, num_stages=num_stages, num_warps=num_warps)
             return
             
     used = set()
@@ -69,65 +69,75 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
-        group_size_m      = config.kwargs['GROUP_SIZE_M']
-        A_load_order      = config.kwargs['A_load_order']
-        meta_evict_policy = config.kwargs['meta_evict_policy']
-
-        _key = (block_size_m, block_size_n, block_size_k, group_size_m, 
-                A_load_order, meta_evict_policy, 
-                num_stages, num_warps)
+        group_size_m = config.kwargs['GROUP_SIZE_M']
+        A_load_order = config.kwargs['A_load_order']
+        key = (block_size_m, block_size_n, block_size_k, group_size_m, A_load_order, num_stages, num_warps)
         
-        if _key in used:
+        if key in used:
             continue
 
-        used.add(_key)
+        used.add(key)
         yield triton.Config(
             {
                 'BLOCK_SIZE_M': block_size_m,
                 'BLOCK_SIZE_N': block_size_n,
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
-
                 'A_load_order': A_load_order,
-                'meta_evict_policy': meta_evict_policy,
             },
             num_stages=num_stages,
             num_warps=num_warps
         )
 
 
-def get_autotune_config():
+def get_max_autotune_config():
     _stages  = [1, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
-    for _M in [16, 32, 64, 128, 256]: #might need higher values for larger batch-sizes
+    for _M in [16, 32, 64, 128, 256]:
         for _N in [32, 64, 128, 256]: 
             for _K in [32, 64, 128, 256]:
                 for _w in [4, 8]:
                     for _s in _stages:
-                        for _A_load_order in [0, 2]: #[0, 1, 2, 3] - [2] for 4090, [0]: for A100/H100 
-                            for _meta_evict_policy in ['']: #[', 'evict_last']
-                                _configs.append(
-                                        triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 
-                                            'A_load_order': _A_load_order, 'meta_evict_policy': _meta_evict_policy}, 
-                                            num_stages=_s, num_warps=_w)
-                                        )
+                        for _A_load_order in [0, 2]:
+                            _configs.append(
+                                    triton.Config(
+                                        {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'A_load_order': _A_load_order}, 
+                                        num_stages=_s, num_warps=_w)
+                                    )
 
     return _configs
 
+def get_fast_autotune_config():
+    configs = []
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=8))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    return configs
 
-#4090 RTX
+
 def get_default_config():
-    #small batch, not sure what is the right default cnnfig here.
-    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2, 'meta_evict_policy':''}, 
-                            num_warps=4, num_stages=1),]
+    return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4),]
 
-ENABLE_AUTOTUNE = AUTOTUNE_ENABLE.GEMM
+AUTOTUNE_SETTING = AUTOTUNE_ENABLE.GEMM
+if(AUTOTUNE_SETTING == 'max'):
+    get_autotune_config = get_max_autotune_config
+elif(AUTOTUNE_SETTING == 'fast'):
+    get_autotune_config = get_fast_autotune_config
+else:
+    get_autotune_config = get_default_config
 
 @triton.autotune(
-    configs = get_autotune_config() if ENABLE_AUTOTUNE else get_default_config(),
+    configs = get_autotune_config(),
     key = KEYS, 
-    prune_configs_by = {'early_config_prune': kernel_config_pruner} if ENABLE_AUTOTUNE else None,
+    prune_configs_by = {'early_config_prune': kernel_config_pruner},
     warmup = 50, 
     rep = 50,
     use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
@@ -161,8 +171,12 @@ def gemm_A16fWnO16f_int32packing_kernel(
     #CLOSEST_M: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
-    A_load_order: tl.constexpr, meta_evict_policy: tl.constexpr,
+    A_load_order: tl.constexpr, 
     data_contiguous: tl.constexpr,
+    #################################
+    meta_evict_policy: tl.constexpr = '',
+    a_evict: tl.constexpr = 'evict_last',
+    b_evict: tl.constexpr = 'evict_first',
 ):
     """
     Based on https://github.com/fpgaminer/GPTQ-triton
@@ -221,12 +235,12 @@ def gemm_A16fWnO16f_int32packing_kernel(
     for k in range(num_pid_k):
 
         if(A_load_order == 0): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+        b = tl.load(b_ptrs, eviction_policy=b_evict)
 
         if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         
         #Load meta-data  
         if(W_group_mode > 0):          
@@ -246,13 +260,13 @@ def gemm_A16fWnO16f_int32packing_kernel(
             zeros = None
 
         if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
 
         # Unpack and dequantize
         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
 
         if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
+            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         
         #Dot
         acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32")

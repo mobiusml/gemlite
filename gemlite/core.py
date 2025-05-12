@@ -346,7 +346,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         scales: Tensor,
         zeros: Union[Tensor, int],
         bias: Union[Tensor, None] = None,
-        fma_mode: bool = False,
+        fma_mode: bool = True,
         contiguous: Union[int, None] = None,
         packing_bitwidth: Union[int, None] = None,
     ):
