@@ -114,7 +114,7 @@ def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scal
     if(fp32_scale):
         x = x.to(torch.float32, copy=False)
     x_shape  = x.shape
-    out_x    = x.view(-1, x.shape[-1]) 
+    out_x    = x.reshape(-1, x.shape[-1]) 
     scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
     # if(fp32_scale):
     #     scales_x = scales_x.to(torch.float32)
@@ -161,7 +161,7 @@ def scale_activations_per_token_kernel(
 def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     x_shape = x.shape
-    x       = x.view(-1, x.shape[-1]) 
+    x       = x.reshape(-1, x.shape[-1]) 
     M, K    = x.shape
     scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
     y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
@@ -214,7 +214,7 @@ def forward_functional(
         x, scales_x = x, None
 
     out_shape = x.shape[:-1] + (out_features,)
-    x = x.view(-1, x.shape[-1])
+    x = x.reshape(-1, x.shape[-1])
 
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
@@ -310,8 +310,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.bias       = state_dict.pop("bias", None)
         self.scales     = state_dict.pop("scales", None)
         self.zeros      = state_dict.pop("zeros", None)
-        self.metadata   = state_dict.pop("metadata", None).cpu()
-        self.orig_shape = state_dict.pop("orig_shape", None).cpu()
+        self.metadata   = state_dict.pop("metadata", None)
+        self.orig_shape = state_dict.pop("orig_shape", None)
 
         self.metadata   = [v.item() for v in self.metadata]
         self.orig_shape = (v.item() for v in self.orig_shape)
@@ -475,8 +475,8 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.W_q        = torch.nn.Parameter(self.W_q,   requires_grad=False)
         self.scales     = torch.nn.Parameter(self.scales,requires_grad=False)
         self.zeros      = torch.nn.Parameter(self.zeros, requires_grad=False)
-        self.metadata   = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device='cpu', dtype=torch.int32), requires_grad=False)
-        self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device='cpu', dtype=torch.int32), requires_grad=False)
+        self.metadata   = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device=self.device, dtype=torch.int32), requires_grad=False)
+        self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device=self.device, dtype=torch.int32), requires_grad=False)
         return self
 
     #Return the main arguments
