@@ -36,7 +36,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             config.pop('reg_dec_producer', None)
             config.pop('reg_inc_consumer', None)
 
-            yield triton.Config(config,num_stages=num_stages, num_warps=num_warps)
+            yield triton.Config(config,num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero("c_ptr"))
             return
 
     used = set()
@@ -87,16 +87,17 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             },
             num_stages=num_stages,
             num_warps=num_warps,
+            pre_hook=init_to_zero("c_ptr"),
         )
 
 #contiguous = True
 def get_max_autotune_config():
     _configs = []
     for _M in [1]: #ONLY 1 allowed here
-        for _N in [32, 64, 128, 256]:
+        for _N in [32, 64, 128, 256, 512]:
             for _K in [8, 16, 32, 64, 128]:
-                for _w in [1, 2]:
-                    for _s in [1]:
+                for _w in [1, 2, 4]:
+                    for _s in [1, 2]:
                         for _A_load_order in [0, 1]:
                             for _dot_prod_mode in [0, 1]: 
                                 _configs.append(
@@ -112,16 +113,22 @@ def get_max_autotune_config():
 
 def get_fast_autotune_config():
     configs = []
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64, 'A_load_order':0, 'dot_prod_mode':1}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':1}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':1}, num_warps=2, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':1}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':1}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':16,  'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'A_load_order':1, 'dot_prod_mode':0}, num_warps=2, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'A_load_order':1, 'dot_prod_mode':0}, num_warps=2, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0}, num_warps=2, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'A_load_order':1, 'dot_prod_mode':0}, num_warps=2, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64,  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
     return configs
 
 
 def get_default_config():
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':1}, num_warps=1, num_stages=1)
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':0}, 
+                            num_warps=1, num_stages=1, pre_hook=init_to_zero("c_ptr"))
     return [config]
 
 AUTOTUNE_SETTING = AUTOTUNE_ENABLE.GEMV
@@ -188,8 +195,6 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1) 
-
-    #Swizzle?
     pid_m, pid_n = pid % M, pid // M
 
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M) 
@@ -295,12 +300,8 @@ def gemv_A16fWnO16f_int32packing_kernel(
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
-
-    if pid_k == 0:
-        tl.store(c_ptrs, acc)
-    else:
-        tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
-
+    tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
+    
 
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 

@@ -403,6 +403,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             self.scales = None
 
+        #channel-wise scaling 
+        self.meta_is_channelwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
+
         #Symmetric no shift
         if(zeros is None):  
             self.zeros = None
@@ -410,7 +413,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         else:
             #Asymmetric or Symmetric with shift
             if(isinstance(zeros, torch.Tensor)):
-                if(fma_mode): #W ~ Wq * scales + zeros
+                if(fma_mode and (self.meta_is_channelwise is False)): #W ~ Wq * scales + zeros
                     self.zeros = (-zeros.float()*scales.float()).to(zeros.dtype).view((self.out_features, -1)).t()
                     self.W_group_mode = 4
                 else: #W ~ (Wq - zeros) * scales
@@ -424,9 +427,6 @@ class GemLiteLinearTriton(torch.nn.Module):
                     self.W_group_mode = 1 #Shift only with integer
 
         assert self.W_group_mode > -1, "Invalid scales/zeros settings."
-
-        #channel-wise scaling 
-        self.meta_is_channelwise = False if(self.scales is None) else self.scales.numel() == self.out_features 
 
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_channelwise == True)):

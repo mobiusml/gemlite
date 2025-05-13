@@ -85,12 +85,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
-        #No need for a hook for split_k == 1
-        if(split_k == 1):
-            pre_hook = None
-        else:
-            pre_hook = init_to_zero("c_ptr")
-
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, dot_prod_mode, num_stages, num_warps)
         
         if key in used:
@@ -104,13 +98,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 'BLOCK_SIZE_K': block_size_k,
                 'GROUP_SIZE_M': group_size_m,
                 'SPLIT_K'     : split_k,
-
                 'A_load_order'  : A_load_order,
                 'dot_prod_mode' : dot_prod_mode,
             },
             num_stages=num_stages,
             num_warps=num_warps,
-            pre_hook=pre_hook,
+            pre_hook=init_to_zero("c_ptr") if split_k > 1 else None,
         )
 
 
@@ -127,13 +120,9 @@ def get_max_autotune_config():
                                 for _dot_prod_mode in [0]: #[0, 1]
                                     _configs.append(
                                             triton.Config(
-                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                                'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
+                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
                                                 'A_load_order': _A_load_order, 'dot_prod_mode': _dot_prod_mode,
-                                                }, 
-                                                num_stages=_s, num_warps=_w,
-                                                pre_hook=init_to_zero("c_ptr") if(_sK > 1) else None,
-                                                )
+                                                }, num_stages=_s, num_warps=_w,)
                                             )
 
     return _configs
@@ -141,19 +130,26 @@ def get_max_autotune_config():
 
 def get_fast_autotune_config():
     configs = []
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2, pre_hook=None))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2, pre_hook=None))
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2, pre_hook=None))
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
     return configs
 
 def get_default_config():
     config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                            'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2, pre_hook=None)
+                            'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2)
 
     return [config]
 

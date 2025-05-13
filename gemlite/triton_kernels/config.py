@@ -6,9 +6,9 @@ else: import importlib as imp
 from typing import Union
 
 class AUTOTUNE_ENABLE:
-	GEMV           = "max" #"max", "fast", "default" 
-	GEMV_REVSPLITK = "max"
-	GEMV_SPLITK    = "max"
+	GEMV           = "fast" #"max", "fast", "default" 
+	GEMV_REVSPLITK = "fast"
+	GEMV_SPLITK    = "fast"
 	GEMM_SPLITK    = "fast"
 	GEMM           = "fast"
 	USE_CUDA_GRAPH = False
@@ -32,11 +32,11 @@ def reload_all_modules():
 def set_autotune(config: Union[dict, str, bool], **kwargs):
 	if(type(config) == str):
 		for key in ['GEMV', 'GEMV_REVSPLITK', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']:
-			setattr(AUTOTUNE_ENABLE, key, config)
+			setattr(AUTOTUNE_ENABLE, key, config.lower())
 
 	if(type(config) == bool):
 		for key in ['GEMV', 'GEMV_REVSPLITK', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']:
-			setattr(AUTOTUNE_ENABLE, key, "max" if config else "default" )
+			setattr(AUTOTUNE_ENABLE, key, "max" if config else "default")
 
 	if(type(config) == dict):
 		for key in config:
