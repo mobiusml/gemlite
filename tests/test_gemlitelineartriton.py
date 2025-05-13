@@ -4,6 +4,7 @@ import unittest
 import torch
 from gemlite import reset_config, set_autotune
 from gemlite.core import GemLiteLinearTriton, DType, TORCH_TO_DTYPE, scale_activations, forward_functional
+from gemlite.triton_kernels.config import KERNEL
 
 def is_fp8_supported():
     if not torch.cuda.is_available():
@@ -18,6 +19,7 @@ gemlite_dtype = TORCH_TO_DTYPE[compute_dtype]
 matmul_types  = ['GEMV_REVSPLITK', 'GEMV', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']
 reset_config()
 set_autotune(False)
+KERNEL.ENABLE_CACHING = False
 
 
 def gen_data(in_features, out_features, W_nbits, group_size, dtype=compute_dtype):
@@ -188,7 +190,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						scaled_activations=True)
 
 
-		gemlite_linear.pack(W_q, scales=None, zeros=7, bias=None);
+		gemlite_linear.pack(W_q, scales=None, zeros=7, bias=None)
 		gemlite_linear.meta_dtype = DType.FP32
 
 		#Weights are unpacked() then shifted by 7

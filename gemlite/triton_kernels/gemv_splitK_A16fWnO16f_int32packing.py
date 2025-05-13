@@ -5,7 +5,7 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
-from .config import AUTOTUNE_ENABLE
+from .config import AUTOTUNE
 from .utils import *
 
 KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
@@ -154,7 +154,7 @@ def get_default_config():
     return [config]
 
 
-AUTOTUNE_SETTING = AUTOTUNE_ENABLE.GEMV_SPLITK
+AUTOTUNE_SETTING = AUTOTUNE.GEMV_SPLITK
 if(AUTOTUNE_SETTING == 'max'):
     get_autotune_config = get_max_autotune_config
 elif(AUTOTUNE_SETTING == 'fast'):
@@ -168,7 +168,7 @@ else:
     prune_configs_by = {'early_config_prune': kernel_config_pruner},
     warmup = 50, 
     rep = 50,
-    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
 )
 
 @triton.jit

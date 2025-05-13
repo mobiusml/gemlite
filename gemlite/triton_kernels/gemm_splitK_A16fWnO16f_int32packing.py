@@ -5,7 +5,7 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
-from .config import AUTOTUNE_ENABLE
+from .config import AUTOTUNE
 from . import utils
 from .utils import DType, DTYPE_TO_TORCH, DTYPE_TO_TRITON, init_to_zero, is_divisible, swizzle_tile, linear_tile, dequantize, gpu_supports_bfloat16_atomicadd
 
@@ -153,7 +153,7 @@ def get_fast_autotune_config():
 def get_default_config():
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=2)]
 
-AUTOTUNE_SETTING = AUTOTUNE_ENABLE.GEMM_SPLITK
+AUTOTUNE_SETTING = AUTOTUNE.GEMM_SPLITK
 if(AUTOTUNE_SETTING == 'max'):
     get_autotune_config = get_max_autotune_config
 elif(AUTOTUNE_SETTING == 'fast'):
@@ -167,7 +167,7 @@ else:
     prune_configs_by = {'early_config_prune': kernel_config_pruner},
     warmup = 50, 
     rep = 50,
-    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
 )
 
 @triton.jit

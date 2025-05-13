@@ -5,7 +5,7 @@ from torch import Tensor
 import triton
 import triton.language as tl
 
-from .config import AUTOTUNE_ENABLE
+from .config import AUTOTUNE, KERNEL
 from .utils import *
 
 KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
@@ -36,7 +36,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             config.pop('reg_dec_producer', None)
             config.pop('reg_inc_consumer', None)
 
-            yield triton.Config(config,num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero("c_ptr"))
+            yield triton.Config(config, num_stages=num_stages, num_warps=num_warps)
             return
 
     used = set()
@@ -87,7 +87,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             },
             num_stages=num_stages,
             num_warps=num_warps,
-            pre_hook=init_to_zero("c_ptr"),
         )
 
 #contiguous = True
@@ -127,11 +126,10 @@ def get_fast_autotune_config():
 
 
 def get_default_config():
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':0}, 
-                            num_warps=1, num_stages=1, pre_hook=init_to_zero("c_ptr"))
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':0}, num_warps=1, num_stages=1)
     return [config]
 
-AUTOTUNE_SETTING = AUTOTUNE_ENABLE.GEMV
+AUTOTUNE_SETTING = AUTOTUNE.GEMV
 if(AUTOTUNE_SETTING == 'max'):
     get_autotune_config = get_max_autotune_config
 elif(AUTOTUNE_SETTING == 'fast'):
@@ -145,7 +143,7 @@ else:
     prune_configs_by = {'early_config_prune': kernel_config_pruner},
     warmup = 50, 
     rep = 50,
-    use_cuda_graph = AUTOTUNE_ENABLE.USE_CUDA_GRAPH,
+    use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
 )
 
 @triton.jit
@@ -301,19 +299,37 @@ def gemv_A16fWnO16f_int32packing_kernel(
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
-    
+
+KERNEL_CACHE = {}
 
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int,  
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
                                          ) -> Tensor:
+    
+    global KERNEL_CACHE
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
     
     native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
-    output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
+    
+    if(KERNEL.ENABLE_CACHING and M==1):
+        if(((M,N) not in KERNEL_CACHE)):
+            KERNEL_CACHE[(M,N)] = {'data':{}, 'ptr':0}
+
+        entry = KERNEL_CACHE[(M,N)]
+
+        if(entry['ptr'] % KERNEL.CACHE_SIZE == 0):
+            entry['data'] = torch.zeros((KERNEL.CACHE_SIZE, M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
+            entry['ptr']  = 0
+
+        output = entry['data'][entry['ptr'] % KERNEL.CACHE_SIZE]
+        entry['ptr'] += 1
+
+    else:
+        output = torch.zeros((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
 
