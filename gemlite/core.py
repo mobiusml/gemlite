@@ -114,7 +114,7 @@ def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scal
     if(fp32_scale):
         x = x.to(torch.float32, copy=False)
     x_shape  = x.shape
-    out_x    = x.reshape(-1, x.shape[-1]) 
+    out_x    = x.view(-1, x.shape[-1]) 
     scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
     # if(fp32_scale):
     #     scales_x = scales_x.to(torch.float32)
@@ -161,7 +161,7 @@ def scale_activations_per_token_kernel(
 def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     x_shape = x.shape
-    x       = x.reshape(-1, x.shape[-1]) 
+    x       = x.view(-1, x.shape[-1]) 
     M, K    = x.shape
     scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
     y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
@@ -188,7 +188,7 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
 
     return y.view(x_shape), scales
 
-scale_activations = scale_activations_per_token_triton
+scale_activations = scale_activations_per_token_torch
 #######################################################################################################################
 
 #Main functional forward call
@@ -205,6 +205,9 @@ def forward_functional(
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
     out_features = tensor_args[0].shape[1]
+
+    if not x.is_contiguous():
+        x = x.contiguous()
     
     #Dynamic activation quantization
     if(scaled_activations):
@@ -214,7 +217,7 @@ def forward_functional(
         x, scales_x = x, None
 
     out_shape = x.shape[:-1] + (out_features,)
-    x = x.reshape(-1, x.shape[-1])
+    x = x.view(-1, x.shape[-1])
 
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
