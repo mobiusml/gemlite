@@ -83,7 +83,7 @@ gemlite_linear = GemLiteLinear(
     scaled_activations=False, #If the activations are scaled or not
 )
 
-#Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
+#Packing: we follow the hqq format (W_q - zeros) * scales ~ W (https://github.com/mobiusml/hqq/)
 gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #Forward
