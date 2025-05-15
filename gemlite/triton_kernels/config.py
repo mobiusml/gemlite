@@ -16,7 +16,7 @@ class AUTOTUNE:
 	USE_CUDA_GRAPH = False
 
 class KERNEL:
-	ENABLE_CACHING = True
+	ENABLE_CACHING = False
 	CACHE_SIZE     = 256 
 
 def reload_all_modules():

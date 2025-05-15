@@ -69,6 +69,9 @@ from gemlite import DType, GemLiteLinear
 #Set autotune mode: fast:faste start-up (default), max: long startt-up but best perf, default/False: no autotune
 #gemlite.set_autotune("fast")
 
+#Enable kernel caching: makes some kernels faster, but might break with some torch.compile settings
+#gemlite.set_kernel_caching(True)
+
 #Main constructor
 gemlite_linear = GemLiteLinear(
     W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]
