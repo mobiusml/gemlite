@@ -188,7 +188,7 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
 
     return y.view(x_shape), scales
 
-scale_activations = scale_activations_per_token_torch
+scale_activations = scale_activations_per_token_triton
 #######################################################################################################################
 
 #Main functional forward call
