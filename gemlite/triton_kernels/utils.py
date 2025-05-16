@@ -1,5 +1,6 @@
 import torch, triton, math
 import triton.language as tl
+from triton.runtime import driver
 from ..dtypes import *
 
 @triton.jit
@@ -116,3 +117,6 @@ def get_closest_m_fast_autotune(M):
     return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
 
 get_closest_m = get_closest_m_fast_autotune
+
+def get_gpu_shared_memory():
+    return driver.active.utils.get_device_properties(0).get("max_shared_mem", 0)

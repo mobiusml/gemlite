@@ -20,7 +20,7 @@ from .utils import (
     swizzle_tile_persistent,
 )
 
-KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample'] 
+KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'a_sizeof', 'b_sizeof'] 
 MATMUL_TYPE   = "GEMM_SPLITK"
 NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 
@@ -32,6 +32,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     k = nargs['K'] 
     g = nargs['group_size']
     e = nargs['elements_per_sample']
+
+    a_sizeof = nargs['a_sizeof']
+    b_sizeof = nargs['b_sizeof']
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
@@ -55,6 +58,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
             return
 
+    gpu_shared_memory = get_gpu_shared_memory() 
     used = set()
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
@@ -63,41 +67,44 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
-        #Makes autotuning faster: mainly for batch-size 1 .. 64
-        if(m <= 16): block_size_m = 16
-        if(m >= 32): block_size_m = min(max(block_size_m, 16), 32) #[16, 32]
-        if(m >= 64): block_size_m = min(max(block_size_m, 32), 64) #[32, 64]
-
-        #Only use higher split_k values for smaller m
-        if(m >= 32): split_k = min(split_k, 8)
-        #Only use lower split_k values for larger m
-        if(m <= 16): split_k = max(split_k, 1)
-
-        #Filter 
-        block_area = block_size_k * block_size_n
-        if(block_area > 4096 * 8): #Limit area for faster autotuning. Use for more 4096 * 8
-            continue
-
-        #Constraints
-        #BLOCK_SIZE_K >= group_size
-        block_size_k = min(block_size_k, g)
-
-        #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
-        if(not is_divisible(k, block_size_k * split_k)):
-            continue
-
         A_load_order = config.kwargs['A_load_order']
         num_stages   = config.num_stages
         num_warps    = config.num_warps
 
-        if(split_k == 1):
-            pre_hook = None
-        else:
-            pre_hook = init_to_zero("c_ptr")
+        #Autotune prune the batch_size (1..64)
+        if m <= 16:   block_size_m = 16
+        elif m <= 32: block_size_m = min(max(block_size_m, 16), 32) #m: [16, 32]
+        elif m <= 64: block_size_m = min(max(block_size_m, 32), 64) #m: [32, 64]
+        elif m > 64 : block_size_m = 64
+
+        #Only use higher split_k values for smaller m
+        if(m >= 32): split_k = min(split_k, 8)
+
+        #Constraint: BLOCK_SIZE_K >= group_size
+        block_size_k = min(block_size_k, g)
+
+        #Constraint: K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
+        while split_k > 1 and not is_divisible(k, block_size_k * split_k):
+            split_k //= 2
+
+        if not is_divisible(k, block_size_k * split_k):
+            continue
 
         #Nvidia
         if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+
+        #Avoid OOM
+        while num_stages > 0:
+            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * min(b_sizeof, 2)) 
+            if(g < k): 
+                shared_mem += block_size_m * block_size_n * 2 * 4 #scales/zeros
+            shared_mem *= num_stages
+            if int(shared_mem) <= gpu_shared_memory:
+                break
+            num_stages -= 1
+
+        if(num_stages == 0): continue #config too large
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, num_stages, num_warps)
         
@@ -116,27 +123,25 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             },
             num_stages=num_stages,
             num_warps=num_warps,
-            pre_hook=pre_hook, 
+            pre_hook=init_to_zero("c_ptr") if split_k > 1 else None, 
         )
 
 #These autotunes are optimized for batch-size 1 to 64 (!)
 def get_max_autotune_config():
     _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     _configs = []
-    for _M in [16, 32, 64]:
-        for _N in [32, 64, 128, 256]:
-            for _K in [32, 64, 128, 256]:
-                for _w in [4, 8]:
-                    for _s in _stages:
-                        for _sK in [1, 2, 4, 8, 16]: 
-                            for _a_load_order in [0, 2]:
+    for _a_load_order in [0, 2]:
+        for _M in [16, 32, 64]:
+            for _N in [32, 64, 128, 256, 512]:
+                for _K in [32, 64, 128, 256, 512]:
+                    for _w in [4, 8]:
+                        for _s in _stages:
+                            for _sK in [1, 2, 4, 8, 16]: 
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
                                             'GROUP_SIZE_M': 8, 'SPLIT_K': _sK, 'A_load_order': _a_load_order,
-                                            }, 
-                                            num_stages=_s, num_warps=_w,
-                                            )
+                                            }, num_stages=_s, num_warps=_w)
                                         )
 
     return _configs
@@ -145,25 +150,35 @@ def get_max_autotune_config():
 #Faster autotuner 
 def get_fast_autotune_config():
     configs = []
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=8))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=8))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+    
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':16,'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4)) 
+    
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
     return configs
-
 
 def get_default_config():
     return [triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=2)]
-
 
 AUTOTUNE_SETTING = AUTOTUNE.GEMM_SPLITK
 if(AUTOTUNE_SETTING == 'max'):
