@@ -110,13 +110,47 @@ def gpu_supports_bfloat16_atomicadd():
     #return torch.cuda.get_device_capability()[0] >= 9 #Hopper and above
     return False
 
-#Next power of 2
-M_MAXVAL  = 1024
-M_MAPPING = {M:min(2 ** int(math.ceil(math.log2(M))), M_MAXVAL) if (M > 0) else 0 for M in range(M_MAXVAL + 1)}
-def get_closest_m_fast_autotune(M):
-    return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
+#Only powers of 2
+def generate_autotune_lookup_v1(max_m=16384):
+    return [min(2 ** int(math.ceil(math.log2(M))), max_m) if (M > 0) else 0 for M in range(max_m + 1)]
 
-get_closest_m = get_closest_m_fast_autotune
+#Powers of 2 but also (power of 2 + next power of 2) / divisor, 
+def generate_autotune_lookup_v2(max_m=16384, min_split=32, divisors=[2, 4], mode='next', include_vllm_config=False):
+    lookup = [0] * (max_m + 1)
+    autotune_vals = set()
+
+    i = 0
+    while (val := 2 ** i) <= max_m:
+        autotune_vals.add(val)
+        next_val = 2 ** (i + 1)
+        if val >= min_split and next_val <= max_m:
+            for d in divisors:
+                interpolated = (val + next_val) // d
+                autotune_vals.add(interpolated)
+        i += 1
+
+    if(include_vllm_config):
+        autotune_vals.update([1, 2, 4, 8, 16, 24, 32, 40, 48, 56, 64, 
+                             72, 80, 88, 96, 104, 112, 120, 128, 
+                             136, 144, 152, 160, 168, 176, 184, 192,
+                             200, 208, 216, 224, 232, 240, 248, 256, 384, 512])
+    
+    sorted_vals = sorted(autotune_vals)
+
+    for m in range(max_m + 1):
+        if(mode == 'next'):
+            lookup[m] = min((x for x in sorted_vals if x >= m), default=None) #Next-value
+        elif(mode == 'closest'):
+            lookup[m] = min(sorted_vals, key=lambda x: (abs(x - m), x < m)) #Closest-Value
+        else:
+            raise Exception('Invalid mode.')
+    return lookup
+
+#Next power of 2
+M_MAXVAL  = 4096 #1024, 4096, 16384
+M_MAPPING = generate_autotune_lookup_v2(M_MAXVAL, mode='next')
+def get_closest_m(M):
+    return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
 
 def get_gpu_shared_memory():
     return driver.active.utils.get_device_properties(0).get("max_shared_mem", 0)
