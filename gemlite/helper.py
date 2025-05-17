@@ -7,7 +7,7 @@ from typing import Tuple
 from tqdm import tqdm
 from functools import partial
 from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO_DTYPE
-
+from gemlite.triton_kernels.utils import M_MAPPING
 ############################################################################################################################################################
 #16-bit activations / 8-bit weigths
 class A16W8:
@@ -369,8 +369,8 @@ class A8W158:
 
 
 ############################################################################################################################################################
-#Warm-up function: 
-def warmup(shapes: list, batch_sizes: list = [2**i for i in range(0,11)], W_nbits: list = [8, 4], group_sizes: list = [64], mode: str = 'static', dtype = torch.float16):
+#Warm-up function:  
+def warmup(shapes: list, batch_sizes: list = sorted(list(set(M_MAPPING))), W_nbits: list = [4], group_sizes: list = [64], mode: str = 'static', dtype = torch.float16):
     """
     * Warm-up for A16W4 with group_size=64
     warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
