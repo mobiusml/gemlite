@@ -17,7 +17,6 @@ from .utils import (
     get_gpu_shared_memory,
 )
 
-
 KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'a_sizeof', 'b_sizeof'] 
 MATMUL_TYPE = "GEMM"
 
@@ -64,11 +63,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Autotune prune the batch_size
         if m <= 16:    block_size_m = 16
-        elif m <= 32:  block_size_m = min(max(block_size_m, 16), 32) #m:  [16...32]
-        elif m <= 64:  block_size_m = min(max(block_size_m, 32), 64) #m:  [32...64]
+        elif m <= 32:  block_size_m = min(max(block_size_m, 16), 32)  #m: [16...32]
+        elif m <= 64:  block_size_m = min(max(block_size_m, 32), 64)  #m: [32...64]
         elif m <= 128: block_size_m = min(max(block_size_m, 64), 128) #m: [64...128]
-        elif m <= 256: block_size_m = min(max(block_size_m, 64), 128) #m: [128...256]
-        elif m > 256:  block_size_m = min(max(block_size_m, 64), 128) 
+        elif m <= 256: block_size_m = min(max(block_size_m, 64), 256) #m: [128...256]
+        elif m > 256:  block_size_m = min(max(block_size_m, 64), 256) #m > 256
     
         #Constraint: BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
@@ -131,24 +130,24 @@ def get_max_autotune_config():
 
 def get_fast_autotune_config():
     configs = [] #BLOCK_SIZE_M is automatically adapted in the config pruning.
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
 
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
 
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
     
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':32, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64,  'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':64, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
     return configs
 
 
@@ -207,8 +206,8 @@ def gemm_A16fWnO16f_int32packing_kernel(
     data_contiguous: tl.constexpr,
     #################################
     meta_evict_policy: tl.constexpr = '',
-    a_evict: tl.constexpr = 'evict_last',
-    b_evict: tl.constexpr = 'evict_first',
+    a_evict: tl.constexpr = '',
+    b_evict: tl.constexpr = '',
 ):
     """
     Based on https://github.com/fpgaminer/GPTQ-triton
