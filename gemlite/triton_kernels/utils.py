@@ -146,11 +146,10 @@ def generate_autotune_lookup_v2(max_m=16384, min_split=32, divisors=[2, 4], mode
             raise Exception('Invalid mode.')
     return lookup
 
-#Next power of 2
 M_MAXVAL  = 4096 #1024, 4096, 16384
 M_MAPPING = generate_autotune_lookup_v2(M_MAXVAL, mode='next')
 def get_closest_m(M):
     return M_MAPPING[M] if M <= M_MAXVAL else M_MAXVAL
-
+    
 def get_gpu_shared_memory():
     return driver.active.utils.get_device_properties(0).get("max_shared_mem", 0)
