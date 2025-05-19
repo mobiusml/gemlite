@@ -180,8 +180,6 @@ else:
     configs=get_autotune_config(),
     key = KEYS,
     prune_configs_by = {'early_config_prune': kernel_config_pruner},
-    warmup = 50, 
-    rep = 50,
     use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
 )
 
