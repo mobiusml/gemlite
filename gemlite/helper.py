@@ -1,7 +1,7 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
 
-import torch, gc
+import torch, gc, time
 from torch import Tensor
 from typing import Tuple
 from tqdm import tqdm
@@ -411,5 +411,5 @@ def warmup(shapes: list, batch_sizes: list = default_batch_sizes, W_nbits: list 
 
                 torch.cuda.empty_cache()
                 gc.collect()
-                
+                time.sleep(1)
 
