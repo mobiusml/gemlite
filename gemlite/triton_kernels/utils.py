@@ -95,11 +95,9 @@ def gpu_has_more_shared_memory(ref_gpus = ["a100", "h100", "h200", "h20", "h800"
 
 def gpu_supports_float16_acc(
     ref_gpus=["5090", "5080", "5070", "5060", 
-              "4090", "4080", "4070", "4060", 
+              "4090", "4080", "4070", "4060",
               "3090", "3080", "3070", "3060",
-              "4000", "5000", '6000',
-              '2080', 'titan rtx',
-              "a40",  "a10",  "l40"]
+              "2080", "2070"]
 ):
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
     return True in [g in gpu_name for g in ref_gpus]
