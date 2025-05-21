@@ -52,7 +52,7 @@ def set_autotune(config: Union[dict, str, bool], **kwargs):
 		for key in config:
 			setattr(AUTOTUNE, key, config[key])
 
-	reload_all_modules()
-
 	if('use_cuda_graph' in kwargs):
 		AUTOTUNE.CUDA_GRAPH: bool = kwargs['use_cuda_graph']
+
+	reload_all_modules()
