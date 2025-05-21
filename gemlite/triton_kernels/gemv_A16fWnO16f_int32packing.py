@@ -42,29 +42,18 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m = 1 #Only 1 allowed
-        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
-        
-        #Skip blocks that are either too large or too small
-        block_area = block_size_k * block_size_n
-        if(block_area < 1024 or block_area > 4096 * 8): 
-            continue
-        
+        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
+                
         #Constraints
         block_size_k = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
-
-        #Since we load the scales / zeros once per split_k pass, we need this
-        if(not (block_size_k <= g)):
-            continue
+        block_size_k = next_power_of_2(block_size_k)
+        block_size_n = next_power_of_2(block_size_n)
         
         #Block size should be compatible with minimum-packing
         if(block_size_k < e):
             continue
              
-        #K needs to be devisible by BLOCK_SIZE_K 
-        if(not is_divisible(k, block_size_k)):
-            continue
-
         A_load_order  = config.kwargs['A_load_order']
         dot_prod_mode = config.kwargs['dot_prod_mode']
         num_stages    = config.num_stages

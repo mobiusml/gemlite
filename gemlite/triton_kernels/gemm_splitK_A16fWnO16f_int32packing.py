@@ -18,6 +18,7 @@ from .utils import (
     dequantize,
     gpu_supports_bfloat16_atomicadd,
     get_gpu_shared_memory,
+    next_power_of_2,
 )
 
 
@@ -64,8 +65,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
         block_size_m = config.kwargs['BLOCK_SIZE_M']
-        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
+        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
         A_load_order = config.kwargs['A_load_order']
@@ -83,13 +84,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Constraint: BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
+        block_size_k = next_power_of_2(block_size_k)
+        block_size_n = next_power_of_2(block_size_n)
 
-        #Constraint: K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
+        #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
         while split_k > 1 and not is_divisible(k, block_size_k * split_k):
+        #while split_k > 1 and k > block_size_k * split_k:
             split_k //= 2
-
-        if not is_divisible(k, block_size_k * split_k):
-            continue
 
         #Nvidia
         if(e > 1): num_stages = 1 #TODO: Remove this after fix?
@@ -280,7 +281,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     #Inputs
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
-    a_mask  = offs_am[:, None] < M
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
     
     #Meta data stuff
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n

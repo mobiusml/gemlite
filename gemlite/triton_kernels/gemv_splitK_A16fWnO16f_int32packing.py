@@ -47,43 +47,34 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
-        block_size_m = config.kwargs['BLOCK_SIZE_M'] 
-        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
+        block_size_m = 1 #Only 1 is supported
+        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
         num_stages    = config.num_stages
         num_warps     = config.num_warps
         A_load_order  = config.kwargs['A_load_order']
         dot_prod_mode = config.kwargs['dot_prod_mode']
-
-        #Skip larger blocks
-        if(block_size_k > k or block_size_n > n):
-            continue
-
-        #Only 1 is supported
-        block_size_m = 1 
         
+        #Constraints
+        #BLOCK_SIZE_K >= group_size
+        block_size_k = min(block_size_k, g)
+        block_size_k = next_power_of_2(block_size_k)
+        block_size_n = next_power_of_2(block_size_n)
+
+        #K needs to be divisible by BLOCK_SIZE_K * SPLIT_K: TODO: without this, cuda-graphs breaks.
+        while block_size_k > 16 and not is_divisible(k, block_size_k * split_k):
+            block_size_k //=2
+
         #Skip blocks that are either too large or too small
         block_area = (block_size_k // split_k) * block_size_n
         if(block_area < 1024 or block_area > 4096 * 8): #128 * 8 * num_warps 
             continue
 
-        #Constraints
-        #BLOCK_SIZE_K >= group_size
-        block_size_k = min(block_size_k, g)
-
         #Block size should be compatible with minimum-packing
         if(block_size_k < e):
             continue
-
-        #K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
-        if(not is_divisible(k, block_size_k * split_k)):
-            continue
-
-        #Nvidia
-        if(e > 1): num_stages = 1 #TODO: Remove this after fix?
-        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, dot_prod_mode, num_stages, num_warps)
         
@@ -130,6 +121,9 @@ def get_max_autotune_config():
 
 def get_fast_autotune_config():
     configs = []
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':512, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
                                   'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
@@ -260,7 +254,7 @@ def gemv_splitK_A16fWnO16f_int32packing_kernel(
 
     #Inputs
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
-    a_mask  = offs_am[:, None] < M
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
     b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn)
 
     #Meta data stuff

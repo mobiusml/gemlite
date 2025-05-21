@@ -18,6 +18,7 @@ from .utils import (
     dequantize,
     gpu_supports_bfloat16_atomicadd,
     swizzle_tile_persistent,
+    next_power_of_2,
 )
 
 KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'a_sizeof', 'b_sizeof'] 
@@ -63,8 +64,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
         block_size_m = config.kwargs['BLOCK_SIZE_M']
-        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
+        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = config.kwargs['SPLIT_K']
 
         A_load_order = config.kwargs['A_load_order']
@@ -82,13 +83,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Constraint: BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
+        block_size_k = next_power_of_2(block_size_k)
+        block_size_n = next_power_of_2(block_size_n)
 
-        #Constraint: K needs to be devisible by BLOCK_SIZE_K * SPLIT_K 
+        #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
         while split_k > 1 and not is_divisible(k, block_size_k * split_k):
+        #while split_k > 1 and  k > block_size_k * split_k:
             split_k //= 2
-
-        if not is_divisible(k, block_size_k * split_k):
-            continue
 
         #Nvidia
         if(e > 1): num_stages = 1 #TODO: Remove this after fix?
@@ -278,13 +279,13 @@ def gemm_splitK_persistent_A16fWnO16f_int32packing_kernel(
         
         a_ptrs = a_ptr + offs_am[:, None] * stride_am
         b_ptrs = b_ptr + offs_bn[None, :] * stride_bn
-        a_mask = offs_am[:, None] < M
         offs_k_base = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
 
         acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
         for k in range(0, num_pid_k):
             offs_ak = offs_k_base + k * (BLOCK_SIZE_K * SPLIT_K)
             offs_bk = offs_ak // elements_per_sample
+            a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
 
             if(A_load_order == 0):
                 a = tl.load(a_ptrs + offs_ak[None, :] * stride_ak, mask=a_mask, other=0., eviction_policy=a_evict)

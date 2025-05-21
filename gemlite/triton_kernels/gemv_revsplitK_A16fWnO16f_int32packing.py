@@ -46,23 +46,20 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     used = set()
     for config in configs:
         block_size_m = 1 #Only 1 allowed here
-        block_size_n = min((2 ** int(math.ceil(math.log2(n)))), config.kwargs['BLOCK_SIZE_N'])
-        block_size_k = min((2 ** int(math.ceil(math.log2(k)))), config.kwargs['BLOCK_SIZE_K'])
+        block_size_n = min(n, config.kwargs['BLOCK_SIZE_N'])
+        block_size_k = min(k, config.kwargs['BLOCK_SIZE_K'])
         split_k      = 2
 
         A_load_order  = config.kwargs['A_load_order']
         dot_prod_mode = config.kwargs['dot_prod_mode']
         num_stages    = config.num_stages
         num_warps     = config.num_warps
-        
-        #Faster autotune
-        block_area = block_size_k * block_size_n
-        if(block_area < 1024 or block_area > 4096 * 8): 
-            continue
 
         #Constraints
         #BLOCK_SIZE_K <= group_size
         block_size_k = min(block_size_k, g)
+        block_size_k = next_power_of_2(block_size_k)
+        block_size_n = next_power_of_2(block_size_n)
 
         #Since we load the scales / zeros once per split_k pass, we need this
         if(not (block_size_k * split_k <= g)):
@@ -70,10 +67,6 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Block size should be compatible with minimum-packing
         if(block_size_k < e):
-            continue
-        
-        #K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
-        if(not is_divisible(k, block_size_k * split_k)):
             continue
 
         key  = (block_size_m, block_size_n, block_size_k, A_load_order, dot_prod_mode, num_stages, num_warps)

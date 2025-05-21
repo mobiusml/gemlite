@@ -86,6 +86,9 @@ def atomic_add_cas(ptr, value, Lock, mask=None, sem: tl.constexpr = "release"):
 def init_to_zero(name):
     return lambda nargs: nargs[name].zero_()
 
+def next_power_of_2(v):
+    return 2 ** int(math.ceil(math.log2(v)))
+
 def is_divisible(dividend, divisor):
     return dividend % divisor == 0
 
