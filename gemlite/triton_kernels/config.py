@@ -37,7 +37,6 @@ def reload_all_modules():
 
 def set_kernel_caching(enable: bool):
 	KERNEL.ENABLE_CACHING = enable
-	reload_all_modules()
 
 def set_autotune(config: Union[dict, str, bool], **kwargs):
 	if(type(config) == str):
@@ -53,6 +52,6 @@ def set_autotune(config: Union[dict, str, bool], **kwargs):
 			setattr(AUTOTUNE, key, config[key])
 
 	if('use_cuda_graph' in kwargs):
-		AUTOTUNE.CUDA_GRAPH: bool = kwargs['use_cuda_graph']
+		setattr(AUTOTUNE, 'USE_CUDA_GRAPH', bool(kwargs['use_cuda_graph']))
 
 	reload_all_modules()
