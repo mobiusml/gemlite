@@ -122,36 +122,34 @@ def get_max_autotune_config():
 def get_fast_autotune_config():
     configs = []
 
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':16, 'BLOCK_SIZE_K':256, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':512, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=8, num_stages=1))
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':512, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=1))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
                                   'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
-
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
-
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=1))
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':8, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
-
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
-
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':1, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
-
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1, 'BLOCK_SIZE_K':1024, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':2048, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=2))
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=1))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':2, 'BLOCK_SIZE_K':4096, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
-                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=8, num_stages=2))
-
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=8, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':4, 'BLOCK_SIZE_K':4096, 'GROUP_SIZE_M':8, 'SPLIT_K': 1, 
+                                  'A_load_order':0, 'dot_prod_mode':0}, num_warps=4, num_stages=1))
 
     return configs
 
