@@ -374,6 +374,12 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 
+    dtype = DTYPE_TO_TRITON[input_dtype]
+    if(dtype in [tl.float16, tl.bfloat16, tl.float32]):
+        acc_dtype = dtype
+    else:
+        acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
     gemv_splitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
@@ -386,7 +392,7 @@ def gemv_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
         ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = DTYPE_TO_TRITON[output_dtype],
-        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+        acc_dtype    = acc_dtype,
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ################################################
         channel_scale_mode = channel_scale_mode,
