@@ -198,13 +198,14 @@ def forward_functional(
     bias: Union[None, Tensor],
     tensor_args: List[Tensor],
     meta_args: List[int],
+    out_features: int,
     matmul_type: int = -1, #-1: auto, >=0: manual
 ) -> Tensor:
     
     scaled_activations = bool(meta_args[0])
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
-    out_features = tensor_args[0].shape[1]
+    #out_features = tensor_args[0].shape[1]
 
     if not x.is_contiguous():
         x = x.contiguous()
@@ -237,9 +238,9 @@ def forward_functional_fake(
     bias: Union[None, Tensor],
     tensor_args: List[Tensor],
     meta_args: List[int],
+    out_features: int,
     matmul_type: int = -1,
 ) -> Tensor:
-    out_features = tensor_args[0].shape[1]
     return torch.empty(x.shape[:-1] + (out_features,), device=x.device, dtype=x.dtype)
 
 #######################################################################################################################
@@ -353,6 +354,18 @@ class GemLiteLinearTriton(torch.nn.Module):
         contiguous: Union[int, None] = None,
         packing_bitwidth: Union[int, None] = None,
     ):
+        #K-packing default
+        pack_over = 'K' #N, K
+        contiguous = True #False: col-major (K), True: row-major (N)
+        packing_bitwidth = 8
+        transpose=True # True: N-packing: (K x N//e) / False: (N//e x K)
+
+        # #N-packing A100
+        # pack_over = 'N' #N, K
+        # contiguous = False #False: col-major (K), True: row-major (N)
+        # packing_bitwidth = 8
+        # transpose=True# True: N-packing: (K x N//e) / False: (N//e x K)
+
         #Set packing bitwidth
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
@@ -371,13 +384,17 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(contiguous is None): contiguous = False
 
         if W_q.dtype == torch.uint8:  # Packed weigths
-            _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == "cuda") else pack_weights_over_cols_torch
+            from .bitpack import pack_weights_over_rows_triton, pack_weights_over_rows_torch
+            if(pack_over == 'K'):
+                _pack_weights = pack_weights_over_cols_triton if (W_q.device.type == "cuda") else pack_weights_over_cols_torch #Over-K
+            if(pack_over == 'N'):
+                _pack_weights = pack_weights_over_rows_triton if (W_q.device.type == "cuda") else pack_weights_over_rows_torch #Over-N
 
-            self.W_q, self.elements_per_sample = _pack_weights_over_cols(
+            self.W_q, self.elements_per_sample = _pack_weights(
                 W_q.view(self.orig_shape),
                 W_nbits=self.W_nbits,
                 packing_bitwidth=packing_bitwidth,
-                transpose=True,
+                transpose=transpose,
             )  # Over-K
             if contiguous is None:
                 contiguous = True
@@ -508,6 +525,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.bias,
             self.get_tensor_args(),
             self.get_meta_args(),
+            self.out_features,
             GEMLITE_MATMUL_TYPES_MAPPING[matmul_type],
         )
 
@@ -518,6 +536,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.bias,
             self.get_tensor_args(),
             self.get_meta_args(),
+            self.out_features,
         )
 
     @staticmethod

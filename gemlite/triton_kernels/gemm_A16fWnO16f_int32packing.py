@@ -336,7 +336,9 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
                                         ) -> Tensor:
     
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+    M, K, N = x.shape[0], x.shape[1], W_q.shape[1] #Over-K
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[1] * elements_per_sample #Over-N
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] * elements_per_sample #Over-N - transposed
 
     M_CLOSEST = utils.get_closest_m(M)
 
@@ -345,27 +347,27 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
-    gemm_A16fWnO16f_int32packing_kernel[grid](
-        x, W_q, output,
-        scales, zeros, scales_x,
-        M, N, K, M_CLOSEST,
-        W_nbits, group_size, unpack_mask, elements_per_sample,  
-        x.dtype.itemsize, W_q.dtype.itemsize,
-        x.stride(0), x.stride(1),
-        W_q.stride(0), W_q.stride(1),
-        output.stride(0), output.stride(1),
-        scales.stride(0), scales.stride(1),
-        ########################
-        input_dtype  = DTYPE_TO_TRITON[input_dtype],
-        output_dtype = DTYPE_TO_TRITON[output_dtype],
-        acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
-        meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
-        ########################
-        channel_scale_mode = channel_scale_mode,
-        W_group_mode       = W_group_mode,
-        zero_is_scalar     = zeros.numel() == 1,
-        data_contiguous    = data_contiguous,
-    )
+    # gemm_A16fWnO16f_int32packing_kernel[grid](
+    #     x, W_q, output,
+    #     scales, zeros, scales_x,
+    #     M, N, K, M_CLOSEST,
+    #     W_nbits, group_size, unpack_mask, elements_per_sample,  
+    #     x.dtype.itemsize, W_q.dtype.itemsize,
+    #     x.stride(0), x.stride(1),
+    #     W_q.stride(0), W_q.stride(1),
+    #     output.stride(0), output.stride(1),
+    #     scales.stride(0), scales.stride(1),
+    #     ########################
+    #     input_dtype  = DTYPE_TO_TRITON[input_dtype],
+    #     output_dtype = DTYPE_TO_TRITON[output_dtype],
+    #     acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
+    #     meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
+    #     ########################
+    #     channel_scale_mode = channel_scale_mode,
+    #     W_group_mode       = W_group_mode,
+    #     zero_is_scalar     = zeros.numel() == 1,
+    #     data_contiguous    = data_contiguous,
+    # )
 
     return output
 

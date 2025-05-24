@@ -92,8 +92,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             split_k //= 2
 
         #Nvidia
-        if(e > 1): num_stages = 1 #TODO: Remove this after fix?
-        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+        # if(e > 1): num_stages = 1 #TODO: Remove this after fix?
+        # if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
         #Avoid OOM
         while num_stages > 0:
@@ -128,16 +128,89 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 #These autotunes are optimized for batch-size 1 to 64 (!)
+# def get_max_autotune_config():
+#     _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+#     _configs = []
+#     for _a_load_order in [0, 2]:
+#         for _M in [16, 32, 64]:
+#             for _N in [32, 64, 128, 256, 512]:
+#                 for _K in [32, 64, 128, 256, 512]:
+#                     for _w in [4, 8]:
+#                         for _s in _stages:
+#                             for _sK in [1, 2, 4, 8, 16]: 
+#                                 _configs.append(
+#                                         triton.Config(
+#                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                             'GROUP_SIZE_M': 8, 'SPLIT_K': _sK, 'A_load_order': _a_load_order,
+#                                             }, num_stages=_s, num_warps=_w)
+#                                         )
+
+#     return _configs
+
+
+#Faster autotuner 
+# def get_fast_autotune_config():
+#     configs = []
+    
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
+    
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=5))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+        
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4)) 
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4)) 
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=2))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    
+#     configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+#     return configs
+
+
+# #Max auotutne 
+# def get_max_autotune_config():
+#     _stages  = [1, 4] 
+#     _configs = []
+#     for _a_load_order in [0]:
+#         for _M in [16, 32, 64]:
+#             for _N in [32, 64, 128, 256]:
+#                 for _K in [16, 32, 64, 128, 256]:
+#                     for _w in [2, 4, 8]:
+#                         for _s in _stages:
+#                             for _sK in [1, 2, 4, 8, 16]: 
+#                                 _configs.append(
+#                                         triton.Config(
+#                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                             'GROUP_SIZE_M': 8, 'SPLIT_K': _sK, 'A_load_order': _a_load_order,
+#                                             }, num_stages=_s, num_warps=_w)
+#                                         )
+
+#     return _configs
+
+
+#Ultra max autotune
 def get_max_autotune_config():
-    _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+    _stages  = [1, 2, 4] 
     _configs = []
-    for _a_load_order in [0, 2]:
+    for _a_load_order in [0]:
         for _M in [16, 32, 64]:
-            for _N in [32, 64, 128, 256, 512]:
-                for _K in [32, 64, 128, 256, 512]:
-                    for _w in [4, 8]:
+            for _N in [32, 64, 128, 256]:
+                for _K in [16, 32, 64, 128, 256]:
+                    for _w in [1, 2, 4, 8]:
                         for _s in _stages:
-                            for _sK in [1, 2, 4, 8, 16]: 
+                            for _sK in [1, 2, 4, 8, 16, 32]: 
                                 _configs.append(
                                         triton.Config(
                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
@@ -148,34 +221,18 @@ def get_max_autotune_config():
     return _configs
 
 
-#Faster autotuner 
 def get_fast_autotune_config():
     configs = []
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=5))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-        
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4)) 
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=8, num_stages=4)) 
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=5))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=2))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':256, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=8, num_stages=4))
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':512, 'SPLIT_K':1, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32,  'SPLIT_K':4, 'GROUP_SIZE_M':8, 'A_load_order':2}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'SPLIT_K':2, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4)) 
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64, 'SPLIT_K':8, 'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32, 'SPLIT_K':16,'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
+    configs.append(triton.Config({'BLOCK_SIZE_M':16, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':64, 'SPLIT_K':16,'GROUP_SIZE_M':8, 'A_load_order':0}, num_warps=4, num_stages=4))
     return configs
 
 
@@ -196,6 +253,7 @@ else:
     prune_configs_by = {'early_config_prune': kernel_config_pruner},
     use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
 )
+
 
 @triton.jit
 def gemm_splitK_A16fWnO16f_int32packing_kernel(
@@ -275,86 +333,133 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     offs_bk = offs_k
     ###############################
 
-    b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
-    q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
-
-    #Inputs
+    #A input
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
     a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
+    BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K   * SPLIT_K
+
+
+    # #B input - K-side packing
+    # offs_bk = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+    # b_ptrs  = b_ptr + (offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn) 
+    # BLOCK_SIZE_K_P: tl.constexpr = (8) * SPLIT_K
+
+    join_version: tl.constexpr = True #False / True
+    transpose: tl.constexpr = False
+
+    if(transpose):
+        _stride_bk, _stride_bn = stride_bn, stride_bk 
+    else:
+        _stride_bk, _stride_bn = stride_bk, stride_bn
+
+    ######################################################
+    #B input - K-side packing: change N to W_q.shape[1] 
+    q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
+    if(join_version):
+        BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+        offs_bk_j = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E) 
+        if(transpose):
+            b_ptrs  = b_ptr + offs_bk_j[None, :]  * _stride_bk + offs_bn[:, None] * _stride_bn 
+        else:
+            b_ptrs  = b_ptr + offs_bk_j[:, None] * _stride_bk + offs_bn[None, :] * _stride_bn
+    else:
+        #orig version
+        if(transpose):
+            b_ptrs  = b_ptr + ((offs_bk[None, :] // elements_per_sample) * _stride_bk + offs_bn[:, None] * _stride_bn) 
+        else:
+            b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * _stride_bk + offs_bn[None, :] * _stride_bn) 
+
+    BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
+
+    ######################################################
+    # #B input - N-side packing: change N to W_q.shape[1] * elements_per_sample   
+    # q_shift = ((offs_bn % elements_per_sample) * W_nbits).to(tl.int32)[None, :] 
+    # if(join_version):
+    #     BLOCK_SIZE_N_E: tl.constexpr = BLOCK_SIZE_N // elements_per_sample
+    #     offs_bn_j = pid_n * BLOCK_SIZE_N_E + tl.arange(0, BLOCK_SIZE_N_E) 
+    #     if(transpose):
+    #         b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + offs_bn_j[:, None] * _stride_bn 
+    #     else:
+    #         b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + offs_bn_j[None, :] * _stride_bn
+    # else:
+    #     if(transpose):
+    #         b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + (offs_bn[:, None] // elements_per_sample) * _stride_bn 
+    #     else:
+    #         b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + (offs_bn[None, :] // elements_per_sample) * _stride_bn
+     
+    # BLOCK_SIZE_K_P: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
+
+    ###########################################################
+    #contiguous=False -> column-major: contiguous over K 
+    #contiguous=True  -> row-major   : contiguous over N
     
+    #A100: contiguous=False (K contiguous) works better for loading - but requires a large BLOCK_SIZE_K, however, group-size restricts BLOCK_SIZE_K.
+    #4090: contigguous=True (N contiguous) works better because loading works fine alng long N, which permits using smaller BLOCK_SIZE_K.
+    #4090 A16W4 gs=64 Llama3-8B | vLLM v1 benchmark time: in_len=1; out_len=1024; batch_size=16;
+
+    #A8W8 reference with maxtune: 9.282703694188967 sec
+
+    #K-pack - 8-bit - data_contiguous False - join_version=False: 14.78 sec
+    #K-pack - 8-bit - data_contiguous True: - join_version=False:  9.87 sec / maxtune (no gs constraint): 9.392
+        #-> With scales/zeros - with gs constraint      : 11.599242393719033 -> Ultra max autotune: 10.766200583567842
+    #K-pack - 8-bit - data_contiguous True: - join_version=True: 
+        #-> With scales/zeros - with gs constraint      :  9.861628177110106 -> Ultra max autotune: 9.81272920719348 ## BEST
+
+    #N-pack - 8-bit - data_contiguous True: - join_version=False: 61.94 sec
+    #N-pack - 8-bit - data_contiguous False - join_version=False: 9.155 sec / maxtune (no gs constraint): 8.63693984216079  
+        #-> With fake scales/zeros - no gs constraint  : 9.992836092365906
+        #-> With scales/zeros - no gs constraint       : 10.36775829298421
+        #-> With scales/zeros - with gs constraint     : 11.35291167432442 
+
+    #N-pack - 8-bit - data_contiguous False - join_version=True : 10.24 sec / maxtune (no gs constraint): 9.671921900194139
+        #-> With scales/zeros - with gs constraint     : 10.723965570470318 
+    #N-pack - 32-bit- data_contiguous False - join_version=False: 11.79 sec / maxtune (no gs constraint): 11.56746362559497
+    #N-pack - 8-bit - data_contiguous False - join_version=False + transpose=True / maxtune (no gs constraint): 9.1976491483859
+    #N-pack - 8-bit - data_contiguous True  - join_version=False + transpose=True / maxtune (no gs constraint): 9.2181997213047  
+    
+
+
+    ###########################################################
+
     #Meta data stuff
     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
-
-    stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size
-    BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K   * SPLIT_K
-    BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
-
-    if(zero_is_scalar):
-        zero_scalar = tl.load(zeros_ptr, eviction_policy='evict_last')
+    stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
     ####################################################################################
     
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
     for k in range(num_pid_k):
 
-        if(A_load_order == 0): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
-
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
         b = tl.load(b_ptrs, eviction_policy=b_evict)
 
-        if(A_load_order == 1): #Early load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
-        
-        #Meta-data loading policy
-        if(W_group_mode > 0):
-            k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
+        if(transpose):
+            b = tl.trans(b)
 
-        if(W_group_mode >= 2): #[2, 3, 4]
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-        else:
-            scales = None
+        if(join_version):
+            if(elements_per_sample == 2):
+                #K-side
+                #b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False) 
+                #N-side
+                b = tl.join(b, b).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
 
-        if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
-            if(zero_is_scalar):
-                zeros = zero_scalar
-            else:
-                zeros = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-        else:
-            zeros = None
-        
-        if(A_load_order == 2): #Mid load
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
+
+        k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
+        scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
 
         # Unpack and dequantize
-        b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
-        #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
+        b = (b >> q_shift) & unpack_mask
+        b = tl.fma(b.to(meta_dtype), scales, zeros)
 
-        if(A_load_order == 3): #Late load 
-            a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
-        
         #Dot
-        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
+        acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) 
         
         #Advance
         a_ptrs += BLOCK_SIZE_K_U * stride_ak
-        b_ptrs += BLOCK_SIZE_K_P * stride_bk
+        b_ptrs += BLOCK_SIZE_K_P * _stride_bk
 
-    ##################################################################
-    #Channel-wise scaling
-    if(channel_scale_mode == 1): #weight-only
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
-        acc      = acc.to(meta_dtype) * scales_b[None, :]
-
-    if(channel_scale_mode == 2): #activation-only
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
-        scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
-        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
-
-    if(channel_scale_mode == 3): #weight + activation
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
-        scales_b = tl.load(scales_ptr   + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
-        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     ##################################################################
     #Output
@@ -369,13 +474,190 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     else:
         tl.store(c_ptrs, acc, mask=mask) 
 
+
+
+# @triton.jit
+# def gemm_splitK_A16fWnO16f_int32packing_kernel(
+#     a_ptr, b_ptr, c_ptr,
+#     scales_ptr, zeros_ptr, scales_a_ptr,
+#     M, N, K, M_CLOSEST,
+#     ######### Quant parms #########
+#     W_nbits: tl.constexpr, 
+#     group_size: tl.constexpr, 
+#     unpack_mask: tl.constexpr, 
+#     elements_per_sample: tl.constexpr, 
+#     #################################
+#     a_sizeof: tl.constexpr,
+#     b_sizeof: tl.constexpr,
+#     ######### Strides #########
+#     stride_am, stride_ak,
+#     stride_bk, stride_bn,
+#     stride_cm, stride_cn,
+#     stride_meta_g, stride_meta_n,
+#     ######### Dtypes #########
+#     input_dtype: tl.constexpr,
+#     output_dtype: tl.constexpr,
+#     acc_dtype: tl.constexpr,
+#     meta_dtype: tl.constexpr,
+#     ######### Meta-data mode #########
+#     channel_scale_mode: tl.constexpr,
+#     W_group_mode: tl.constexpr,
+#     zero_is_scalar: tl.constexpr,
+#     ######### tuning params #########
+#     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+#     GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
+#     A_load_order: tl.constexpr, 
+#     data_contiguous: tl.constexpr,
+#     #################################
+#     meta_evict_policy: tl.constexpr = '',
+#     atomic_mode: tl.constexpr = 'relaxed',
+#     a_evict: tl.constexpr = 'evict_last',
+#     b_evict: tl.constexpr = 'evict_first',
+# ):
+#     """
+#     Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
+#     GEMM for C = matmul(A, dequantize(B, scales, zeros))
+#     A is of shape (M, K): float16 or bfloat16
+#     B is of shape (K//elements_per_sample, N): int32 as a packed matrix
+#     C is of shape (M, N): float16 or bfloat16 depending on the input A
+#     scales and zeros is of shape (group_size, N): float16 or bfloat16
+
+#     BLOCK_SIZE_M >=16
+#     BLOCK_SIZE_K * SPLIT_K <= group_size for imp1
+#     BLOCK_SIZE_K == SPLIT_K for imp2 (similar to original)
+#     """
+
+#     pid   = tl.program_id(axis=0)
+#     pid_k = tl.program_id(axis=1)
+
+#     #Swizzle?
+#     #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+#     pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+
+#     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
+#     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+#     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
+
+#     #Offsets
+#     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+#     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+#     offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K) 
+
+#     #Vectorized coalesced load
+#     ##############################
+#     if data_contiguous:
+#         offs_bn = offs_n  
+#     else:
+#         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+#     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+#     offs_ak = offs_k
+#     offs_bk = offs_k
+#     ###############################
+
+#     b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
+#     q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
+
+#     #Inputs
+#     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
+#     a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
+    
+#     #Meta data stuff
+#     scales_ptrs = scales_ptr + offs_bn[None, :] * stride_meta_n
+#     zeros_ptrs  = zeros_ptr  + offs_bn[None, :] * stride_meta_n
+
+#     stride_mul: tl.constexpr     = BLOCK_SIZE_K / group_size
+#     BLOCK_SIZE_K_U: tl.constexpr = BLOCK_SIZE_K   * SPLIT_K
+#     BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
+
+#     if(zero_is_scalar):
+#         zero_scalar = tl.load(zeros_ptr, eviction_policy='evict_last')
+#     ####################################################################################
+    
+#     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+
+#     for k in range(num_pid_k):
+
+#         if(A_load_order == 0): #Early load
+#             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
+
+#         b = tl.load(b_ptrs, eviction_policy=b_evict)
+
+#         if(A_load_order == 1): #Early load
+#             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
+        
+#         #Meta-data loading policy
+#         if(W_group_mode > 0):
+#             k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
+
+#         if(W_group_mode >= 2): #[2, 3, 4]
+#             scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+#         else:
+#             scales = None
+
+#         if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
+#             if(zero_is_scalar):
+#                 zeros = zero_scalar
+#             else:
+#                 zeros = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+#         else:
+#             zeros = None
+        
+#         if(A_load_order == 2): #Mid load
+#             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
+
+#         # Unpack and dequantize
+#         b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
+#         #if(elements_per_sample > 1): b = b.to(tl.float32) #hack to enable pipelining with for-loop on triton==3.1.0
+
+#         if(A_load_order == 3): #Late load 
+#             a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
+        
+#         #Dot
+#         acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype, input_precision="tf32") 
+        
+#         #Advance
+#         a_ptrs += BLOCK_SIZE_K_U * stride_ak
+#         b_ptrs += BLOCK_SIZE_K_P * stride_bk
+
+#     ##################################################################
+#     #Channel-wise scaling
+#     if(channel_scale_mode == 1): #weight-only
+#         scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
+#         acc      = acc.to(meta_dtype) * scales_b[None, :]
+
+#     if(channel_scale_mode == 2): #activation-only
+#         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+#         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
+#         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
+
+#     if(channel_scale_mode == 3): #weight + activation
+#         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+#         scales_b = tl.load(scales_ptr   + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
+#         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
+
+#     ##################################################################
+#     #Output
+#     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+#     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+#     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+#     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+#     mask    = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
+
+#     if(SPLIT_K > 1):
+#         tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
+#     else:
+#         tl.store(c_ptrs, acc, mask=mask) 
+
 def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                                 W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
                                                 input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                                 channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
                                                 ) -> Tensor: 
     
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+    M, K, N = x.shape[0], x.shape[1], W_q.shape[1] #Over-K
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[1] * elements_per_sample #Over-N
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] * elements_per_sample #Over-N - transposed
+
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 
     M_CLOSEST = utils.get_closest_m(M)
