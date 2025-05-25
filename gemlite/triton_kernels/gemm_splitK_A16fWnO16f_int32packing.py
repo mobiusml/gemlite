@@ -78,34 +78,34 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         elif m <= 64: block_size_m = min(max(block_size_m, 32), 64) #m: [32, 64]
         elif m > 64 : block_size_m = 64
 
-        #Only use higher split_k values for smaller m
-        if(m >= 32): split_k = min(split_k, 8)
+        # #Only use higher split_k values for smaller m
+        # if(m >= 32): split_k = min(split_k, 8)
 
         #Constraint: BLOCK_SIZE_K >= group_size
         block_size_k = min(block_size_k, g)
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
 
-        #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
-        while split_k > 1 and not is_divisible(k, block_size_k * split_k):
-        #while split_k > 1 and k > block_size_k * split_k:
-            split_k //= 2
+        # #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
+        # while split_k > 1 and not is_divisible(k, block_size_k * split_k):
+        # #while split_k > 1 and k > block_size_k * split_k:
+        #     split_k //= 2
 
         #Nvidia
         # if(e > 1): num_stages = 1 #TODO: Remove this after fix?
         # if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
-        #Avoid OOM
-        while num_stages > 0:
-            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * min(b_sizeof, 2)) 
-            if(g < k): 
-                shared_mem += block_size_m * block_size_n * 2 * 4 #scales/zeros
-            shared_mem *= num_stages
-            if int(shared_mem) <= gpu_shared_memory:
-                break
-            num_stages -= 1
+        # #Avoid OOM
+        # while num_stages > 0:
+        #     shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * min(b_sizeof, 2)) 
+        #     if(g < k): 
+        #         shared_mem += block_size_m * block_size_n * 2 * 4 #scales/zeros
+        #     shared_mem *= num_stages
+        #     if int(shared_mem) <= gpu_shared_memory:
+        #         break
+        #     num_stages -= 1
 
-        if(num_stages == 0): continue #config too large
+        # if(num_stages == 0): continue #config too large
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, num_stages, num_warps)
         
@@ -201,25 +201,54 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 
 #Ultra max autotune
+# def get_max_autotune_config():
+#     _stages  = [1, 2, 4] 
+#     _configs = []
+#     for _a_load_order in [0]:
+#         for _M in [16, 32, 64]:
+#             for _N in [32, 64, 128, 256]:
+#                 for _K in [16, 32, 64, 128, 256]:
+#                     for _w in [1, 2, 4, 8]:
+#                         for _s in _stages:
+#                             for _sK in [1, 2, 4, 8, 16, 32]: 
+#                                 _configs.append(
+#                                         triton.Config(
+#                                             {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
+#                                             'GROUP_SIZE_M': 8, 'SPLIT_K': _sK, 'A_load_order': _a_load_order,
+#                                             }, num_stages=_s, num_warps=_w)
+#                                         )
+
+#     return _configs
+
+#
 def get_max_autotune_config():
-    _stages  = [1, 2, 4] 
-    _configs = []
+    configs = []
     for _a_load_order in [0]:
-        for _M in [16, 32, 64]:
-            for _N in [32, 64, 128, 256]:
-                for _K in [16, 32, 64, 128, 256]:
-                    for _w in [1, 2, 4, 8]:
-                        for _s in _stages:
-                            for _sK in [1, 2, 4, 8, 16, 32]: 
-                                _configs.append(
-                                        triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                            'GROUP_SIZE_M': 8, 'SPLIT_K': _sK, 'A_load_order': _a_load_order,
-                                            }, num_stages=_s, num_warps=_w)
-                                        )
+        for M in [16]:
+            for split_k in [1, 2, 4, 8, 16]:
+                for w, s in [(4, 4)]: #(4, 1)
+                    pre_hook = init_to_zero("c_ptr") if split_k > 1 else None
 
-    return _configs
+                    #Restrict BLOCK_SIZE to 128:
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
 
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K': split_k,  'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order':  _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order':  _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
+                    #REQUIRED SHAORED MEMORY + needs extra fp16 dequantized
+                    #(BLOCK_SIZE_M * BLOCK_SIZE_K * a_size + BLOCK_SIZE_K * BLOCK_SIZE_N * b_size) * num_stages + BLOCK_SIZE_K * BLOCK_SIZE_N * a_size
+
+    return configs
 
 def get_fast_autotune_config():
     configs = []
@@ -310,8 +339,8 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     pid_k = tl.program_id(axis=1)
 
     #Swizzle?
-    #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
-    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+    pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+    #pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
@@ -324,14 +353,29 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     #Vectorized coalesced load
     ##############################
-    if data_contiguous:
-        offs_bn = offs_n  
-    else:
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
-    offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    # if data_contiguous:
+    #     offs_bn = offs_n  
+    # else:
+    #     offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+    # offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    # offs_ak = offs_k
+    # offs_bk = offs_k
+    ###############################
+    join_version: tl.constexpr = False 
+    K_side_packing: tl.constexpr = True
+    transpose: tl.constexpr = False
+
+    #Vectorized coalesced load
+    offs_am = offs_m
+    offs_bn = offs_n
     offs_ak = offs_k
     offs_bk = offs_k
-    ###############################
+    
+    #offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+    if(K_side_packing):
+        offs_bn = offs_n
+    else:
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N)
 
     #A input
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)  
@@ -343,81 +387,68 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     # offs_bk = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     # b_ptrs  = b_ptr + (offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn) 
     # BLOCK_SIZE_K_P: tl.constexpr = (8) * SPLIT_K
-
-    join_version: tl.constexpr = True #False / True
-    transpose: tl.constexpr = False
-
+    
     if(transpose):
         _stride_bk, _stride_bn = stride_bn, stride_bk 
     else:
         _stride_bk, _stride_bn = stride_bk, stride_bn
 
-    ######################################################
-    #B input - K-side packing: change N to W_q.shape[1] 
-    q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None] 
-    if(join_version):
-        BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
-        offs_bk_j = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E) 
-        if(transpose):
-            b_ptrs  = b_ptr + offs_bk_j[None, :]  * _stride_bk + offs_bn[:, None] * _stride_bn 
+    #K-side
+    if(K_side_packing):
+        q_shift = ((offs_bk % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+        if(join_version):
+            BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+            offs_bk_j = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E) 
+            if(transpose):
+                b_ptrs  = b_ptr + offs_bk_j[None, :]  * _stride_bk + offs_bn[:, None] * _stride_bn 
+            else:
+                b_ptrs  = b_ptr + offs_bk_j[:, None] * _stride_bk + offs_bn[None, :] * _stride_bn
         else:
-            b_ptrs  = b_ptr + offs_bk_j[:, None] * _stride_bk + offs_bn[None, :] * _stride_bn
+            if(transpose):
+                b_ptrs  = b_ptr + ((offs_bk[None, :] // elements_per_sample) * _stride_bk + offs_bn[:, None] * _stride_bn) 
+            else:
+                b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * _stride_bk + offs_bn[None, :] * _stride_bn) 
+        BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
+
     else:
-        #orig version
-        if(transpose):
-            b_ptrs  = b_ptr + ((offs_bk[None, :] // elements_per_sample) * _stride_bk + offs_bn[:, None] * _stride_bn) 
+        #N-side
+        q_shift = ((offs_bn % elements_per_sample) * W_nbits).to(tl.int32)[None, :]
+        if(join_version):
+            BLOCK_SIZE_N_E: tl.constexpr = BLOCK_SIZE_N // elements_per_sample
+            offs_bn_j = pid_n * BLOCK_SIZE_N_E + tl.arange(0, BLOCK_SIZE_N_E) 
+            if(transpose):
+                b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + offs_bn_j[:, None] * _stride_bn 
+            else:
+                b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + offs_bn_j[None, :] * _stride_bn
         else:
-            b_ptrs  = b_ptr + ((offs_bk[:, None] // elements_per_sample) * _stride_bk + offs_bn[None, :] * _stride_bn) 
-
-    BLOCK_SIZE_K_P: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
-
-    ######################################################
-    # #B input - N-side packing: change N to W_q.shape[1] * elements_per_sample   
-    # q_shift = ((offs_bn % elements_per_sample) * W_nbits).to(tl.int32)[None, :] 
-    # if(join_version):
-    #     BLOCK_SIZE_N_E: tl.constexpr = BLOCK_SIZE_N // elements_per_sample
-    #     offs_bn_j = pid_n * BLOCK_SIZE_N_E + tl.arange(0, BLOCK_SIZE_N_E) 
-    #     if(transpose):
-    #         b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + offs_bn_j[:, None] * _stride_bn 
-    #     else:
-    #         b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + offs_bn_j[None, :] * _stride_bn
-    # else:
-    #     if(transpose):
-    #         b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + (offs_bn[:, None] // elements_per_sample) * _stride_bn 
-    #     else:
-    #         b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + (offs_bn[None, :] // elements_per_sample) * _stride_bn
-     
-    # BLOCK_SIZE_K_P: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
+            if(transpose):
+                b_ptrs  = b_ptr + offs_bk[None, :] * _stride_bk + (offs_bn[:, None] // elements_per_sample) * _stride_bn 
+            else:
+                b_ptrs  = b_ptr + offs_bk[:, None] * _stride_bk + (offs_bn[None, :] // elements_per_sample) * _stride_bn
+        BLOCK_SIZE_K_P: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
 
     ###########################################################
     #contiguous=False -> column-major: contiguous over K 
     #contiguous=True  -> row-major   : contiguous over N
-    
-    #A100: contiguous=False (K contiguous) works better for loading - but requires a large BLOCK_SIZE_K, however, group-size restricts BLOCK_SIZE_K.
-    #4090: contigguous=True (N contiguous) works better because loading works fine alng long N, which permits using smaller BLOCK_SIZE_K.
-    #4090 A16W4 gs=64 Llama3-8B | vLLM v1 benchmark time: in_len=1; out_len=1024; batch_size=16;
 
+    #4090 A16W4 gs=64 Llama3-8B | vLLM v1 benchmark time: in_len=1; out_len=1024; batch_size=16;
     #A8W8 reference with maxtune: 9.282703694188967 sec
 
-    #K-pack - 8-bit - data_contiguous False - join_version=False: 14.78 sec
-    #K-pack - 8-bit - data_contiguous True: - join_version=False:  9.87 sec / maxtune (no gs constraint): 9.392
-        #-> With scales/zeros - with gs constraint      : 11.599242393719033 -> Ultra max autotune: 10.766200583567842
-    #K-pack - 8-bit - data_contiguous True: - join_version=True: 
-        #-> With scales/zeros - with gs constraint      :  9.861628177110106 -> Ultra max autotune: 9.81272920719348 ## BEST
+    #Data loading alone:
+    #K-pack - 8-bit - data_contiguous True  - join_version=False - pipelined autotune: 9.499839762039482
+    #K-pack - 8-bit - data_contiguous True  - join_version=True  - pipelined autotune: 9.07108939215541
+    #K-pack -16-bit - data_contiguous True  - join_version=False - pipelined autotune: 8.688380078971386 #Better
+    #K-pack -32-bit - data_contiguous True  - join_version=False - pipelined autotune: 11.93273656181991 #CURRENT
 
-    #N-pack - 8-bit - data_contiguous True: - join_version=False: 61.94 sec
-    #N-pack - 8-bit - data_contiguous False - join_version=False: 9.155 sec / maxtune (no gs constraint): 8.63693984216079  
-        #-> With fake scales/zeros - no gs constraint  : 9.992836092365906
-        #-> With scales/zeros - no gs constraint       : 10.36775829298421
-        #-> With scales/zeros - with gs constraint     : 11.35291167432442 
+    #N-pack - 8-bit - data_contiguous False - join_version=False - pipelined autotune: 8.517502298951149 #----
+    #N-pack - 8-bit - data_contiguous False - join_version=True  - pipelined autotune: 9.691051078774034
+    #N-pack -16-bit - data_contiguous False - join_version=False - pipelined autotune: 8.891039250418544
+    #N-pack -32-bit - data_contiguous False - join_version=False - pipelined autotune: 11.80027175322175
 
-    #N-pack - 8-bit - data_contiguous False - join_version=True : 10.24 sec / maxtune (no gs constraint): 9.671921900194139
-        #-> With scales/zeros - with gs constraint     : 10.723965570470318 
-    #N-pack - 32-bit- data_contiguous False - join_version=False: 11.79 sec / maxtune (no gs constraint): 11.56746362559497
-    #N-pack - 8-bit - data_contiguous False - join_version=False + transpose=True / maxtune (no gs constraint): 9.1976491483859
-    #N-pack - 8-bit - data_contiguous True  - join_version=False + transpose=True / maxtune (no gs constraint): 9.2181997213047  
-    
+    #K-pack - 8-bit - data_contiguous False / transpose - join_version=False - pipelined autotune: 12.352661950141192
+    #K-pack -16-bit - data_contiguous False / transpose - join_version=False - pipelined autotune: 12.51
 
+    #End-2-end
 
     ###########################################################
 
@@ -431,7 +462,10 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     for k in range(num_pid_k):
 
-        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
+        # a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
+        # b = tl.load(b_ptrs, eviction_policy=b_evict)
+
+        a = tl.load(a_ptrs, eviction_policy=a_evict) 
         b = tl.load(b_ptrs, eviction_policy=b_evict)
 
         if(transpose):
@@ -440,18 +474,20 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
         if(join_version):
             if(elements_per_sample == 2):
                 #K-side
-                #b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False) 
+                if(K_side_packing):
+                    b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False) 
+                else:
                 #N-side
-                b = tl.join(b, b).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
+                    b = tl.join(b, b).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
 
 
-        k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
-        scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-        zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        # k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
+        # scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        # zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
 
-        # Unpack and dequantize
-        b = (b >> q_shift) & unpack_mask
-        b = tl.fma(b.to(meta_dtype), scales, zeros)
+        # # Unpack and dequantize
+        # b = (b >> q_shift) & unpack_mask
+        # b = tl.fma(b.to(meta_dtype), scales, zeros)
 
         #Dot
         acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) 
@@ -657,6 +693,7 @@ def gemm_splitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1] #Over-K
     #M, K, N = x.shape[0], x.shape[1], W_q.shape[1] * elements_per_sample #Over-N
     #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] * elements_per_sample #Over-N - transposed
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] #Over-K - transposed
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 

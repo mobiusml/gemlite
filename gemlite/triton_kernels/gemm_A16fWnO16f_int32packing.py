@@ -339,6 +339,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1] #Over-K
     #M, K, N = x.shape[0], x.shape[1], W_q.shape[1] * elements_per_sample #Over-N
     #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] * elements_per_sample #Over-N - transposed
+    #M, K, N = x.shape[0], x.shape[1], W_q.shape[0] #Over-K - transposed
 
     M_CLOSEST = utils.get_closest_m(M)
 

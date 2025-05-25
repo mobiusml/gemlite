@@ -357,7 +357,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         #K-packing default
         pack_over = 'K' #N, K
         contiguous = True #False: col-major (K), True: row-major (N)
-        packing_bitwidth = 8
+        packing_bitwidth = 16
         transpose=True # True: N-packing: (K x N//e) / False: (N//e x K)
 
         # #N-packing A100
@@ -365,6 +365,14 @@ class GemLiteLinearTriton(torch.nn.Module):
         # contiguous = False #False: col-major (K), True: row-major (N)
         # packing_bitwidth = 8
         # transpose=True# True: N-packing: (K x N//e) / False: (N//e x K)
+
+        # #N-packing A100 - K with transpose
+        # pack_over = 'K' #N, K
+        # contiguous = False #False: col-major (K), True: row-major (N)
+        # packing_bitwidth = 16
+        # transpose=False # True: N-packing: (K x N//e) / False: (N//e x K)
+        # #requires: W_q = W_q.T.contiguous().T
+
 
         #Set packing bitwidth
         if(packing_bitwidth is None):
@@ -398,6 +406,12 @@ class GemLiteLinearTriton(torch.nn.Module):
             )  # Over-K
             if contiguous is None:
                 contiguous = True
+
+            ###########################
+            if(pack_over == 'K' and transpose==False):
+                self.W_q = self.W_q.T.contiguous().T
+            ###########################
+
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
