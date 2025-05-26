@@ -92,23 +92,23 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #contiguous = True
 def get_max_autotune_config():
-    _configs = []
-    for _A_load_order in [0]: 
-        for _dot_prod_mode in [0]:
-            for _M in [1]: #ONLY 1 allowed here
-                for _N in [32, 64, 128, 256, 512]: #contiguous: [128, 256, 512] / non-contiguous: [16, 32, 64, 128, 256, 512, 1024, 2048]
-                    for _K in [8, 16, 32, 64] : #contiguous: [8, 16, 32, 64] / non-contiguous: [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
-                        for _w in [1, 2, 4]:
-                            for _s in [1, 2]: 
+    configs = []
+    for A in [0]: 
+        for D in [0]:
+            for w in [1, 2, 4]:
+                for s in [1, 2]: 
+                    for M in [1]: #ONLY 1 allowed here
+                        for N in [32, 64, 128, 256, 512]: #contiguous: [128, 256, 512] / non-contiguous: [16, 32, 64, 128, 256, 512, 1024, 2048]
+                            for K in [8, 16, 32, 64] : #contiguous: [8, 16, 32, 64] / non-contiguous: [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
                                 _configs.append(
                                         triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                            'A_load_order': _A_load_order, 'dot_prod_mode': _dot_prod_mode}, 
-                                            num_stages=_s, num_warps=_w, 
+                                            {'BLOCK_SIZE_M': M, 'BLOCK_SIZE_N': N, 'BLOCK_SIZE_K': K, 
+                                            'A_load_order': A, 'dot_prod_mode': D}, 
+                                            num_stages=s, num_warps=w, 
                                             )
                                         )
 
-    return _configs
+    return configs
 
 def get_fast_autotune_config():
     configs = []

@@ -86,26 +86,29 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
 
-        # #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
-        # while split_k > 1 and not is_divisible(k, block_size_k * split_k):
-        # #while split_k > 1 and k > block_size_k * split_k:
-        #     split_k //= 2
+        #Constraint: K needs to be divisible by BLOCK_SIZE_K * SPLIT_K 
+        while split_k > 1 and not is_divisible(k, block_size_k * split_k):
+        #while split_k > 1 and k > block_size_k * split_k:
+            split_k //= 2
 
         #Nvidia
-        # if(e > 1): num_stages = 1 #TODO: Remove this after fix?
-        # if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+        if(e > 1): num_stages = min(num_stages, 4) #Limit num stages when data is packed
+        if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
 
-        # #Avoid OOM
-        # while num_stages > 0:
-        #     shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * min(b_sizeof, 2)) 
-        #     if(g < k): 
-        #         shared_mem += block_size_m * block_size_n * 2 * 4 #scales/zeros
-        #     shared_mem *= num_stages
-        #     if int(shared_mem) <= gpu_shared_memory:
-        #         break
-        #     num_stages -= 1
+        #Avoid OOM
+        while num_stages > 0:
+            #shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * min(b_sizeof, 2)) 
+            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof) 
+            #if(g < k): 
+                #shared_mem += block_size_m * block_size_n * 2 * 4 #scales/zeros
+            if(e > 1): 
+                shared_mem += block_size_k * block_size_n * a_sizeof
+            shared_mem *= num_stages
+            if int(shared_mem) <= gpu_shared_memory:
+                break
+            num_stages -= 1
 
-        # if(num_stages == 0): continue #config too large
+        if(num_stages == 0): continue #config too large
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, num_stages, num_warps)
         
@@ -222,33 +225,24 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #
 def get_max_autotune_config():
+    _stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
     configs = []
-    for _a_load_order in [0]:
-        for M in [16]:
-            for split_k in [1, 2, 4, 8, 16]:
-                for w, s in [(4, 4)]: #(4, 1)
-                    pre_hook = init_to_zero("c_ptr") if split_k > 1 else None
-
-                    #Restrict BLOCK_SIZE to 128:
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'SPLIT_K': split_k,  'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order': _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order':  _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    #configs.append(triton.Config({'BLOCK_SIZE_M':M, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':128, 'SPLIT_K': split_k, 'GROUP_SIZE_M': 8, 'A_load_order':  _a_load_order}, num_warps=w, num_stages=s, pre_hook=pre_hook))
-                    #REQUIRED SHAORED MEMORY + needs extra fp16 dequantized
-                    #(BLOCK_SIZE_M * BLOCK_SIZE_K * a_size + BLOCK_SIZE_K * BLOCK_SIZE_N * b_size) * num_stages + BLOCK_SIZE_K * BLOCK_SIZE_N * a_size
-
+    for A in [0, 2]:
+        for w in [4, 8]:
+            for s in _stages:
+                for M in [16, 32, 64]:
+                    for N in [32, 64, 128, 256, 512]:
+                        for K in [32, 64, 128, 256, 512]:
+                            for split_k in [1, 2, 4, 8, 16]:
+                                configs.append(
+                                    triton.Config(
+                                        {"BLOCK_SIZE_M": M, "BLOCK_SIZE_N": N, "BLOCK_SIZE_K": K, 
+                                        "SPLIT_K": split_k, "GROUP_SIZE_M": 8, "A_load_order": A},
+                                        num_warps=w, num_stages=s,
+                                    )
+                                )
     return configs
+
 
 def get_fast_autotune_config():
     configs = []
@@ -344,7 +338,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
+    num_pid_k: tl.constexpr = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
 
     #Offsets
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
@@ -361,7 +355,7 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
     # offs_ak = offs_k
     # offs_bk = offs_k
     ###############################
-    join_version: tl.constexpr = False 
+    join_version: tl.constexpr = False
     K_side_packing: tl.constexpr = True
     transpose: tl.constexpr = False
 
@@ -436,13 +430,19 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     #Data loading alone:
     #K-pack - 8-bit - data_contiguous True  - join_version=False - pipelined autotune: 9.499839762039482
+        #-> with scales/zeros gs=64: (swizzle): 11.51298869419843
     #K-pack - 8-bit - data_contiguous True  - join_version=True  - pipelined autotune: 9.07108939215541
-    #K-pack -16-bit - data_contiguous True  - join_version=False - pipelined autotune: 8.688380078971386 #Better
+        #-> with scales/zeros gs=64: (swizzle): 12.95811859597452
+    #K-pack -16-bit - data_contiguous True  - join_version=False - pipelined autotune: 8.688380078971386
+        #-> with scales/zeros gs=64: (swizzle): 10.457536030560732 - (linear): 10.407074047625064 #->>> BEST
     #K-pack -32-bit - data_contiguous True  - join_version=False - pipelined autotune: 11.93273656181991 #CURRENT
+        #-> with scales/zeros gs=64: (swizzle): 11.282533014984802
 
-    #N-pack - 8-bit - data_contiguous False - join_version=False - pipelined autotune: 8.517502298951149 #----
+    #N-pack - 8-bit - data_contiguous False - join_version=False - pipelined autotune: 8.517502298951149
+        #-> with scales/zeros gs=64: (swizzle): 11.222154948767274
     #N-pack - 8-bit - data_contiguous False - join_version=True  - pipelined autotune: 9.691051078774034
     #N-pack -16-bit - data_contiguous False - join_version=False - pipelined autotune: 8.891039250418544
+        #-> with scales/zeros gs=64: (swizzle): 10.992298105731606
     #N-pack -32-bit - data_contiguous False - join_version=False - pipelined autotune: 11.80027175322175
 
     #K-pack - 8-bit - data_contiguous False / transpose - join_version=False - pipelined autotune: 12.352661950141192
@@ -462,11 +462,11 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 
     for k in range(num_pid_k):
 
-        # a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
-        # b = tl.load(b_ptrs, eviction_policy=b_evict)
-
-        a = tl.load(a_ptrs, eviction_policy=a_evict) 
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict) 
         b = tl.load(b_ptrs, eviction_policy=b_evict)
+
+        # a = tl.load(a_ptrs, eviction_policy=a_evict) 
+        # b = tl.load(b_ptrs, eviction_policy=b_evict)
 
         if(transpose):
             b = tl.trans(b)
@@ -481,13 +481,13 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
                     b = tl.join(b, b).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
 
 
-        # k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
-        # scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
-        # zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        k_m    = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32) 
+        scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy) 
+        zeros  = tl.load(zeros_ptrs  + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
 
         # # Unpack and dequantize
-        # b = (b >> q_shift) & unpack_mask
-        # b = tl.fma(b.to(meta_dtype), scales, zeros)
+        b = ((b >> q_shift) & unpack_mask)
+        b = tl.fma(b.to(meta_dtype), scales, zeros)
 
         #Dot
         acc = tl.dot(a, b.to(input_dtype), acc=acc, out_dtype=acc_dtype) 
@@ -567,8 +567,10 @@ def gemm_splitK_A16fWnO16f_int32packing_kernel(
 #     pid_k = tl.program_id(axis=1)
 
 #     #Swizzle?
-#     #pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
-#     pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+#     if(elements_per_sample > 1):
+#         pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, None)
+#     else:
+#         pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
 
 #     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
 #     num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
