@@ -91,24 +91,22 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         )
 
 #contiguous = True
-def get_max_autotune_config():
-    _configs = []
-    for _A_load_order in [0]: 
-        for _dot_prod_mode in [0]:
-            for _M in [1]: #ONLY 1 allowed here
-                for _N in [32, 64, 128, 256, 512]: #contiguous: [128, 256, 512] / non-contiguous: [16, 32, 64, 128, 256, 512, 1024, 2048]
-                    for _K in [8, 16, 32, 64] : #contiguous: [8, 16, 32, 64] / non-contiguous: [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
-                        for _w in [1, 2, 4]:
-                            for _s in [1, 2]: 
-                                _configs.append(
-                                        triton.Config(
-                                            {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 
-                                            'A_load_order': _A_load_order, 'dot_prod_mode': _dot_prod_mode}, 
-                                            num_stages=_s, num_warps=_w, 
-                                            )
-                                        )
-
-    return _configs
+def get_max_autotune_config(): #~20 sec/shape
+    configs = []
+    for A in [0, 1]: 
+        for D in [0]:
+            for w in [1, 2, 4]:
+                for s in [1, 2]: 
+                    for M in [1]: #ONLY 1 allowed here
+                        for N in [32, 64, 128, 256, 512]: #contiguous: [128, 256, 512] / non-contiguous: [16, 32, 64, 128, 256, 512, 1024, 2048]
+                            for K in [8, 16, 32, 64] : #contiguous: [8, 16, 32, 64] / non-contiguous: [8, 16, 32, 64, 128, 256, 512, 1024, 2048]
+                                configs.append(
+                                    triton.Config(
+                                        {"BLOCK_SIZE_M": M, "BLOCK_SIZE_N": N, "BLOCK_SIZE_K": K, "A_load_order": A, "dot_prod_mode": D},
+                                        num_stages=s, num_warps=w,
+                                    )
+                                )
+    return configs
 
 def get_fast_autotune_config():
     configs = []
@@ -134,7 +132,7 @@ def get_fast_autotune_config():
 
 
 def get_default_config():
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0},  num_warps=1, num_stages=1)
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1)
     return [config]
 
 AUTOTUNE_SETTING = AUTOTUNE.GEMV_REVSPLITK
@@ -195,7 +193,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     C is of shape (M, N): float16 or bfloat16 depending on the input A
     scales and zeros is of shape (group_size, N): float16 or bfloat16
     """    
-    ##############################
+    
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1) * 2
     pid_m, pid_n = pid % M, pid // M
@@ -203,9 +201,10 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M) 
     offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    
+    ############################################################################################################
+    #Offsets
 
-    #Vectorized coalesced load
-    ##############################
     if data_contiguous:
         offs_bn = offs_n  
     else:
@@ -213,12 +212,13 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
     offs_ak = offs_k
     offs_bk = offs_k
-    ###############################
-
+    
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_k[None, :] * stride_ak  
     b_ptrs  = b_ptr + ((offs_k[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn) 
     q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
 
+    #Stage 0: Load scales/zeros
+    #-----------------------------------------------------------------------------------------------------------
     #Load meta data first, for two passes
     if(W_group_mode > 0):
         k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
@@ -236,7 +236,9 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     else:
         zeros = None
 
-    ##################################################################
+    ############################################################################################################
+    #Stage 1
+    #-----------------------------------------------------------------------------------------------------------
     #Load
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy=a_evict).reshape((BLOCK_SIZE_K, 1), can_reorder=False)
@@ -262,6 +264,8 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     a_ptrs += BLOCK_SIZE_K * stride_ak
     b_ptrs += (BLOCK_SIZE_K // elements_per_sample) * stride_bk
 
+    #Stage 2
+    #-----------------------------------------------------------------------------------------------------------
     if(A_load_order == 0):
         a = tl.load(a_ptrs, eviction_policy=a_evict).reshape((BLOCK_SIZE_K, 1), can_reorder=False)
     
@@ -283,7 +287,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
         acc += tl.sum(a * b.to(input_dtype), axis=0, keep_dims=True)
 
     if(dump_b_val > 0): acc /= dump_b_val
-    ##################################################################
+    ############################################################################################################
     #Channel-wise scaling
     if(channel_scale_mode == 1): #weight-only
         scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
@@ -299,7 +303,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
         scales_b = tl.load(scales_ptr   + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
-    ##################################################################
+    ############################################################################################################
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
