@@ -111,16 +111,19 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
 @torch.compile(fullgraph=True)
 def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
-    if(fp32_scale):
+    if fp32_scale:
         x = x.to(torch.float32, copy=False)
-    x_shape  = x.shape
-    out_x    = x.view(-1, x.shape[-1]) 
+    x_shape = x.shape
+    out_x = x.view(-1, x.shape[-1])
     scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
     # if(fp32_scale):
     #     scales_x = scales_x.to(torch.float32)
     scales_x.div_(max_val)
     out_x = x / scales_x
-    out_x.round_()    
+
+    if not w_dtype.is_floating_point:
+        out_x.round_()
+
     out_x = out_x.to(dtype=w_dtype)
     return out_x.view(x_shape), scales_x
 
@@ -128,12 +131,13 @@ def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scal
 def scale_activations_per_token_kernel(
     x_ptr, scale_ptr, y_ptr, 
     M, K,
-    stride_m, stride_k, stride_sm, 
+    stride_m, stride_k, stride_sm,
+    ROUND: tl.constexpr, 
     UNROLL: tl.constexpr,
     max_val: tl.constexpr,
     fp32_scale: tl.constexpr, 
     BLOCK_M: tl.constexpr, 
-    BLOCK_K: tl.constexpr 
+    BLOCK_K: tl.constexpr,
 ):
     pid_m = tl.program_id(0) * UNROLL
     pid_k = tl.program_id(1)
@@ -141,44 +145,51 @@ def scale_activations_per_token_kernel(
     offs_k  = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
     offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
 
-    for m in range(UNROLL):    
-        mask    = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
+    for m in range(UNROLL):
+        mask = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
         in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
         x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
-        if(fp32_scale):
+        if fp32_scale:
             x = x.to(tl.float32)
 
         scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True)
         scales_x /= max_val
         x /= scales_x
-        x = libdevice.round(x)
+
+        if ROUND:
+            x = libdevice.round(x)
 
         tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
         tl.store(y_ptr + in_ptrs, x, mask=mask)
-        offs_m += BLOCK_M 
-
+        offs_m += BLOCK_M
 
 def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     x_shape = x.shape
-    x       = x.view(-1, x.shape[-1]) 
-    M, K    = x.shape
-    scales = torch.empty((M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device)
-    y      = torch.empty((M, K), dtype=w_dtype, device=x.device)
+    x = x.view(-1, x.shape[-1])
+    M, K = x.shape
+    scales = torch.empty(
+        (M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device
+    )
+    y = torch.empty((M, K), dtype=w_dtype, device=x.device)
 
-    UNROLL  = 1 #max(1, M // 128)
-    BLOCK_M = 1 
+    UNROLL = 1  # max(1, M // 128)
+    BLOCK_M = 1
     BLOCK_K = triton.next_power_of_2(K)
-    grid    = (triton.cdiv(M, BLOCK_M * UNROLL), triton.cdiv(K, BLOCK_K)) 
+    grid = (triton.cdiv(M, BLOCK_M * UNROLL), triton.cdiv(K, BLOCK_K))
 
     scale_activations_per_token_kernel[grid](
-        x, scales, y,
-        M, K,
-        x.stride(0), 
+        x,
+        scales,
+        y,
+        M,
+        K,
+        x.stride(0),
         x.stride(1),
         scales.stride(0),
         max_val=max_val,
         fp32_scale=fp32_scale,
+        ROUND=not w_dtype.is_floating_point,
         UNROLL=UNROLL,
         BLOCK_M=BLOCK_M,
         BLOCK_K=BLOCK_K,
@@ -187,6 +198,7 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
     )
 
     return y.view(x_shape), scales
+
 
 scale_activations = scale_activations_per_token_triton
 #######################################################################################################################

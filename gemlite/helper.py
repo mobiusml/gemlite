@@ -10,7 +10,7 @@ from gemlite.core import GemLiteLinearTriton, DType, GEMLITE_ACC_DTYPE, TORCH_TO
 from gemlite.triton_kernels.utils import M_MAPPING
 ############################################################################################################################################################
 #16-bit activations / 8-bit weigths
-class A16W8:
+class A16W8: #INT8 weights
     def __init__(self, device='cuda:0'):
         self.device = device
 
@@ -21,8 +21,8 @@ class A16W8:
             dtype = weight.dtype
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-            scales = torch.abs(weight.float()).amax(axis=1, keepdim=True) / 127.0
-            W_q    = torch.round(weight / scales).to(device=self.device, dtype=torch.int8)
+            scales = weight.float().abs().amax(axis=1, keepdim=True) / 127.0
+            W_q    = (weight / scales).round().to(device=self.device, dtype=torch.int8)
             bias   = bias.clone() if (bias is not None) else None
             scales = scales.to(device=self.device, dtype=dtype)
         else:
@@ -145,8 +145,12 @@ class A8W8_dynamic:
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
         
         weight = weight.float() * self.weight_scale
-        scales = torch.abs(weight).amax(axis=1, keepdim=True) / max_val
-        W_q    = torch.round(weight / scales).to(device=self.device, dtype=w_dtype)
+        scales = weight.abs().amax(axis=1, keepdim=True) / max_val
+        W_q    = weight / scales
+        if(w_dtype.is_floating_point):
+            W_q = W_q.to(device=self.device, dtype=w_dtype)
+        else:
+            W_q = W_q.round_().to(device=self.device, dtype=w_dtype)
         scales = scales.to(device=self.device, dtype=torch.float32)
         bias   = bias.clone() if (bias is not None) else None
 
