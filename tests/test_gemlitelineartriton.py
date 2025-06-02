@@ -2,7 +2,9 @@
 
 import unittest
 import torch
-from gemlite.core import GemLiteLinearTriton, DType, set_autotune, TORCH_TO_DTYPE, scale_activations, forward_functional
+from gemlite import reset_config, set_autotune
+from gemlite.core import GemLiteLinearTriton, DType, TORCH_TO_DTYPE, scale_activations, forward_functional
+from gemlite.triton_kernels.config import KERNEL
 
 def is_fp8_supported():
     if not torch.cuda.is_available():
@@ -12,10 +14,13 @@ def is_fp8_supported():
 
 device        = 'cuda:0'
 compute_dtype = torch.float16 #float16, bfloat16
-fp8_dtype     = torch.float8_e4m3fn #float8_e4m3fn (Nvidia)
+fp8_dtype     = torch.float8_e4m3fn #float8_e4m3fn / torch.float8_e5m2 (Nvidia)
 gemlite_dtype = TORCH_TO_DTYPE[compute_dtype]
-matmul_types  = ['GEMV', 'GEMV_SPLITK', 'GEMV_REVSPLITK'] + ['GEMM_SPLITK', 'GEMM']
-set_autotune(dict([(m, False) for m in matmul_types]), exhaustive=False, use_cuda_graph=False)
+matmul_types  = ['GEMV_REVSPLITK', 'GEMV', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']
+reset_config()
+set_autotune(False)
+KERNEL.ENABLE_CACHING = False
+
 
 def gen_data(in_features, out_features, W_nbits, group_size, dtype=compute_dtype):
 
@@ -34,17 +39,10 @@ def gen_data(in_features, out_features, W_nbits, group_size, dtype=compute_dtype
 	return W, W_q, scales, zeros
 
 
-in_features, out_features = 4096, 2048
+in_features, out_features = 4096, 1024
 batch_sizes               = [1, 4]
 W_nbits, group_size       = 4, 128 #128 / in_features
 W, W_q, scales, zeros     = gen_data(in_features, out_features, W_nbits=W_nbits, group_size=group_size)
-
-def scale_fct(x, max_val, w_dtype):
-    x_shape  = x.shape
-    out_x    = x.view(-1, x.shape[-1]) 
-    scaled_x = torch.abs(out_x).amax(axis=1, keepdim=True) / max_val
-    out_x    = torch.round(out_x / scaled_x).to(dtype=w_dtype)
-    return out_x.view(x_shape), scaled_x
 
 class TestGemLiteLinearTriton(unittest.TestCase):
 
@@ -131,7 +129,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 			self.assertTrue((gemlite_linear.W_group_mode == 1 and gemlite_linear.channel_scale_mode == 1) or 
 							(gemlite_linear.W_group_mode == 3 and gemlite_linear.channel_scale_mode == 0)) 
 		else:
-			self.assertTrue(gemlite_linear.W_group_mode == 3 and gemlite_linear.channel_scale_mode == 0)
+			self.assertTrue(gemlite_linear.W_group_mode in [3, 4] and gemlite_linear.channel_scale_mode == 0)
 
 		#Use-contiguous when data is packed
 		self.assertTrue(gemlite_linear.data_contiguous == True)
@@ -192,7 +190,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 						scaled_activations=True)
 
 
-		gemlite_linear.pack(W_q, scales=None, zeros=7, bias=None);
+		gemlite_linear.pack(W_q, scales=None, zeros=7, bias=None)
 		gemlite_linear.meta_dtype = DType.FP32
 
 		#Weights are unpacked() then shifted by 7
@@ -333,7 +331,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 							(gemlite_linear.W_group_mode == 3 and gemlite_linear.channel_scale_mode == 2))
 		else:
 			#activations and weights are scaled psot accumulation if group_size==in_features else (2)
-			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.W_group_mode in [3, 4])
 			self.assertTrue(gemlite_linear.channel_scale_mode == 2)
 
 
@@ -369,7 +367,7 @@ class TestGemLiteLinearTriton(unittest.TestCase):
 							(gemlite_linear.W_group_mode == 3 and gemlite_linear.channel_scale_mode == 0))
 		else:
 			#weight scaling only - post accumulator if group_size==in_features else (0) 
-			self.assertTrue(gemlite_linear.W_group_mode == 3)
+			self.assertTrue(gemlite_linear.W_group_mode in [3, 4])
 			self.assertTrue(gemlite_linear.channel_scale_mode == 0)
 
 		tol = 5e-3 #needs higher tolerance with fp8

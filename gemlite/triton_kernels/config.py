@@ -3,33 +3,55 @@
 import sys
 if sys.version_info < (3, 12): import imp
 else: import importlib as imp
+from typing import Union
 
-class AUTOTUNE_ENABLE:
-	GEMV           = True
-	GEMV_REVSPLITK = True
-	GEMV_SPLITK    = True
-	GEMM_SPLITK    = True
-	GEMM           = True
+MATMUL_DTYPES = ['GEMV', 'GEMV_REVSPLITK', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']
+
+class AUTOTUNE:
+	GEMV           = "fast" #"max", "fast", "default" 
+	GEMV_REVSPLITK = "fast"
+	GEMV_SPLITK    = "fast"
+	GEMM_SPLITK    = "fast"
+	GEMM           = "fast"
 	USE_CUDA_GRAPH = False
+
+class KERNEL:
+	ENABLE_CACHING = False
+	CACHE_SIZE     = 256 
 
 def reload_all_modules():
 	#Avoid circular imports
-	from . import gemv_A16fWnO16f_int32packing
 	from . import gemm_A16fWnO16f_int32packing
 	from . import gemm_splitK_A16fWnO16f_int32packing
 	from . import gemm_splitK_persistent_A16fWnO16f_int32packing
+	from . import gemv_A16fWnO16f_int32packing
+	from . import gemv_splitK_A16fWnO16f_int32packing
 	from . import gemv_revsplitK_A16fWnO16f_int32packing
 
-	imp.reload(gemv_A16fWnO16f_int32packing)
 	imp.reload(gemm_A16fWnO16f_int32packing)
 	imp.reload(gemm_splitK_A16fWnO16f_int32packing)
 	imp.reload(gemm_splitK_persistent_A16fWnO16f_int32packing)
+	imp.reload(gemv_A16fWnO16f_int32packing)
+	imp.reload(gemv_splitK_A16fWnO16f_int32packing)
 	imp.reload(gemv_revsplitK_A16fWnO16f_int32packing)
 
-def set_autotune(matmul_dtypes: dict, **kwargs):
-	for key in matmul_dtypes:
-		setattr(AUTOTUNE_ENABLE, key, matmul_dtypes[key])
-	reload_all_modules()
+def set_kernel_caching(enable: bool):
+	KERNEL.ENABLE_CACHING = enable
+
+def set_autotune(config: Union[dict, str, bool], **kwargs):
+	if(type(config) == str):
+		for key in MATMUL_DTYPES:
+			setattr(AUTOTUNE, key, config.lower())
+
+	if(type(config) == bool):
+		for key in MATMUL_DTYPES:
+			setattr(AUTOTUNE, key, "max" if config else "default")
+
+	if(type(config) == dict):
+		for key in config:
+			setattr(AUTOTUNE, key, config[key])
 
 	if('use_cuda_graph' in kwargs):
-		AUTOTUNE_ENABLE.CUDA_GRAPH: bool = kwargs['use_cuda_graph']
+		setattr(AUTOTUNE, 'USE_CUDA_GRAPH', bool(kwargs['use_cuda_graph']))
+
+	reload_all_modules()

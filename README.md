@@ -66,6 +66,12 @@ from gemlite import DType, GemLiteLinear
 #Reset the default cache to get the best perf but warm-up will be slow. 
 #gemlite.reset_cache()
 
+#Set autotune mode: fast:faste start-up (default), max: long startt-up but best perf, default/False: no autotune
+#gemlite.set_autotune("fast")
+
+#Enable kernel caching: makes some kernels faster, but might break with some torch.compile settings
+#gemlite.set_kernel_caching(True)
+
 #Main constructor
 gemlite_linear = GemLiteLinear(
     W_nbits, #weight quantization bitwidth. supported: [8, 4, 2, 1]
@@ -77,7 +83,7 @@ gemlite_linear = GemLiteLinear(
     scaled_activations=False, #If the activations are scaled or not
 )
 
-#Packing: we follow the same format as hqq (https://github.com/mobiusml/hqq/)
+#Packing: we follow the hqq format (W_q - zeros) * scales ~ W (https://github.com/mobiusml/hqq/)
 gemlite_linear.pack(W_q, scales, zeros, bias)
 
 #Forward
