@@ -60,9 +60,10 @@ class A16W8: #INT8 weights
 
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', post_scale=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, post_scale=False):
         self.post_scale = post_scale
         self.device     = device
+        self.packing_bitwidth = packing_bitwidth
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
 
@@ -87,6 +88,7 @@ class A16Wn:
                             zeros.to(device=self.device, dtype=dtype), 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
                             contiguous=True, 
+                            packing_bitwidth=self.packing_bitwidth,
                             ) 
 
         if(group_size == in_features):
@@ -200,10 +202,11 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', post_scale=False, use_fp8e5=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, post_scale=False, use_fp8e5=False):
         super().__init__()
         self.post_scale = post_scale
         self.device     = device
+        self.packing_bitwidth = packing_bitwidth
         if(use_fp8e5):
             self.fp8 = torch.float8_e5m2
         else:
@@ -238,6 +241,7 @@ class A8Wn_dynamic(A16Wn):
                             zeros.to(device=self.device, dtype=dtype), 
                             bias=bias.to(device=self.device, dtype=dtype) if bias is not None else None, 
                             contiguous=True,
+                            packing_bitwidth=self.packing_bitwidth,
                             ) 
 
         if(fp32_scale):
