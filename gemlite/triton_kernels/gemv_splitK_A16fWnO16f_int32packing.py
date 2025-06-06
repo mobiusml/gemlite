@@ -101,19 +101,18 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #contiguous=False
 def get_max_autotune_config():
     _configs = []
-    for _A_load_order in [0, 1]: #[0, 1, 2, 3]
-        for _dot_prod_mode in [0]: #1: breaks with fp8 
-            for _M in [1]: 
-                for _N in [1, 2, 4, 8, 16, 32, 64]:
-                    for _K in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
-                        for _w in [4, 8]:
-                            for _s in [1, 2]:
-                                for _sK in [1]:
+    for A in [0, 1]: #[0, 1, 2, 3]
+        for D in [0]: #1: breaks with fp8
+            for w in [4, 8]:
+                for s in [1, 2]:
+                    for M in [1]: 
+                        for N in [1, 2, 4, 8, 16, 32, 64]:
+                            for K in [32, 64, 128, 256, 512, 1024, 2048, 4096]:
+                                for SK in [1]:
                                     _configs.append(
                                             triton.Config(
-                                                {'BLOCK_SIZE_M': _M, 'BLOCK_SIZE_N': _N, 'BLOCK_SIZE_K': _K, 'GROUP_SIZE_M': 8, 'SPLIT_K': _sK,
-                                                'A_load_order': _A_load_order, 'dot_prod_mode': _dot_prod_mode,
-                                                }, num_stages=_s, num_warps=_w,)
+                                                {'BLOCK_SIZE_M': M, 'BLOCK_SIZE_N': N, 'BLOCK_SIZE_K': K, 'GROUP_SIZE_M': 8, 'SPLIT_K': SK,
+                                                'A_load_order': A, 'dot_prod_mode': D}, num_stages=s, num_warps=w)
                                             )
 
     return _configs
