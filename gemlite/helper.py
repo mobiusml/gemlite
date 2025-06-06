@@ -49,7 +49,7 @@ class A16W8: #INT8 weights
                         output_dtype=gemlite_dtype, 
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias, contiguous=False)
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
         gemlite_linear.W_group_mode       = 2
         gemlite_linear.channel_scale_mode = 0
         return gemlite_linear
@@ -93,7 +93,7 @@ class A16Wn:
                         scaled_activations=False,
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros, bias=bias, contiguous=True, packing_bitwidth=self.packing_bitwidth) 
+        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth) 
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -184,7 +184,7 @@ class A8W8_dynamic:
                         scaled_activations=True,
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias, contiguous=False)
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
         gemlite_linear.meta_dtype         = DType.FP32
         gemlite_linear.W_group_mode       = 0
         gemlite_linear.channel_scale_mode = 3 #activation[:,None] + weight[None,:]
@@ -255,7 +255,7 @@ class A8Wn_dynamic(A16Wn):
                         scaled_activations=True,
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros, bias=bias, contiguous=True, packing_bitwidth=self.packing_bitwidth, fma_mode=False) 
+        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth, fma_mode=False) 
 
         if(fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
@@ -331,7 +331,7 @@ class A16W158:
         W_q = W_q.to(self.device)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
-        gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias, contiguous=True)
+        gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias)
         #post-scale
         gemlite_linear.W_group_mode       = 1 #shift only
         gemlite_linear.channel_scale_mode = 1 #weight-only
@@ -381,7 +381,7 @@ class A8W158:
         W_q = W_q.to(self.device)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
-        gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias, contiguous=True)
+        gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias)
 
         if(self.fp32_scale):
             gemlite_linear.meta_dtype = DType.FP32
