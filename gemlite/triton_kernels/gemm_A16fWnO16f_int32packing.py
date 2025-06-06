@@ -18,7 +18,7 @@ from .utils import (
     next_power_of_2,
 )
 
-KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'a_sizeof', 'b_sizeof'] 
+KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'type_id', 'a_sizeof', 'b_sizeof'] 
 MATMUL_TYPE = "GEMM"
 
 def kernel_config_pruner(configs, nargs, **kwargs):
@@ -29,13 +29,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
     k = nargs['K'] 
     g = nargs['group_size']
     e = nargs['elements_per_sample']
-
+    t = nargs['type_id']
     a_sizeof = nargs['a_sizeof']
     b_sizeof = nargs['b_sizeof']
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        signature = str(tuple([utils.get_closest_m(m), n, k, g, e]))
+        signature = str(tuple([utils.get_closest_m(m), n, k, g, e, t]))
         if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][signature])
             num_stages = config.pop('num_stages')
@@ -179,8 +179,9 @@ def gemm_A16fWnO16f_int32packing_kernel(
     W_nbits: tl.constexpr, 
     group_size: tl.constexpr, 
     unpack_mask: tl.constexpr, 
-    elements_per_sample: tl.constexpr, 
+    elements_per_sample: tl.constexpr,
     #################################
+    type_id: tl.constexpr, 
     a_sizeof: tl.constexpr,
     b_sizeof: tl.constexpr,
     ######### Strides #########
@@ -335,7 +336,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
 def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-                                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
+                                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
                                         ) -> Tensor:
     
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
@@ -351,8 +352,8 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,
-        W_nbits, group_size, unpack_mask, elements_per_sample,  
-        x.dtype.itemsize, W_q.dtype.itemsize,
+        W_nbits, group_size, unpack_mask, elements_per_sample, type_id,
+        x.dtype.itemsize, W_q.dtype.itemsize, 
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),

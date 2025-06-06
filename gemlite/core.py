@@ -217,6 +217,9 @@ def forward_functional(
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
     out_features = tensor_args[0].shape[1]
+    input_dtype = meta_args[5]
+    input_dtype = 1 if (input_dtype == 2) else input_dtype #bfloat16 / float16 
+    type_id = input_dtype*100 + W_nbits
 
     if not x.is_contiguous():
         x = x.contiguous()
@@ -236,7 +239,7 @@ def forward_functional(
     else:
         matmul_type_str = get_matmul_type(x.shape[0], W_nbits) #batch_size, W_nbits
 
-    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous).view(out_shape)
+    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous, type_id).view(out_shape)
 
     if bias is not None:
         out += bias
@@ -566,7 +569,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(name in GEMLITE_TRITON_CONFIG_CACHE):
                 config[name].update(GEMLITE_TRITON_CONFIG_CACHE[name])
 
-            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 5)) #5: len(prune_keys)
+            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 6)) #5: len(prune_keys)
 
         #Save combined cache
         with FILE_LOCK, open(filename, "w") as json_file: 

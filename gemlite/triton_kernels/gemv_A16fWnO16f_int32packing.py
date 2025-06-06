@@ -8,7 +8,7 @@ import triton.language as tl
 from .config import AUTOTUNE, KERNEL
 from .utils import *
 
-KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample']
+KEYS          = ['M', 'N', 'K', 'group_size', 'elements_per_sample', 'type_id']
 MATMUL_TYPE   = "GEMV"
 NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 
@@ -149,6 +149,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
     group_size: tl.constexpr, 
     unpack_mask: tl.constexpr, 
     elements_per_sample: tl.constexpr, 
+    type_id: tl.constexpr,
     ######### Strides #########
     stride_am, stride_ak,
     stride_bk, stride_bn,
@@ -298,7 +299,7 @@ KERNEL_CACHE = {}
 def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int,  
-                                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool,
+                                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id: int,
                                          ) -> Tensor:
     
     global KERNEL_CACHE
@@ -339,7 +340,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
-        W_nbits, group_size, unpack_mask, elements_per_sample,
+        W_nbits, group_size, unpack_mask, elements_per_sample, type_id,
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
