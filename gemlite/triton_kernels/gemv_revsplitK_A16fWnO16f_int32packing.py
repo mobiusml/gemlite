@@ -93,7 +93,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 #contiguous = True
 def get_max_autotune_config(): #~20 sec/shape
     configs = []
-    for A in [0, 1]: 
+    for A in [0]:  #[0, 1] - why is 1 taking a lot of time on some devices?
         for D in [0]:
             for w in [1, 2, 4]:
                 for s in [1, 2]: 
