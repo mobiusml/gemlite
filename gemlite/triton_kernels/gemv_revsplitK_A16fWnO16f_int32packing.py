@@ -96,7 +96,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             continue
 
         used.add(key)
-        yield triton.Config(new_config, num_stages=num_stages, num_warps=num_warps, pre_hook=init_to_zero("c_ptr"))
+        yield triton.Config(new_config, num_stages=num_stages, num_warps=num_warps)
 
 #contiguous = True
 def get_max_autotune_config_nvidia(): #~20 sec/shape
@@ -154,7 +154,7 @@ def get_max_autotune_config_amd():
                 for s in [1, 2]: 
                     for v in [0, 2, 4]:
                         for M in [1]: #ONLY 1 allowed here
-                            for N in [32, 64, 128, 256, 512]:
+                            for N in [32, 64, 128, 256, 512]: #[1024, 2048]
                                 for K in [8, 16, 32, 64, 128]:
                                     configs.append(
                                         triton.Config(
@@ -185,6 +185,7 @@ def get_fast_autotune_config_amd():
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':4}, num_warps=2, num_stages=2))
 
     configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1024, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=4, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1024, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
     return configs
 
 
@@ -396,26 +397,23 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
     kernel_output_dtype = (DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
 
-    # if KERNEL.ENABLE_CACHING and M == 1:
-    #     if (M, N) not in KERNEL_CACHE:
-    #         KERNEL_CACHE[(M, N)] = {
-    #             "data": torch.empty((KERNEL.CACHE_SIZE, M, N), device=W_q.device, dtype=kernel_output_dtype),
-    #             "ptr": 0,
-    #         }
+    if KERNEL.ENABLE_CACHING and M == 1:
+        if (M, N) not in KERNEL_CACHE:
+            KERNEL_CACHE[(M, N)] = {
+                "data": torch.empty((KERNEL.CACHE_SIZE, M, N), device=W_q.device, dtype=kernel_output_dtype),
+                "ptr": 0,
+            }
 
-    #     entry = KERNEL_CACHE[(M, N)]
-    #     if entry["ptr"] % KERNEL.CACHE_SIZE == 0:
-    #         entry["data"].zero_()
-    #         entry["ptr"] = 0
+        entry = KERNEL_CACHE[(M, N)]
+        if entry["ptr"] % KERNEL.CACHE_SIZE == 0:
+            entry["data"].zero_()
+            entry["ptr"] = 0
 
-    #     output = entry["data"][entry["ptr"] % KERNEL.CACHE_SIZE]
-    #     entry["ptr"] += 1
+        output = entry["data"][entry["ptr"] % KERNEL.CACHE_SIZE]
+        entry["ptr"] += 1
 
-    # else:
-    #     output = torch.zeros((M, N), device=W_q.device, dtype=kernel_output_dtype)
-
-    output = torch.empty((M, N), device=W_q.device, dtype=kernel_output_dtype)
-
+    else:
+        output = torch.zeros((M, N), device=W_q.device, dtype=kernel_output_dtype)
 
     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K'] * 2))
 

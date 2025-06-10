@@ -49,6 +49,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         block_size_k = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
+
+        #tmp fix autotune getting stuck on the MI300X
+        if IS_HIP:
+            if block_size_n * block_size_k > 65536:
+                continue
         
         #Block size should be compatible with minimum-packing
         if(block_size_k < e):
@@ -127,44 +132,45 @@ def get_default_config_nvidia():
 #HIP - Instinct MI300X
 def get_max_autotune_config_amd():
     configs = []
-    for A in [0]:
-        for D in [0]: 
-            for w in [4]:
-                for s in [1]:
+    for A in [0]: #[0, 1] - why is 1 taking a lot of time on some devices?
+        for D in [0]:
+            for w in [1, 2, 4]:
+                for s in [1, 2]: 
                     for v in [0, 2, 4]:
                         for M in [1]: #ONLY 1 allowed here
-                            for N in [8, 16, 32, 64, 128, 256, 512, 1024, 2048]:
-                                for K in [8, 16, 32, 64, 128, 256, 512, 1024, 2048]:
+                            for N in [32, 64, 128, 256, 512]: #[1024, 2048]
+                                for K in [8, 16, 32, 64, 128]:
                                     configs.append(
-                                            triton.Config(
-                                                {'BLOCK_SIZE_M': M, 'BLOCK_SIZE_N': N, 'BLOCK_SIZE_K': K, 
-                                                'A_load_order': A, 'dot_prod_mode': D, 'waves_per_eu': v}, 
-                                                num_stages=s, num_warps=w, 
-                                                )
-                                            )
-
+                                        triton.Config(
+                                            {'BLOCK_SIZE_M': M, 'BLOCK_SIZE_N': N, 'BLOCK_SIZE_K': K, 
+                                            'A_load_order': A, 'dot_prod_mode': D, 'waves_per_eu': v},
+                                            num_stages=s, num_warps=w,
+                                        )
+                                    )
     return configs
 
 
 def get_fast_autotune_config_amd():
     configs = []
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':16,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
-    
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':16,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=2))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=2, num_stages=2))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=2, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':128, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=2, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':8,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=4, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32,  'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
 
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':16,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=2, num_stages=1))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=4, num_stages=2))
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=4, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':64, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1)) 
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64,  'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':4}, num_warps=1, num_stages=1))
 
-    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':64,  'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=2, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':128, 'BLOCK_SIZE_K':64, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':256, 'BLOCK_SIZE_K':64, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=1, num_stages=1))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=2))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':512, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':4}, num_warps=2, num_stages=2))
+
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1024, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':0}, num_warps=4, num_stages=1))
+    configs.append(triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':1024, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'waves_per_eu':2}, num_warps=1, num_stages=1))
     return configs
-
 
 def get_default_config_amd():
     config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':0}, num_warps=1, num_stages=1)
