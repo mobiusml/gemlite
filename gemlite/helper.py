@@ -217,7 +217,7 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
         super().__init__()
         self.device = device
         self.dtype = dtype
-        self.fp8 = torch.fp8
+        self.fp8 = fp8
 
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
@@ -228,7 +228,7 @@ class A8Wn_dynamic(A16Wn):
         self.device = device
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
-        self.fp8 = torch.fp8
+        self.fp8 = fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         if(isinstance(W_q, torch.nn.Parameter)):
