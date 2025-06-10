@@ -7,6 +7,7 @@ class DType(Enum):
     FP16   = 1
     BF16   = 2
     FP8    = 3
+    FP8e4  = 3 #alias for FP8
     INT8   = 4
     UINT8  = 5
     INT32  = 6
@@ -15,6 +16,9 @@ class DType(Enum):
     INT16  = 9
     UINT16 = 10
     INT64  = 11
+    FP8e4nuz = 12
+    FP8e5nuz = 13
+
 
 DTYPE_TO_TORCH = {
     0: torch.float32,
@@ -29,21 +33,25 @@ DTYPE_TO_TORCH = {
     9: torch.int16,
     10: torch.uint16,
     11: torch.int64,
+    12: torch.float8_e4m3fnuz,
+    13: torch.float8_e5m2fnuz,
 }
 
 TORCH_TO_DTYPE = {
     torch.float32: DType.FP32,
     torch.float16: DType.FP16,
     torch.bfloat16: DType.BF16,
-    torch.float8_e4m3fn: DType.FP8,
     torch.int8: DType.INT8,
     torch.uint8: DType.UINT8,
     torch.int32: DType.INT32,
     torch.uint32: DType.UINT32,
-    torch.float8_e5m2: DType.FP8e5,
     torch.int16: DType.INT16,
     torch.uint16: DType.UINT16,
     torch.int64: DType.INT64,
+    torch.float8_e4m3fn: DType.FP8,
+    torch.float8_e5m2: DType.FP8e5,
+    torch.float8_e4m3fnuz: DType.FP8e4nuz,
+    torch.float8_e5m2fnuz: DType.FP8e5nuz,
 }
 
 TORCH_DTYPE_TO_TRITON = {
@@ -56,11 +64,13 @@ TORCH_DTYPE_TO_TRITON = {
     torch.uint16:        tl.uint16,
     torch.int32:         tl.int32,
     torch.uint32:        tl.uint32,
-    torch.float8_e4m3fn: tl.float8e4nv,
-    torch.float8_e5m2:   tl.float8e5,
     torch.int16:         tl.int16,
     torch.uint16:        tl.uint16,
     torch.int64:         tl.int64,
+    torch.float8_e4m3fn: tl.float8e4nv, #NVIDIA
+    torch.float8_e5m2: tl.float8e5,#NVIDIA
+    torch.float8_e4m3fnuz: tl.float8e4b8, #AMD
+    torch.float8_e5m2fnuz: tl.float8e5b16 #AMD
 }
 
 DTYPE_TO_TRITON = {k:TORCH_DTYPE_TO_TRITON[d] for k,d in DTYPE_TO_TORCH.items()}
