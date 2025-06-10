@@ -11,7 +11,7 @@ setup(
         "gemlite": ["gemlite/*.py", "configs/*.json"],
     },
     include_package_data=True,
-    install_requires=["numpy", "torch>=2.5.0", "triton>=3.3.0", "tqdm"],
+    install_requires=["numpy", "torch>=2.6.0", "tqdm"],
 )
 
 # python3 setup.py install
