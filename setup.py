@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 setup(
     name='gemlite',
-    version="0.4.7",
+    version="0.4.8",
     url="https://github.com/mobiusml/gemlite/",
     author="Dr. Hicham Badri",
     author_email="hicham@mobiuslabs.com",
