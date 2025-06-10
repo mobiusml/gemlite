@@ -19,7 +19,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_supports_float16_acc
+from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
 
@@ -85,7 +85,10 @@ def set_acc_dtype(dtype):
 
 #Return the default gemv kernel to use for M==1
 def get_default_gemv(W_nbits: int) -> str:
-    return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+    if IS_HIP:
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_REVSPLITK'
+    else:
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 
 #matmul type selection logic
 def get_matmul_type(batch_size: int, W_nbits: int):

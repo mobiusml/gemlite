@@ -7,6 +7,17 @@ import time
 from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, TORCH_TO_DTYPE
 from gemlite.triton_kernels.utils import M_MAPPING
+from .triton_kernels.utils import IS_HIP
+
+if IS_HIP:
+    default_fp8 = torch.float8_e4m3fnuz #AMD
+    #default_fp8 = torch.float8_e5m2fnuz #AMD
+    #default_fp8 = torch.float8_e5m2 #AMD - fp16 emulated
+    default_post_scale = True
+else:
+    default_fp8 = torch.float8_e4m3fn #Nvidia 
+    #default_fp8 = torch.float8_e5m2 #Nvidia
+    default_post_scale = False
 ############################################################################################################################################################
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8 weights
@@ -62,7 +73,7 @@ class A16W8: #INT8 weights
 
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=False):
+    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=default_post_scale):
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
@@ -140,11 +151,9 @@ class A8W8_dynamic:
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
+
         if(self.fp8 is not False): #FP8
-            if(self.fp8 in [torch.float8_e4m3fn]):
-                w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
-            if(self.fp8 in [torch.float8_e5m2]):
-                w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
+            w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
 
@@ -204,28 +213,22 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', dtype=None, use_fp8e5=False):
+    def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8):
         super().__init__()
         self.device = device
         self.dtype = dtype
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8 = torch.fp8
 
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=False, use_fp8e5=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8):
         super().__init__()
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8 = torch.fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         if(isinstance(W_q, torch.nn.Parameter)):
