@@ -19,6 +19,42 @@ else:
     #default_fp8 = torch.float8_e5m2 #Nvidia
     default_post_scale = False
 ############################################################################################################################################################
+#Replaces all linear layers with the corresponding processor
+def patch_model(model, device, processor, skip_modules=[]):
+    #Loadd HQQLinear when needed
+    if(processor in [A16Wn, A8Wn_dynamic]):
+        from hqq.core.quantize import HQQLinear
+    else:
+        class _NoHQQ: pass
+        HQQLinear = _NoHQQ
+
+    #Name modules
+    for name, module in model.named_modules():
+        module.name = name
+
+    #Patching fct
+    def _patching_fct(layer, device, skip_modules):
+        if(any(s in layer.name for s in skip_modules)):
+            return layer.to(device)
+        else:
+            if(isinstance(layer, torch.nn.Linear)):
+                return processor(device=device).from_linear(layer)
+            elif(isinstance(layer, HQQLinear)):
+                return processor(device=device).from_hqqlinear(layer)
+            else:
+                return layer.to(device) #default
+
+    #Replaces linear layers
+    def _patch_linearlayers(model, fct, device, skip_modules):
+        for name, layer in model.named_children():
+            if isinstance(layer, (torch.nn.Linear, HQQLinear)):
+                setattr(model, name, fct(layer, device, skip_modules))
+            else:
+                _patch_linearlayers(layer, fct, device, skip_modules)
+
+    #Apply patch
+    _patch_linearlayers(model, _patching_fct, device, skip_modules)
+
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8 weights
     def __init__(self, device='cuda:0', dtype=None):
