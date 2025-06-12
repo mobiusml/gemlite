@@ -404,11 +404,11 @@ class GemLiteLinearTriton(torch.nn.Module):
             else: 
                 assert self.W_nbits == 8, "Invalid 8-bit weights."
 
-
             self.W_q = W_q.t() #row-major
             self.elements_per_sample = 1
 
-            if(contiguous is None): contiguous = False
+            if(contiguous is None): 
+                contiguous = False
 
         # Packed weigths
         if W_q.dtype == torch.uint8:  
@@ -420,6 +420,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 packing_bitwidth=packing_bitwidth,
                 transpose=True,
             )  # Over-K
+            
             if contiguous is None:
                 contiguous = True
 
