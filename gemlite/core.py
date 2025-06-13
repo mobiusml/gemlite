@@ -516,7 +516,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(isinstance(self.zeros, torch.Tensor)):
             self.zeros = self.zeros.contiguous()
 
-        print('self.bias', self.bias)
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)
         self.bias       = torch.nn.Parameter(self.bias, requires_grad=False) if self.bias is not None else None
