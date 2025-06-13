@@ -61,7 +61,7 @@ class A16W8: #INT8 weights
         self.device = device
         self.dtype = dtype
 
-    def from_weights(self, weight, scales=None, bias=None):
+    def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
@@ -102,7 +102,7 @@ class A16W8: #INT8 weights
         return gemlite_linear
 
     def from_linear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
@@ -172,7 +172,7 @@ class A16Wn:
         del hqq_layer
         torch.cuda.empty_cache()
 
-        return self.from_weights(W_q, scales, zeros, W_nbits, group_size, bias)
+        return self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
 
 ############################################################################################################################################################
 #8-bit dynamic activations / 8-bit weights
@@ -182,7 +182,7 @@ class A8W8_dynamic:
         self.dtype = dtype
         self.fp8 = fp8
 
-    def from_weights(self, weight, scales=None, bias=None):
+    def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
@@ -236,7 +236,7 @@ class A8W8_dynamic:
         return gemlite_linear
 
     def from_linear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
@@ -377,7 +377,7 @@ class A16W158:
         return gemlite_linear
 
     def from_bitlinear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.weight_scale, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, weight_scale=linear_layer.weight_scale, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
@@ -432,7 +432,7 @@ class A8W158:
         return gemlite_linear
 
     def from_bitlinear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.weight_scale, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, weight_scale=linear_layer.weight_scale, bias=linear_layer.bias)
         del linear_layer
         torch.cuda.empty_cache()
         return out_layer
