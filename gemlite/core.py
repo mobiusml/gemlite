@@ -19,7 +19,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_supports_float16_acc
+from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
 
@@ -36,7 +36,10 @@ GEMLITE_ACC_DTYPE = {
     DType.BF16: DType.FP32,
     DType.FP32: DType.FP32,
     DType.FP8: DType.FP32,
-    DType.FP8e5: DType.FP32,
+    DType.FP8e4: DType.FP32,
+    DType.FP8e4nuz: DType.FP32,
+    DType.FP8e5: DType.FP32, 
+    DType.FP8e5nuz: DType.FP32,
     DType.INT8: DType.INT32,
 }
 
@@ -85,7 +88,10 @@ def set_acc_dtype(dtype):
 
 #Return the default gemv kernel to use for M==1
 def get_default_gemv(W_nbits: int) -> str:
-    return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+    if IS_HIP:
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+    else:
+        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 
 #matmul type selection logic
 def get_matmul_type(batch_size: int, W_nbits: int):
@@ -127,6 +133,20 @@ def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scal
     out_x = out_x.to(dtype=w_dtype)
     return out_x.view(x_shape), scales_x
 
+
+@triton.jit
+def round_triton_nvidia(x):
+    return libdevice.round(x)
+
+@triton.jit
+def round_triton_amd(x):
+    return libdevice.floor(x + 0.50)
+
+if IS_HIP:
+    round_triton = round_triton_amd
+else:
+    round_triton = round_triton_nvidia
+
 @triton.jit
 def scale_activations_per_token_kernel(
     x_ptr, scale_ptr, y_ptr, 
@@ -157,7 +177,7 @@ def scale_activations_per_token_kernel(
         x /= scales_x
 
         if ROUND:
-            x = libdevice.round(x)
+            x = round_triton(x)
 
         tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
         tl.store(y_ptr + in_ptrs, x, mask=mask)
@@ -178,6 +198,8 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
     BLOCK_K = triton.next_power_of_2(K)
     grid = (triton.cdiv(M, BLOCK_M * UNROLL), triton.cdiv(K, BLOCK_K))
 
+    ROUND = not w_dtype.is_floating_point
+
     scale_activations_per_token_kernel[grid](
         x,
         scales,
@@ -189,7 +211,7 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
         scales.stride(0),
         max_val=max_val,
         fp32_scale=fp32_scale,
-        ROUND=not w_dtype.is_floating_point,
+        ROUND=ROUND,
         UNROLL=UNROLL,
         BLOCK_M=BLOCK_M,
         BLOCK_K=BLOCK_K,
@@ -261,7 +283,7 @@ def forward_functional_fake(
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e5, DType.INT8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8]
     MIN_SIZE              = 32
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
@@ -372,10 +394,12 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
 
-        #Unpacked weights
+        #Non-packed weights
         self.W_q = None
-        if(W_q.dtype in [torch.float16, torch.bfloat16, torch.int8, torch.float8_e4m3fn, torch.float8_e5m2]):
-            if(W_q.dtype in [torch.float16, torch.bfloat16]): 
+        if(W_q.dtype in [torch.int8] or W_q.is_floating_point()):
+            if(W_q.dtype in [torch.float32]):
+                assert self.W_nbits == 32, "Invalid fp32 weights."
+            elif(W_q.dtype in [torch.float16, torch.bfloat16]): 
                 assert self.W_nbits == 16, "Invalid fp16 weights."
             else: 
                 assert self.W_nbits == 8, "Invalid 8-bit weights."
@@ -383,9 +407,11 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.W_q = W_q.t() #row-major
             self.elements_per_sample = 1
 
-            if(contiguous is None): contiguous = False
+            if(contiguous is None): 
+                contiguous = False
 
-        if W_q.dtype == torch.uint8:  # Packed weigths
+        # Packed weigths
+        if W_q.dtype == torch.uint8:  
             _pack_weights_over_cols = pack_weights_over_cols_triton if (W_q.device.type == "cuda") else pack_weights_over_cols_torch
 
             self.W_q, self.elements_per_sample = _pack_weights_over_cols(
@@ -394,6 +420,7 @@ class GemLiteLinearTriton(torch.nn.Module):
                 packing_bitwidth=packing_bitwidth,
                 transpose=True,
             )  # Over-K
+            
             if contiguous is None:
                 contiguous = True
 

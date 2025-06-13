@@ -7,14 +7,61 @@ import time
 from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, TORCH_TO_DTYPE
 from gemlite.triton_kernels.utils import M_MAPPING
+from .triton_kernels.utils import IS_HIP
+
+if IS_HIP:
+    default_fp8 = torch.float8_e4m3fnuz #AMD
+    #default_fp8 = torch.float8_e5m2fnuz #AMD
+    #default_fp8 = torch.float8_e5m2 #AMD - fp16 emulated
+    default_post_scale = True
+else:
+    default_fp8 = torch.float8_e4m3fn #Nvidia 
+    #default_fp8 = torch.float8_e5m2 #Nvidia
+    default_post_scale = False
 ############################################################################################################################################################
+#Replaces all linear layers with the corresponding processor
+def patch_model(model, device, processor, skip_modules=[]):
+    #Loadd HQQLinear when needed
+    if(processor in [A16Wn, A8Wn_dynamic]):
+        from hqq.core.quantize import HQQLinear
+    else:
+        class _NoHQQ: pass
+        HQQLinear = _NoHQQ
+
+    #Name modules
+    for name, module in model.named_modules():
+        module.name = name
+
+    #Patching fct
+    def _patching_fct(layer, device, skip_modules):
+        if(any(s in layer.name for s in skip_modules)):
+            return layer.to(device)
+        else:
+            if(isinstance(layer, torch.nn.Linear)):
+                return processor(device=device).from_linear(layer)
+            elif(isinstance(layer, HQQLinear)):
+                return processor(device=device).from_hqqlinear(layer)
+            else:
+                return layer.to(device) #default
+
+    #Replaces linear layers
+    def _patch_linearlayers(model, fct, device, skip_modules):
+        for name, layer in model.named_children():
+            if isinstance(layer, (torch.nn.Linear, HQQLinear)):
+                setattr(model, name, fct(layer, device, skip_modules))
+            else:
+                _patch_linearlayers(layer, fct, device, skip_modules)
+
+    #Apply patch
+    _patch_linearlayers(model, _patching_fct, device, skip_modules)
+
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8 weights
     def __init__(self, device='cuda:0', dtype=None):
         self.device = device
         self.dtype = dtype
 
-    def from_weights(self, weight, scales=None, bias=None):
+    def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
@@ -55,14 +102,14 @@ class A16W8: #INT8 weights
         return gemlite_linear
 
     def from_linear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
 
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=False):
+    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=default_post_scale):
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
@@ -125,7 +172,7 @@ class A16Wn:
         del hqq_layer
         torch.cuda.empty_cache()
 
-        return self.from_weights(W_q, scales, zeros, W_nbits, group_size, bias)
+        return self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
 
 ############################################################################################################################################################
 #8-bit dynamic activations / 8-bit weights
@@ -135,16 +182,14 @@ class A8W8_dynamic:
         self.dtype = dtype
         self.fp8 = fp8
 
-    def from_weights(self, weight, scales=None, bias=None):
+    def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
+
         if(self.fp8 is not False): #FP8
-            if(self.fp8 in [torch.float8_e4m3fn]):
-                w_dtype, input_dtype, max_val = torch.float8_e4m3fn, DType.FP8, 448
-            if(self.fp8 in [torch.float8_e5m2]):
-                w_dtype, input_dtype, max_val = torch.float8_e5m2, DType.FP8e5, 57344
+            w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
 
@@ -191,7 +236,7 @@ class A8W8_dynamic:
         return gemlite_linear
 
     def from_linear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
@@ -204,28 +249,22 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.fp8 = False
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
-    def __init__(self, device='cuda:0', dtype=None, use_fp8e5=False):
+    def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8):
         super().__init__()
         self.device = device
         self.dtype = dtype
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8 = fp8
 
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=False, use_fp8e5=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8):
         super().__init__()
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
-        if(use_fp8e5):
-            self.fp8 = torch.float8_e5m2
-        else:
-            self.fp8 = torch.float8_e4m3fn
+        self.fp8 = fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         if(isinstance(W_q, torch.nn.Parameter)):
@@ -338,7 +377,7 @@ class A16W158:
         return gemlite_linear
 
     def from_bitlinear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.weight_scale, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, weight_scale=linear_layer.weight_scale, bias=linear_layer.bias)
         del linear_layer 
         torch.cuda.empty_cache()
         return out_layer
@@ -393,7 +432,7 @@ class A8W158:
         return gemlite_linear
 
     def from_bitlinear(self, linear_layer):
-        out_layer = self.from_weights(linear_layer.weight, linear_layer.weight_scale, linear_layer.bias)
+        out_layer = self.from_weights(weight=linear_layer.weight, weight_scale=linear_layer.weight_scale, bias=linear_layer.bias)
         del linear_layer
         torch.cuda.empty_cache()
         return out_layer
