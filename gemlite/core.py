@@ -428,9 +428,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             raise Exception('Weights were not packed, please check your W_q.dtype')
 
         #Bias / device
-        self.bias   = None if (bias is None) else bias.to(device=self.W_q.device)
         self.device = self.W_q.device
-
+        self.bias   = None if (bias is None) else bias.to(device=self.device)
+        
         #initial values
         self.W_group_mode       = -1
         self.channel_scale_mode = 0
@@ -523,6 +523,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.zeros      = torch.nn.Parameter(self.zeros, requires_grad=False)
         self.metadata   = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device=self.device, dtype=torch.int32), requires_grad=False)
         self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device=self.device, dtype=torch.int32), requires_grad=False)
+
         return self
 
     #Return the main arguments
