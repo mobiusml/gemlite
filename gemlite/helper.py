@@ -70,9 +70,10 @@ def patch_model(model, device, processor, skip_modules=[]):
 
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8 weights
-    def __init__(self, device='cuda:0', dtype=None):
+    def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
         self.device = device
         self.dtype = dtype
+        self.fp32_scale = fp32_scale
 
     def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
@@ -86,7 +87,7 @@ class A16W8: #INT8 weights
             #Quantize
             w_dtype, max_val = torch.int8, 127
             dtype = weight.dtype if(self.dtype is None) else self.dtype
-            assert dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight dtype, should be floating point."
+            assert dtype in [torch.float16, torch.bfloat16, torch.float32], f"Invalid weight dtype, should be floating point, got {dtype}"
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
             data_ptr = weight.data_ptr()
             weight = weight.to(dtype=torch.float32, copy=False, device=self.device)
@@ -100,14 +101,17 @@ class A16W8: #INT8 weights
                 torch.cuda.empty_cache()
         else:
             #Pre-Quantized
-            assert weight.dtype in [torch.int8], "Invalid weight.dtype, should be int8."
+            assert weight.dtype in [torch.int8], f"Invalid weight.dtype, should be int8, got {weight.dtype}"
+            if(self.dtype is None):
+                dtype = scales.dtype if scales.dtype in [torch.float16, torch.bfloat16] else torch.float16
+            else:
+                dtype = self.dtype
             W_q = weight.to(device=self.device)
-            scales = scales.to(device=self.device, dtype=torch.float32)
-            dtype = torch.float16 if(self.dtype is None) else self.dtype
+            scales = scales.to(device=self.device)
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-        #Bias
-        bias = bias.clone().to(device=self.device, dtype=dtype) if (bias is not None) else None
+        scales = scales.to(dtype=torch.float32 if self.fp32_scale else dtype)
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear = GemLiteLinearTriton(8, 
                         group_size=in_features, 
@@ -118,6 +122,8 @@ class A16W8: #INT8 weights
                         )
 
         gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+
+        #Pre-scaling
         gemlite_linear.W_group_mode       = 2
         gemlite_linear.channel_scale_mode = 0
         return gemlite_linear
@@ -200,10 +206,11 @@ class A16Wn:
 ############################################################################################################################################################
 #8-bit dynamic activations / 8-bit weights
 class A8W8_dynamic:
-    def __init__(self, device='cuda:0', dtype=None, fp8=False):
+    def __init__(self, device='cuda:0', dtype=None, fp8=False, fp32_scale=True):
         self.device = device
         self.dtype = dtype
         self.fp8 = fp8
+        self.fp32_scale = fp32_scale
 
     def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
@@ -236,12 +243,15 @@ class A8W8_dynamic:
         else:
             #Pre-Quantized
             assert weight.dtype.itemsize == 1, "Invalid weight.dtype, should be 8-bit."
-            dtype = torch.float16 if(self.dtype is None) else self.dtype  
+            if(self.dtype is None):
+                dtype = scales.dtype if scales.dtype in [torch.float16, torch.bfloat16] else torch.float16
+            else:
+                dtype = self.dtype 
             W_q = weight.to(device=self.device)
-            scales = scales.to(device=self.device, dtype=torch.float32) 
+            scales = scales.to(device=self.device) 
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
         
-        #Bias
+        scales = scales.to(torch.float32 if self.fp32_scale else dtype)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear = GemLiteLinearTriton(8, 
@@ -254,9 +264,10 @@ class A8W8_dynamic:
                         )
 
         gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
-        gemlite_linear.meta_dtype         = DType.FP32
+
+        #Post-scaling
         gemlite_linear.W_group_mode       = 0
-        gemlite_linear.channel_scale_mode = 3 #activation[:,None] + weight[None,:]
+        gemlite_linear.channel_scale_mode = 3
         return gemlite_linear
 
     def from_linear(self, linear_layer, del_orig=True):
@@ -281,28 +292,32 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
 class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
         super().__init__()
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
         self.fp8 = fp8
+        self.fp32_scale = fp32_scale
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         if(isinstance(W_q, torch.nn.Parameter)):
             W_q = W_q.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
-        dtype = scales.dtype if(self.dtype is None) else self.dtype
-        scales = scales.to(dtype)
-        assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
+
+        if(self.dtype is None):
+            dtype = scales.dtype if scales.dtype in [torch.float16, torch.bfloat16] else torch.float16
+        else:
+            dtype = self.dtype 
+
+        assert dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should be floating point."
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
         input_dtype = TORCH_TO_DTYPE[self.fp8]
-        fp32_scale = True
             
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=dtype)
+        scales = scales.to(device=self.device, dtype=torch.float32 if self.fp32_scale else dtype)
         zeros = zeros.to(device=self.device, dtype=dtype)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
@@ -318,9 +333,6 @@ class A8Wn_dynamic(A16Wn):
                         )
 
         gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth, fma_mode=False) 
-
-        if(fp32_scale):
-            gemlite_linear.meta_dtype = DType.FP32
 
         if(group_size == in_features):
             if(self.post_scale):
@@ -359,26 +371,28 @@ class A8Wn_dynamic(A16Wn):
 ############################################################################################################################################################
 #BitNet
 class A16W158:
-    def __init__(self, device='cuda:0', dtype=None):
+    def __init__(self, device='cuda:0', dtype=None, fp32_scale=True):
         self.device = device
         self.dtype = dtype
-        self.fp32_scale = False
+        self.fp32_scale = fp32_scale
 
     def from_weights(self, weight, weight_scale, bias=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
+
         dtype = weight.dtype if(self.dtype is None) else self.dtype
-        weight = weight.to(dtype)
-        assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should floating point."
+        assert dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
+
+        weight        = weight.to(dtype=dtype, device=self.device)
         W_q           = (weight + 1).to(torch.uint8)
         bias          = bias if bias is not None else None
         dtype         = weight.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
         out_features  = W_q.shape[0]
         in_features   = W_q.shape[1]
-        scales        = torch.ones((out_features, 1), dtype=torch.float32, device=self.device) * weight_scale.item() 
+        scales        = torch.ones((out_features, 1), dtype=torch.float32) * weight_scale.item() 
 
         gemlite_linear = GemLiteLinearTriton(2, 
                         group_size=in_features, 
@@ -389,10 +403,7 @@ class A16W158:
                         scaled_activations=False,
                         )
 
-        if(self.fp32_scale is False):
-            scales = scales.to(dtype=dtype)
-
-        W_q = W_q.to(self.device)
+        scales = scales.to(dtype=torch.float32 if self.fp32_scale else dtype)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias)
@@ -407,19 +418,21 @@ class A16W158:
         return out_layer
 
 class A8W158:
-    def __init__(self, device='cuda:0', dtype=None):
+    def __init__(self, device='cuda:0', dtype=None, fp32_scale=True):
         self.device = device
         self.dtype = dtype
-        self.fp32_scale = True
+        self.fp32_scale = fp32_scale
 
     def from_weights(self, weight, weight_scale, bias=None):
         if(isinstance(weight, torch.nn.Parameter)):
             weight = weight.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
+
         dtype = weight.dtype if(self.dtype is None) else self.dtype
-        weight = weight.to(dtype)
-        assert weight.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should floating point."
+        assert dtypee in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
+
+        weight        = weight.to(device=self.device, dtype=dtype)
         W_q           = (weight + 1).to(torch.uint8)
         dtype         = weight.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
@@ -438,16 +451,10 @@ class A8W158:
                         scaled_activations=True,
                         )
 
-        if(self.fp32_scale is False):
-            scales = scales.to(dtype=dtype)
-
-        W_q = W_q.to(self.device)
+        scales = scales.to(dtype=torch.float32 if self.fp32_scale else dtype)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear.pack(W_q, scales=scales, zeros=1, bias=bias)
-
-        if(self.fp32_scale):
-            gemlite_linear.meta_dtype = DType.FP32
 
         #post-scale 
         gemlite_linear.W_group_mode       = 1 #shift only
