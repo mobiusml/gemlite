@@ -218,7 +218,7 @@ class A8W8_dynamic:
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
 
-        if(self.fp8 is not False): #FP8
+        if(self.fp8): #FP8
             w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
         else: #INT8
             w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
