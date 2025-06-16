@@ -17,6 +17,7 @@ from .utils import (
     linear_tile,
     dequantize,
     gpu_supports_bfloat16_atomicadd,
+    swizzle_tile_persistent
     get_gpu_shared_memory,
     next_power_of_2,
     IS_HIP,
