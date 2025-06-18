@@ -6,22 +6,7 @@ import triton
 import triton.language as tl
 
 from .config import AUTOTUNE
-from . import utils
-from .utils import (
-    DType,
-    DTYPE_TO_TORCH,
-    DTYPE_TO_TRITON,
-    init_to_zero,
-    is_divisible,
-    swizzle_tile,
-    linear_tile,
-    dequantize,
-    gpu_supports_bfloat16_atomicadd,
-    swizzle_tile_persistent,
-    get_gpu_shared_memory,
-    next_power_of_2,
-    IS_HIP,
-)
+from .utils import *
 
 KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'type_id', 'a_sizeof', 'b_sizeof'] 
 MATMUL_TYPE   = "GEMM_SPLITK"
@@ -41,7 +26,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
     #Check cache
     if(MATMUL_TYPE in GEMLITE_TRITON_CONFIG_CACHE):
-        signature = str(tuple([utils.get_closest_m(m), n, k, g, e, t]))
+        signature = str(tuple([get_closest_m(m), n, k, g, e, t]))
         if(signature in GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE]):
             config     = copy.deepcopy(GEMLITE_TRITON_CONFIG_CACHE[MATMUL_TYPE][signature])
             num_stages = config.pop('num_stages')
@@ -141,7 +126,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
 #These autotunes are optimized for batch-size 1 to 64 (!)
 def get_max_autotune_config_nvidia():
-    stages  = [1, 2, 4, 5] if utils.gpu_has_more_shared_memory() else [1, 2, 4]
+    stages  = [1, 2, 4, 5] if gpu_has_more_shared_memory() else [1, 2, 4]
     configs = []
     for A in [0, 2]:
         for w in [4, 8]:
@@ -440,7 +425,7 @@ def gemm_splitK_persistent_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tenso
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 
-    M_CLOSEST = utils.get_closest_m(M)
+    M_CLOSEST = get_closest_m(M)
 
     native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
@@ -460,7 +445,7 @@ def gemm_splitK_persistent_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tenso
         scales.stride(0), scales.stride(1),
         ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
-        output_dtype = DTYPE_TO_TRITON[output_dtype],
+        output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ################################################

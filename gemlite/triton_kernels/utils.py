@@ -94,7 +94,6 @@ def is_divisible(dividend, divisor):
 
 def is_hip():
     return triton.runtime.driver.active.get_current_target().backend == "hip"
-IS_HIP = is_hip() #cache result to avoid runtime driver call
 
 def gpu_has_more_shared_memory(ref_gpus = ["a100", "h100", "h200", "h20", "h800", "b100", "b200"]): 
     gpu_name = torch.cuda.get_device_properties(0).name.lower()
@@ -158,3 +157,9 @@ def get_closest_m(M):
     
 def get_gpu_shared_memory():
     return driver.active.utils.get_device_properties(0).get("max_shared_mem", 0)
+
+###################################################################################
+#Cached results to avoid runtime driver calls
+
+IS_HIP = is_hip() 
+NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()

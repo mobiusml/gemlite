@@ -385,8 +385,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     tl.atomic_add(c_ptrs, acc, sem=atomic_mode)
-
-
+    
 KERNEL_CACHE = {}
 
 def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
@@ -430,7 +429,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     else:
         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
 
-    gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
+    compiled_kernel = gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
@@ -441,7 +440,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
         scales.stride(0), scales.stride(1),
         ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
-        output_dtype = DTYPE_TO_TRITON[output_dtype],
+        output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
         acc_dtype    = acc_dtype,
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ################################################

@@ -421,7 +421,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
         scales.stride(0), scales.stride(1),
         ############################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
-        output_dtype = DTYPE_TO_TRITON[output_dtype],
+        output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
         acc_dtype    = acc_dtype,
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
         ############################################
