@@ -429,7 +429,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     else:
         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
 
-    compiled_kernel = gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
+    gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
