@@ -137,23 +137,20 @@ class A16W8: #INT8 weights
 class A16Wn:
     def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, quant_type="INT", post_scale=default_post_scale):
 
-        assert quant_type in ["INT", "MXFP", "NVFP"], f"Invalid quant_type. Got {quant_type}, valid values are INT, MXFP, NVFP."
+        assert quant_type in ["INT", "MXFP"], f"Invalid quant_type. Got {quant_type}, valid values are INT, MXFP."
 
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
         self.quant_type = quant_type
-        if(quant_type in ["MXFP", "NVFP"]):
+        if(quant_type == "MXFP"):
             packing_bitwidth = 8
         self.packing_bitwidth = packing_bitwidth
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
-        if(self.quant_type in ["MXFP"]):
+        if(self.quant_type == "MXFP"):
             assert W_nbits in [8, 4], "Unsupported W_nbit for MXFP quant_dtype."
             assert group_size == 32, "group_size should 32 for MXFP."
-        if(self.quant_type in ["NVFP"]):
-            assert W_nbits in [4], "Unsupported W_nbit for NVFP quant_dtype."
-            assert group_size == 16, "group_size should 16 for NVFP."
 
         if(isinstance(W_q, torch.nn.Parameter)):
             W_q = W_q.data
@@ -175,7 +172,7 @@ class A16Wn:
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         #MXFP4 / NVFP4 conversion to indices TODO
-        if(self.quant_type in ["MXFP", "NVFP"] and W_q.is_floating_point()):
+        if(self.quant_type == "MXFP" and W_q.is_floating_point()):
             #W_q -> to indices
             pass
 
@@ -191,18 +188,11 @@ class A16Wn:
         gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth)
 
         if(self.quant_type == "MXFP"): #[K//32, N]
-            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.T.contiguous().T
+            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.contiguous() #.T.contiguous().T
             gemlite_linear.scales.data = gemlite_linear.scales.data.to(torch.float8_e8m0fnu).view(torch.uint8)
             gemlite_linear.scales.data = gemlite_linear.scales.data.T#.contiguous()
-            gemlite_linear.W_group_mode = 2
+            gemlite_linear.W_group_mode = 2 #TODO - USE ANOTHER W_GROU)_MODE ? or another type_id for autotune
             gemlite_linear.channel_scale_mode = 0
-        if(self.quant_type == "NVFP"): #[K//16, N]
-            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.T.contiguous().T
-            gemlite_linear.scales.data = gemlite_linear.scales.data.to(torch.float8_e4m3fn)#.view(torch.uint8)
-            gemlite_linear.scales.data = gemlite_linear.scales.data.T#.contiguous().T
-            gemlite_linear.W_group_mode = 2
-            gemlite_linear.channel_scale_mode = 0
-
 
         if(group_size == in_features and self.dtype == "INT"):
             if(self.post_scale):

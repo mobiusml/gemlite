@@ -36,6 +36,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             config.pop('num_consumer_groups', None)
             config.pop('reg_dec_producer', None)
             config.pop('reg_inc_consumer', None)
+            config["NUM_STAGES"] = num_stages
 
             yield triton.Config(config,
                 num_stages=num_stages,
@@ -107,6 +108,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             "GROUP_SIZE_M": group_size_m,
             "SPLIT_K": split_k,
             "A_load_order": A_load_order,
+            "NUM_STAGES": num_stages,
         }
 
         if IS_HIP:
@@ -287,7 +289,7 @@ def gemm_splitK_INT_kernel(
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr, NUM_STAGES: tl.constexpr,
     A_load_order: tl.constexpr, 
     data_contiguous: tl.constexpr,
     #################################
@@ -466,25 +468,21 @@ def gemm_splitK_MX_kernel(
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, 
-    GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr, SPLIT_K: tl.constexpr, NUM_STAGES: tl.constexpr,
     A_load_order: tl.constexpr,
     data_contiguous: tl.constexpr,
     #################################
-    meta_evict_policy: tl.constexpr = '',
+    meta_evict_policy: tl.constexpr = 'evict_first',
     atomic_mode: tl.constexpr = 'relaxed',
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
+    #################################
+    load_scales_as_block: tl.constexpr = True, #True | IF FALSE, RESTRICT BLOCK_SIZE_K <= 32
 ):
-    
-    load_scales_as_block: tl.constexpr = True #True | IF FALSE, RESTRICT BLOCK_SIZE_K <= 32
-
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
 
-    if(elements_per_sample > 1):
-        pid_m, pid_n = linear_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
-    else:
-        pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
        
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
 
@@ -498,7 +496,7 @@ def gemm_splitK_MX_kernel(
     #B
     BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
     offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E)
-    offs_bn = pid_n * BLOCK_SIZE_N   + tl.arange(0, BLOCK_SIZE_N)
+    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     if(data_contiguous):
         offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_E), BLOCK_SIZE_K_E) #row_major
     else:
@@ -506,15 +504,17 @@ def gemm_splitK_MX_kernel(
     b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
     BLOCK_SIZE_K_B: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
 
-    stride_mul: tl.constexpr  = BLOCK_SIZE_K / group_size
+    stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
     BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
 
+    if(elements_per_sample == 1): #FP8
+        b_dtype: tl.constexpr = "e3m4"
+    if(elements_per_sample == 2): #FP4
+        b_dtype: tl.constexpr = "e2m1"
+
     if(load_scales_as_block):
-        #Meta-data: as block
         offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
-        #offs_k_b_scales = tl.max_contiguous(tl.multiple_of(offs_k_b_scales, BLOCK_SIZE_K_S), BLOCK_SIZE_K_S)
         offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        #offs_n_b_scales = tl.max_contiguous(tl.multiple_of(offs_n_b_scales, BLOCK_SIZE_N), BLOCK_SIZE_N)
         scales_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_b_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K //32]
     else:
         offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
@@ -523,21 +523,20 @@ def gemm_splitK_MX_kernel(
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
-    for k in range(num_pid_k):
-    #for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
-        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
-        b = tl.load(b_ptrs, eviction_policy='evict_first')
+    #for k in range(num_pid_k):
+    for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
+        b = tl.load(b_ptrs, eviction_policy=b_evict)
 
         #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
         k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
         if(load_scales_as_block):
-            #scales = tl.full((BLOCK_SIZE_N, BLOCK_SIZE_K // group_size), value=1, dtype=tl.uint8)
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy='evict_first')
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
         else:
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy='evict_first')
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
             scales = tl.broadcast_to(scales, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
-         
-        acc = tl.dot_scaled(a, None, "bf16", b, scales, "e2m1", acc) #rhs_k_pack=True 
+        
+        acc = tl.dot_scaled(a, None, "bf16", b, scales, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
