@@ -188,11 +188,11 @@ class A16Wn:
         gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth)
 
         if(self.quant_type == "MXFP"): #[K//32, N]
-            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.contiguous() #.T.contiguous().T
             gemlite_linear.scales.data = gemlite_linear.scales.data.to(torch.float8_e8m0fnu).view(torch.uint8)
-            gemlite_linear.scales.data = gemlite_linear.scales.data.T#.contiguous()
+            gemlite_linear.scales.data = gemlite_linear.scales.data.T
             gemlite_linear.W_group_mode = 2 #TODO - USE ANOTHER W_GROU)_MODE ? or another type_id for autotune
             gemlite_linear.channel_scale_mode = 0
+            self.post_scale = False
 
         if(group_size == in_features and self.dtype == "INT"):
             if(self.post_scale):
