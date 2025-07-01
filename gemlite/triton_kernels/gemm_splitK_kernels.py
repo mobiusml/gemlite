@@ -69,7 +69,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Constraint: BLOCK_SIZE_K >= group_size
         
-        block_size_k = min(block_size_k, g) #ONLY FOR load_as_block = False
+        #block_size_k = min(block_size_k, g) #ONLY FOR load_as_block = False
+        #TODO: MANAGE THIS AUTOMATICALLY
 
 
         block_size_k = next_power_of_2(block_size_k)
@@ -491,6 +492,7 @@ def gemm_splitK_MX_kernel(
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_ak = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
     BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
 
     #B
@@ -523,13 +525,13 @@ def gemm_splitK_MX_kernel(
 
     for k in range(num_pid_k):
     #for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
-        a = tl.load(a_ptrs, eviction_policy='evict_last')
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy='evict_last')
         b = tl.load(b_ptrs, eviction_policy='evict_first')
 
         #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
-        k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=32
+        k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
         if(load_scales_as_block):
-            #scales = tl.full((BLOCK_SIZE_N, BLOCK_SIZE_K // 32), value=1, dtype=tl.uint8)
+            #scales = tl.full((BLOCK_SIZE_N, BLOCK_SIZE_K // group_size), value=1, dtype=tl.uint8)
             scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy='evict_first')
         else:
             scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy='evict_first')
@@ -570,8 +572,6 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
-
-    print(DTYPE_TO_TORCH[output_dtype], output.dtype, native_atomic)
 
     kernel = gemm_splitK_kernel[grid](
         x, W_q, output, 
