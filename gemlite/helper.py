@@ -135,27 +135,49 @@ class A16W8: #INT8 weights
 
 #FP16 activations / Wn packed weights
 class A16Wn:
-    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=default_post_scale):
+    def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, quant_type="INT", post_scale=default_post_scale):
+
+        assert quant_type in ["INT", "MXFP", "NVFP"], f"Invalid quant_type. Got {quant_type}, valid values are INT, MXFP, NVFP."
+
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
+        self.quant_type = quant_type
+        if(quant_type in ["MXFP", "NVFP"]):
+            packing_bitwidth = 8
         self.packing_bitwidth = packing_bitwidth
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
+        if(self.quant_type in ["MXFP"]):
+            assert W_nbits in [8, 4], "Unsupported W_nbit for MXFP quant_dtype."
+            assert group_size == 32, "group_size should 32 for MXFP."
+        if(self.quant_type in ["NVFP"]):
+            assert W_nbits in [4], "Unsupported W_nbit for NVFP quant_dtype."
+            assert group_size == 16, "group_size should 16 for NVFP."
+
         if(isinstance(W_q, torch.nn.Parameter)):
             W_q = W_q.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
-        dtype = scales.dtype if(self.dtype is None) else self.dtype
-        scales = scales.to(dtype)
-        assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
+
+        if(self.quant_type == "INT"):
+            dtype = scales.dtype if(self.dtype is None) else self.dtype
+            scales = scales.to(dtype)
+            assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
+        else:
+            dtype = torch.bfloat16 if (self.dtype is None) else self.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
         in_features, out_features = W_q.shape[::-1]
 
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=dtype)
-        zeros = zeros.to(device=self.device, dtype=dtype)
+        scales = scales.to(device=self.device, dtype=dtype) if (scales is not None) else None
+        zeros = zeros.to(device=self.device, dtype=dtype) if (zeros is not None) else None
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        #MXFP4 / NVFP4 conversion to indices TODO
+        if(self.quant_type in ["MXFP", "NVFP"] and W_q.is_floating_point()):
+            #W_q -> to indices
+            pass
 
         gemlite_linear = GemLiteLinearTriton(W_nbits, 
                         group_size=group_size,  
@@ -166,9 +188,23 @@ class A16Wn:
                         scaled_activations=False,
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth) 
+        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth)
 
-        if(group_size == in_features):
+        if(self.quant_type == "MXFP"): #[K//32, N]
+            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.T.contiguous().T
+            gemlite_linear.scales.data = gemlite_linear.scales.data.to(torch.float8_e8m0fnu).view(torch.uint8)
+            gemlite_linear.scales.data = gemlite_linear.scales.data.T#.contiguous()
+            gemlite_linear.W_group_mode = 2
+            gemlite_linear.channel_scale_mode = 0
+        if(self.quant_type == "NVFP"): #[K//16, N]
+            gemlite_linear.W_q.data    = gemlite_linear.W_q.data.T.contiguous().T
+            gemlite_linear.scales.data = gemlite_linear.scales.data.to(torch.float8_e4m3fn)#.view(torch.uint8)
+            gemlite_linear.scales.data = gemlite_linear.scales.data.T#.contiguous().T
+            gemlite_linear.W_group_mode = 2
+            gemlite_linear.channel_scale_mode = 0
+
+
+        if(group_size == in_features and self.dtype == "INT"):
             if(self.post_scale):
                 gemlite_linear.W_group_mode = 1
                 gemlite_linear.channel_scale_mode = 1
@@ -317,8 +353,8 @@ class A8Wn_dynamic(A16Wn):
         input_dtype = TORCH_TO_DTYPE[self.fp8]
             
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=torch.float32 if self.fp32_scale else dtype)
-        zeros = zeros.to(device=self.device, dtype=dtype)
+        scales = scales.to(device=self.device, dtype=torch.float32 if self.fp32_scale else dtype) if (scales is not None) else None
+        zeros = zeros.to(device=self.device, dtype=dtype) if (zeros is not None) else None
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         in_features, out_features = W_q.shape[::-1]

@@ -314,8 +314,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             raise NotImplementedError("Unsupport input dtype: " + str(input_dtype))
 
         if(group_size is not None):
-            if(group_size < 32):
-                raise NotImplementedError("Only group_size >= 32 is supported.")
+            if(group_size < 16):
+                raise NotImplementedError("Only group_size >= 16 is supported.")
 
         group_size = 1 if (group_size is None) else group_size
 
@@ -576,19 +576,19 @@ class GemLiteLinearTriton(torch.nn.Module):
     
         #Can't use GEMLITE_TRITON_MAPPING for some reason kernel.cache is empty
         _GEMLITE_TRITON_MAPPING = {}
-        from .triton_kernels.gemv import gemv
+        from .triton_kernels.gemv_kernels import gemv
         _GEMLITE_TRITON_MAPPING['GEMV'] = gemv
 
-        from .triton_kernels.gemv_revsplitK import gemv_revsplitK
+        from .triton_kernels.gemv_revsplitK_kernels import gemv_revsplitK
         _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK
 
-        from .triton_kernels.gemv_splitK import gemv_splitK
+        from .triton_kernels.gemv_splitK_kernels import gemv_splitK
         _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK
 
-        from .triton_kernels.gemm_splitK import gemm_splitK
+        from .triton_kernels.gemm_splitK_kernels import gemm_splitK
         _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK
 
-        from .triton_kernels.gemm import gemm
+        from .triton_kernels.gemm_kernels import gemm
         _GEMLITE_TRITON_MAPPING['GEMM'] = gemm
 
         for name in _GEMLITE_TRITON_MAPPING:
