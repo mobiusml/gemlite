@@ -44,11 +44,11 @@ GEMLITE_ACC_DTYPE = {
 }
 
 GEMLITE_TRITON_KERNELS = [
-    gemv_A16fWnO16f,
-    gemv_revsplitK_A16fWnO16f,
-    gemv_splitK_A16fWnO16f,
-    gemm_splitK_A16fWnO16f, #gemm_splitK_A16fWnO16f / gemm_splitK_persistent_A16fWnO16f
-    gemm_A16fWnO16f,
+    gemv,
+    gemv_revsplitK,
+    gemv_splitK,
+    gemm_splitK, #gemm_splitK / gemm_splitK_persistent
+    gemm,
 ]
 
 GEMLITE_TRITON_MAPPING       = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
@@ -576,20 +576,20 @@ class GemLiteLinearTriton(torch.nn.Module):
     
         #Can't use GEMLITE_TRITON_MAPPING for some reason kernel.cache is empty
         _GEMLITE_TRITON_MAPPING = {}
-        from .triton_kernels.gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV'] = gemv_A16fWnO16f
+        from .triton_kernels.gemv import gemv
+        _GEMLITE_TRITON_MAPPING['GEMV'] = gemv
 
-        from .triton_kernels.gemv_revsplitK_A16fWnO16f_int32packing import gemv_revsplitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK_A16fWnO16f
+        from .triton_kernels.gemv_revsplitK import gemv_revsplitK
+        _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK
 
-        from .triton_kernels.gemv_splitK_A16fWnO16f_int32packing import gemv_splitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK_A16fWnO16f
+        from .triton_kernels.gemv_splitK import gemv_splitK
+        _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK
 
-        from .triton_kernels.gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK_A16fWnO16f
+        from .triton_kernels.gemm_splitK import gemm_splitK
+        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK
 
-        from .triton_kernels.gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMM'] = gemm_A16fWnO16f
+        from .triton_kernels.gemm import gemm
+        _GEMLITE_TRITON_MAPPING['GEMM'] = gemm
 
         for name in _GEMLITE_TRITON_MAPPING:
             if(name not in config): 

@@ -226,7 +226,7 @@ else:
 )
 
 @triton.jit
-def gemm_A16fWnO16f_int32packing_kernel(
+def gemm_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, M_CLOSEST,
@@ -388,7 +388,7 @@ def gemm_A16fWnO16f_int32packing_kernel(
     tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
 
 
-def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
@@ -403,7 +403,7 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
 
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
-    gemm_A16fWnO16f_int32packing_kernel[grid](
+    gemm_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,
@@ -428,9 +428,9 @@ def gemm_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     return output
 
     
-class gemm_A16fWnO16f:
-    kernel = gemm_A16fWnO16f_int32packing_kernel
-    forward = gemm_A16fWnO16f_int32packing_forward
+class gemm:
+    kernel = gemm_kernel
+    forward = gemm_forward
     matmul_type = MATMUL_TYPE
 
-__all__ = ["gemm_A16fWnO16f"]
+__all__ = ["gemm"]

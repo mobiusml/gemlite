@@ -212,7 +212,7 @@ else:
 )
 
 @triton.jit
-def gemv_A16fWnO16f_int32packing_kernel(
+def gemv_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
@@ -369,7 +369,7 @@ def gemv_A16fWnO16f_int32packing_kernel(
 
 KERNEL_CACHE = {}
 
-def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int,  
                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id: int,
@@ -410,7 +410,7 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     else:
         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
 
-    gemv_A16fWnO16f_int32packing_kernel[grid](
+    gemv_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
@@ -438,10 +438,10 @@ def gemv_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor,
     return output
 
 
-class gemv_A16fWnO16f:
-    kernel      = gemv_A16fWnO16f_int32packing_kernel
-    forward     = gemv_A16fWnO16f_int32packing_forward
+class gemv:
+    kernel      = gemv_kernel
+    forward     = gemv_forward
     matmul_type = MATMUL_TYPE
 
-__all__ = ["gemv_A16fWnO16f"]
+__all__ = ["gemv"]
 
