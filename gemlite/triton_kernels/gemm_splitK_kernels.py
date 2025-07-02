@@ -507,11 +507,15 @@ def gemm_splitK_MX_kernel(
     stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
     BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
 
+    if(input_dtype == tl.float16):
+        a_dtype: tl.constexpr = "fp16"
+    if(input_dtype == tl.bfloat16):
+        a_dtype: tl.constexpr = "bf16"
     if(elements_per_sample == 1): #FP8
         b_dtype: tl.constexpr = "e4m3"
     if(elements_per_sample == 2): #FP4
         b_dtype: tl.constexpr = "e2m1"
-
+    
     if(load_scales_as_block):
         offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
         offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
@@ -536,7 +540,7 @@ def gemm_splitK_MX_kernel(
             scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
             scales = tl.broadcast_to(scales, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
         
-        acc = tl.dot_scaled(a, None, "bf16", b, scales, b_dtype, acc)
+        acc = tl.dot_scaled(a, None, a_dtype, b, scales, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
