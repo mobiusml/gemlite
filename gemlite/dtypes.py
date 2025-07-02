@@ -18,6 +18,11 @@ class DType(Enum):
     INT64  = 11
     FP8e4nuz = 12
     FP8e5nuz = 13
+    MXFP16 = 14
+    MXBF16 = 15
+    MXFP8  = 16
+    MXFP4  = 17
+    NVFP4  = 18
 
 
 DTYPE_TO_TORCH = {
@@ -35,6 +40,11 @@ DTYPE_TO_TORCH = {
     11: torch.int64,
     12: torch.float8_e4m3fnuz,
     13: torch.float8_e5m2fnuz,
+    14: torch.float16,
+    15: torch.bfloat16,
+    16: torch.float8_e4m3fn,
+    17: torch.uint8,
+    18: torch.uint8,
 }
 
 TORCH_TO_DTYPE = {
