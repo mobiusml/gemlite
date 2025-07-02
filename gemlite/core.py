@@ -41,6 +41,10 @@ GEMLITE_ACC_DTYPE = {
     DType.FP8e5: DType.FP32, 
     DType.FP8e5nuz: DType.FP32,
     DType.INT8: DType.INT32,
+    DType.MXFP16: DType.FP32,
+    DType.MXBF16: DType.FP32,
+    DType.MXFP8: DType.FP32,
+    DType.MXFP4: DType.FP32,
 }
 
 GEMLITE_TRITON_KERNELS = [
@@ -283,7 +287,8 @@ def forward_functional_fake(
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8, 
+                            DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
     MIN_SIZE              = 32
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
@@ -379,6 +384,9 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.scaled_activations = bool(self.scaled_activations)
         self.data_contiguous = bool(self.data_contiguous)
 
+    def using_mx_dtype(self):
+        return self.input_dtype in [DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
+
     #Make sure to feed UINT8 W_q for packing
     def pack(
         self,
@@ -393,6 +401,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         #Set packing bitwidth
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
+
+        #Only 8-bit packing is supported for microscaling
+        if(self.using_mx_dtype()):
+            packing_bitwidth = 8
 
         #Non-packed weights
         self.W_q = None
@@ -423,6 +435,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             
             if contiguous is None:
                 contiguous = True
+                #TODO: check this for MX dtypes
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
@@ -515,6 +528,16 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = self.scales.contiguous()
         if(isinstance(self.zeros, torch.Tensor)):
             self.zeros = self.zeros.contiguous()
+
+        #MX dtypes scaling
+        if(self.input_dtype in [DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4]):
+            self.scales = self.scales.to(torch.float8_e8m0fnu).view(torch.uint8)
+        if(self.input_dtype in [DType.NVFP4]):
+            self.scales = self.scales.to(torch.float8_e4m3fn)
+        if(self.using_mx_dtype()):
+            self.scales = self.scales.T
+            self.W_group_mode = 2
+            self.channel_scale_mode = 0
 
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)

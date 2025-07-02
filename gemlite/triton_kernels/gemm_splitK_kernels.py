@@ -508,7 +508,7 @@ def gemm_splitK_MX_kernel(
     BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
 
     if(elements_per_sample == 1): #FP8
-        b_dtype: tl.constexpr = "e3m4"
+        b_dtype: tl.constexpr = "e4m3"
     if(elements_per_sample == 2): #FP4
         b_dtype: tl.constexpr = "e2m1"
 
