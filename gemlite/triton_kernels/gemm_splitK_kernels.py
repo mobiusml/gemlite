@@ -297,6 +297,8 @@ def gemm_splitK_INT_kernel(
     atomic_mode: tl.constexpr = 'relaxed',
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
+    #################################
+    load_scales_as_block: tl.constexpr = False,
 ):
     """
     Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
@@ -519,7 +521,7 @@ def gemm_splitK_MX_kernel(
     if(load_scales_as_block):
         offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
         offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        scales_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_b_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K //32]
+        scales_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_b_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
     else:
         offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
         offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N) 
