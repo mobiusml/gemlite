@@ -36,6 +36,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             config.pop('num_consumer_groups', None)
             config.pop('reg_dec_producer', None)
             config.pop('reg_inc_consumer', None)
+            config["NUM_STAGES"] = num_stages
 
             yield triton.Config(config, num_stages=num_stages, num_warps=num_warps)
             return
@@ -61,7 +62,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         elif m > 256:  block_size_m = min(max(block_size_m, 64), 256) #m > 256
     
         #Constraint: BLOCK_SIZE_K >= group_size
-        block_size_k = min(block_size_k, g)
+        #block_size_k = min(block_size_k, g) #ONLY FOR load_as_block = False
+        #TODO: MANAGE THIS AUTOMATICALLY
+
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
 
@@ -92,6 +95,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             "BLOCK_SIZE_K": block_size_k,
             "GROUP_SIZE_M": group_size_m,
             "A_load_order": A_load_order,
+            "NUM_STAGES": num_stages,
         }
 
         if IS_HIP:
@@ -226,43 +230,44 @@ else:
 )
 
 @triton.jit
-def gemm_kernel(
+def gemm_INT_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, M_CLOSEST,
     ######### Quant parms #########
-    W_nbits: tl.constexpr, 
-    group_size: tl.constexpr, 
-    unpack_mask: tl.constexpr, 
-    elements_per_sample: tl.constexpr,
+    W_nbits: tl.constexpr,
+    group_size: tl.constexpr,
+    unpack_mask: tl.constexpr,
+    elements_per_sample: tl.constexpr, 
     #################################
-    type_id: tl.constexpr, 
+    type_id: tl.constexpr,
     a_sizeof: tl.constexpr,
     b_sizeof: tl.constexpr,
     ######### Strides #########
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
-    stride_meta_g, stride_meta_n,
+    stride_meta_n: tl.constexpr, stride_meta_g: tl.constexpr,
     ######### Dtypes #########
     input_dtype: tl.constexpr,
     output_dtype: tl.constexpr,
-    acc_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
+    acc_dtype: tl.constexpr,
     ######### Meta-data mode #########
     channel_scale_mode: tl.constexpr,
     W_group_mode: tl.constexpr,
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
-    #CLOSEST_M: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    A_load_order: tl.constexpr, 
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, 
+    GROUP_SIZE_M: tl.constexpr, NUM_STAGES: tl.constexpr,
+    A_load_order: tl.constexpr,
     data_contiguous: tl.constexpr,
     #################################
     meta_evict_policy: tl.constexpr = '',
     a_evict: tl.constexpr = '',
     b_evict: tl.constexpr = '',
+    #################################
+    load_scales_as_block: tl.constexpr = False,
 ):
     """
     Based on https://github.com/fpgaminer/GPTQ-triton
@@ -388,14 +393,145 @@ def gemm_kernel(
     tl.store(c_ptrs, acc, mask=(offs_cm[:, None] < M) & (offs_cn[None, :] < N)) 
 
 
+@triton.autotune(
+    configs = get_autotune_config(),
+    key = KEYS, 
+    prune_configs_by = {'early_config_prune': kernel_config_pruner},
+    use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
+)
+
+
+@triton.jit
+def gemm_MX_kernel(
+    a_ptr, b_ptr, c_ptr,
+    scales_ptr, zeros_ptr, scales_a_ptr,
+    M, N, K, M_CLOSEST,
+    ######### Quant parms #########
+    W_nbits: tl.constexpr,
+    group_size: tl.constexpr,
+    unpack_mask: tl.constexpr,
+    elements_per_sample: tl.constexpr, 
+    #################################
+    type_id: tl.constexpr,
+    a_sizeof: tl.constexpr,
+    b_sizeof: tl.constexpr,
+    ######### Strides #########
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    stride_meta_n: tl.constexpr, stride_meta_g: tl.constexpr,
+    ######### Dtypes #########
+    input_dtype: tl.constexpr,
+    output_dtype: tl.constexpr,
+    meta_dtype: tl.constexpr,
+    acc_dtype: tl.constexpr,
+    ######### Meta-data mode #########
+    channel_scale_mode: tl.constexpr,
+    W_group_mode: tl.constexpr,
+    zero_is_scalar: tl.constexpr,
+    ######### tuning params #########
+    BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr, 
+    GROUP_SIZE_M: tl.constexpr, NUM_STAGES: tl.constexpr,
+    A_load_order: tl.constexpr,
+    data_contiguous: tl.constexpr,
+    #################################
+    meta_evict_policy: tl.constexpr = '',
+    a_evict: tl.constexpr = '',
+    b_evict: tl.constexpr = '',
+    #################################
+    load_scales_as_block: tl.constexpr = True,
+):
+    
+    SPLIT_K: tl.constexpr = 1
+    pid_k: tl.constexpr = 0
+
+    pid   = tl.program_id(axis=0)
+
+    pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
+       
+    num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
+
+    #A
+    offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_ak = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+    a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
+    BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
+
+    #B
+    BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+    offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E)
+    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    if(data_contiguous):
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_E), BLOCK_SIZE_K_E) #row_major
+    else:
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
+    b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
+    BLOCK_SIZE_K_B: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
+
+    stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
+    BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
+
+    if(input_dtype == tl.float16):
+        a_dtype: tl.constexpr = "fp16"
+    if(input_dtype == tl.bfloat16):
+        a_dtype: tl.constexpr = "bf16"
+    if(elements_per_sample == 1): #FP8
+        b_dtype: tl.constexpr = "e4m3"
+    if(elements_per_sample == 2): #FP4
+        b_dtype: tl.constexpr = "e2m1"
+    
+    if(load_scales_as_block):
+        offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
+        offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+        scales_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_b_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
+    else:
+        offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
+        offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N) 
+        scales_ptrs  = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
+
+    acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
+
+    #for k in range(num_pid_k):
+    for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
+        b = tl.load(b_ptrs, eviction_policy=b_evict)
+
+        #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
+        k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
+        if(load_scales_as_block):
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+        else:
+            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+            scales = tl.broadcast_to(scales, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
+        
+        acc = tl.dot_scaled(a, None, a_dtype, b, scales, b_dtype, acc)
+
+        a_ptrs += BLOCK_SIZE_K_A * stride_ak
+        b_ptrs += BLOCK_SIZE_K_B * stride_bk
+
+    #############################################################################################################
+    #Output
+    offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+    c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+    mask    = ((offs_cm[:, None] < M) & (offs_cn[None, :] < N)).to(tl.int1)
+
+    if(SPLIT_K > 1):
+        tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
+    else:
+        tl.store(c_ptrs, acc, mask=mask)
+
+
+gemm_kernel = gemm_MX_kernel
 def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
-                                         input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-                                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
-                                        ) -> Tensor:
+                W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+                input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
+                channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
+                ) -> Tensor:
     
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
-
     M_CLOSEST = get_closest_m(M)
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
@@ -404,21 +540,23 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']),)
 
     gemm_kernel[grid](
-        x, W_q, output,
+        x, W_q, output, 
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,
-        W_nbits, group_size, unpack_mask, elements_per_sample, type_id,
-        x.dtype.itemsize, W_q.dtype.itemsize, 
+        #############################################
+        W_nbits, group_size, unpack_mask, elements_per_sample,
+        type_id, x.dtype.itemsize, W_q.dtype.itemsize,
+        ###############################################
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
         scales.stride(0), scales.stride(1),
-        ########################
+        ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
-        ########################
+        ################################################
         channel_scale_mode = channel_scale_mode,
         W_group_mode       = W_group_mode,
         zero_is_scalar     = zeros.numel() == 1,

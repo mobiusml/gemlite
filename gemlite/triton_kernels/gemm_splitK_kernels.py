@@ -69,10 +69,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(m >= 32): split_k = min(split_k, 8)
 
         #Constraint: BLOCK_SIZE_K >= group_size
-        
         #block_size_k = min(block_size_k, g) #ONLY FOR load_as_block = False
         #TODO: MANAGE THIS AUTOMATICALLY
-
 
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
@@ -563,10 +561,10 @@ def gemm_splitK_MX_kernel(
 
 gemm_splitK_kernel = gemm_splitK_MX_kernel
 def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-                                                W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
-                                                input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-                                                channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
-                                                ) -> Tensor: 
+						W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
+						input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
+						channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
+						) -> Tensor: 
         
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
@@ -578,7 +576,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
 
-    kernel = gemm_splitK_kernel[grid](
+    gemm_splitK_kernel[grid](
         x, W_q, output, 
         scales, zeros, scales_x,
         M, N, K, M_CLOSEST,
