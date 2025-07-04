@@ -523,7 +523,7 @@ def gemm_MX_kernel(
     else:
         tl.store(c_ptrs, acc, mask=mask)
 
-
+#gemm_kernel = gemm_INT_kernel
 gemm_kernel = gemm_MX_kernel
 def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                 W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 

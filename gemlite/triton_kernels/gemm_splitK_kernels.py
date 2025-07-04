@@ -559,6 +559,7 @@ def gemm_splitK_MX_kernel(
         tl.store(c_ptrs, acc, mask=mask)
 
 
+#gemm_splitK_kernel = gemm_splitK_INT_kernel
 gemm_splitK_kernel = gemm_splitK_MX_kernel
 def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
 						W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
