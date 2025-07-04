@@ -258,7 +258,12 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
         elif(quant_type == "MXFP"):
-            dtype = torch.bfloat16 if (self.dtype is None) else self.dtype
+            if(W_nbits == 8):
+                assert W_q.dtype in [torch.float8_e4m3fn], f"Unsupported dtype of W_q. got {W_q.dtype}"
+            if(W_nbits == 4):
+                assert W_q.dtype in [torch.uint8], f"Unsupported dtype of W_q. got {W_q.dtype}"
+
+            dtype = torch.float16 if (self.dtype is None) else self.dtype
             if(dtype == torch.float16):
                 gemlite_dtype = DType.MXFP16
             elif(dtype == torch.bfloat16):
@@ -266,10 +271,6 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
             else:
                 raise Exception(f"Unsupported dtype for MXFP. Got {dtype}, supported [torch.float16, torch.bfloat16]")
             self.post_scale = False
-            
-            # #Handle indexing
-            # if(W_q.is_floating_point()):
-            #     W_q = to_fp4_indices(W_q)
 
             N, K = W_q.shape
             W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)#.float()
