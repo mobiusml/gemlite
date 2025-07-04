@@ -35,7 +35,6 @@ class QuantizerMXFP:
         self.fp4_p_vals     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=compute_dtype, device=device)
         self.fp4_thresholds = (self.fp4_p_vals[:-1] + self.fp4_p_vals[1:]) / 2
         self.max_val        = self.fp4_values.abs().max()
-        self.eps            = 1e-8
 
     def round_to_closest(self, tensor, W_nbits):
         if(W_nbits == 8):
@@ -49,7 +48,8 @@ class QuantizerMXFP:
         assert W_q.is_floating_point(), "Input should be floating point fp4 values."
         return (W_q.view(-1, 1) == self.fp4_values.view(1 , -1)).to(torch.uint8).argmax(dim=1).to(torch.uint8).view(W_q.shape)
 
-    def quantize_mxfp(self, W: torch.Tensor, W_nbits: int, group_size: int = 32, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp(self, W: torch.Tensor, W_nbits: int, group_size: int = 32, window_size: int = 0, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
 
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
@@ -61,14 +61,13 @@ class QuantizerMXFP:
             initial_log2_scales = torch.round(torch.log2(ideal_scale))
             search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=initial_log2_scales.dtype).view(1, -1)
             candidate_scales = torch.pow(2, initial_log2_scales + search_offsets)
-            candidate_scales += self.eps
+            candidate_scales[candidate_scales < eps] = eps
 
             W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1), W_nbits=W_nbits)
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
             scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
 
-        scales += self.eps
         W_q = self.round_to_closest(W_flat / scales, W_nbits=W_nbits)
         scales = scales.to(torch.float8_e8m0fnu)
 
@@ -79,7 +78,8 @@ class QuantizerMXFP:
                 W_q = self.to_index(W_q)
         return W_q, scales
 
-    def quantize_nvfp4(self, W: torch.Tensor, group_size: int = 16, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+    @torch.compile(fullgraph=True)
+    def quantize_nvfp4(self, W: torch.Tensor, group_size: int = 16, window_size: int = 0, eps: float = 1e-8, index: bool = False) -> (torch.Tensor, torch.Tensor):
         #Uses a greedy exhaustive search approach to look for the best scales in a neighborhood
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
@@ -93,7 +93,7 @@ class QuantizerMXFP:
             candidate_scales[candidate_scales==-1] = 1
             candidate_scales[candidate_scales==127] = 1
             candidate_scales = candidate_scales.view(torch.float8_e4m3fn).float()
-            candidate_scales += self.eps
+            candidate_scales[candidate_scales < eps] = eps
 
             W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
@@ -161,7 +161,7 @@ def patch_model(model, device, processor, skip_modules=[]):
     gc.collect()
 
 #16-bit activations / 8-bit weigths
-class A16W8: #INT8 weights
+class A16W8: #INT8 weight-only channel-wise
     def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
         self.device = device
         self.dtype = dtype
@@ -226,7 +226,7 @@ class A16W8: #INT8 weights
         return out_layer
 
 #FP16 activations / Wn packed weights
-class A16Wn:
+class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type 
     def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=default_post_scale):
 
         self.post_scale = post_scale
@@ -236,6 +236,9 @@ class A16Wn:
         self.quantizer_mx = None
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
+        return self._from_weights(W_q, scales, zeros, W_nbits, group_size, bias, quant_type)
+
+    def _from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
 
         assert quant_type in ["INT", "MXFP"], f"Invalid quant_type. Got {quant_type}, valid values are INT, MXFP."
 
@@ -289,7 +292,7 @@ class A16Wn:
 
         gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth)
 
-        if(group_size == in_features and self.dtype == "INT"):
+        if(group_size == in_features and quant_type == "INT"):
             if(self.post_scale):
                 gemlite_linear.W_group_mode = 1
                 gemlite_linear.channel_scale_mode = 1
@@ -316,7 +319,7 @@ class A16Wn:
 
         cleanup_linear(hqq_layer, del_orig)
 
-        out_layer = self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="INT")
+        out_layer = self._from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="INT")
         
         #Clean-up
         del W_q
@@ -337,12 +340,61 @@ class A16Wn:
         
         cleanup_linear(linear_layer, del_orig)
 
-        out_layer = self.from_weights(W_q=W_q, scales=scales, zeros=None, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="MXFP")
+        out_layer = self._from_weights(W_q=W_q, scales=scales, zeros=None, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="MXFP")
 
         #Clean-uo
         del W_q
         torch.cuda.empty_cache()
         return out_layer
+
+
+#Alias
+A16W8_CHANNELWISE_INT = A16W8
+
+class A16Wn_HQQ_INT(A16Wn):
+    def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
+        super().__init__(device=device, dtype=dtype)
+        self.W_nbits = W_nbits
+
+    def from_weights(self, W_q, scales, zeros, bias=None):
+        group_size = W_q.numel() // scales.numel()
+        return super().from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=self.W_nbits, group_size=group_size, bias=bias, quant_type="INT")
+
+class A16W8_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype,  W_nbits=8)
+
+class A16W4_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=4)
+
+class A16W2_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=2)
+
+class A16W1_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=1)
+
+class A16Wn_MXFP(A16Wn):
+    def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
+        super().__init__(device=device, dtype=dtype)
+        self.W_nbits = W_nbits
+
+    def from_weights(self, W_q, scales, bias=None):
+        group_size = W_q.numel() // scales.numel()
+        return super().from_weights(W_q=W_q, scales=scales, zeros=None, W_nbits=self.W_nbits, group_size=group_size, bias=bias, quant_type="MXFP")
+
+    def from_linear(self, linear_layer, del_orig=True):
+        return super().mxfp_from_linear(linear_layer=linear_layer, W_nbits=self.W_nbits, del_orig=del_orig)
+
+class A16W8_MXFP(A16Wn_MXFP):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=8)
+
+class A16W4_MXFP(A16Wn_MXFP):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=4)
 
 ############################################################################################################################################################
 #8-bit dynamic activations / 8-bit weights
@@ -571,7 +623,7 @@ class A8W158:
             bias = bias.data
 
         dtype = weight.dtype if(self.dtype is None) else self.dtype
-        assert dtypee in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
+        assert dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
 
         weight        = weight.to(device=self.device, dtype=dtype)
         W_q           = (weight + 1).to(torch.uint8)
