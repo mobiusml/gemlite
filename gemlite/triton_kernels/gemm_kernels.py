@@ -441,33 +441,28 @@ def gemm_MX_kernel(
     #################################
     load_scales_as_block: tl.constexpr = True,
 ):
-    
-    SPLIT_K: tl.constexpr = 1
-    pid_k: tl.constexpr = 0
 
-    pid   = tl.program_id(axis=0)
-
+    pid = tl.program_id(axis=0)
     pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
-       
-    num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
+    num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
 
     #A
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_ak = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+    offs_ak = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
     a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
-    BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
+    BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K
 
     #B
     BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
-    offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E)
+    offs_bk = tl.arange(0, BLOCK_SIZE_K_E)
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     if(data_contiguous):
         offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_E), BLOCK_SIZE_K_E) #row_major
     else:
         offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
     b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
-    BLOCK_SIZE_K_B: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
+    BLOCK_SIZE_K_B: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample)
 
     stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
     BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
@@ -497,8 +492,7 @@ def gemm_MX_kernel(
         a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         b = tl.load(b_ptrs, eviction_policy=b_evict)
 
-        #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
-        k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
+        k_m = k * BLOCK_SIZE_K_S
         if(load_scales_as_block):
             scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
         else:
@@ -517,11 +511,7 @@ def gemm_MX_kernel(
     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     mask    = ((offs_cm[:, None] < M) & (offs_cn[None, :] < N)).to(tl.int1)
-
-    if(SPLIT_K > 1):
-        tl.atomic_add(c_ptrs, acc, mask=mask, sem=atomic_mode) 
-    else:
-        tl.store(c_ptrs, acc, mask=mask)
+    tl.store(c_ptrs, acc, mask=mask)
 
 #gemm_kernel = gemm_INT_kernel
 gemm_kernel = gemm_MX_kernel
