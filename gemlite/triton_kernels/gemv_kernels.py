@@ -37,6 +37,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             config.pop('num_consumer_groups', None)
             config.pop('reg_dec_producer', None)
             config.pop('reg_inc_consumer', None)
+            configs['NUM_STAGES'] = num_stages
 
             yield triton.Config(config, num_stages=num_stages, num_warps=num_warps, pre_hook=pre_hook)
             return
@@ -49,6 +50,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 
         #Constraints
         block_size_k = min(g, block_size_k) #Makes BLOCK_SIZE_K compatible with the group_size
+        #TOOD: disable this for load_scales_as_block = True
+
+
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
 
@@ -74,6 +78,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             'BLOCK_SIZE_K': block_size_k,
             'A_load_order': A_load_order,
             'dot_prod_mode': dot_prod_mode,
+            'NUM_STAGES': num_stages,
         }
 
         if IS_HIP:
@@ -185,6 +190,7 @@ def get_default_config_amd():
     config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1)
     return [config]
 ########################################################################################################################################################################
+KERNEL_CACHE = {}
 
 if IS_HIP:
     get_max_autotune_config = get_max_autotune_config_amd
@@ -203,6 +209,243 @@ elif(AUTOTUNE_SETTING == 'fast'):
 else:
     get_autotune_config = get_default_config
 
+# @triton.autotune(
+#     configs=get_autotune_config(),
+#     key = KEYS,
+#     restore_value = ['a_ptr', 'b_ptr', 'c_ptr'],
+#     prune_configs_by = {'early_config_prune': kernel_config_pruner},
+#     use_cuda_graph = AUTOTUNE.USE_CUDA_GRAPH,
+# )
+
+# @triton.jit
+# def gemv_INT_kernel(
+#     a_ptr, b_ptr, c_ptr,
+#     scales_ptr, zeros_ptr, scales_a_ptr,
+#     M, N, K, 
+#     ######### Quant parms #########
+#     W_nbits: tl.constexpr, 
+#     group_size: tl.constexpr, 
+#     unpack_mask: tl.constexpr, 
+#     elements_per_sample: tl.constexpr, 
+#     type_id: tl.constexpr,
+#     use_prehook: tl.constexpr,
+#     ######### Strides #########
+#     stride_am, stride_ak,
+#     stride_bk, stride_bn,
+#     stride_cm, stride_cn,
+#     stride_meta_g, stride_meta_n,
+#     ######### Dtypes #########
+#     input_dtype: tl.constexpr,
+#     output_dtype: tl.constexpr,
+#     acc_dtype: tl.constexpr,
+#     meta_dtype: tl.constexpr,
+#     ######### Meta-data mode #########
+#     channel_scale_mode: tl.constexpr,
+#     W_group_mode: tl.constexpr,
+#     zero_is_scalar: tl.constexpr,
+#     ######### tuning params #########
+#     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
+#     A_load_order: tl.constexpr, NUM_STAGES: tl.constexpr,
+#     dot_prod_mode:tl.constexpr,
+#     data_contiguous: tl.constexpr,
+#     dump_b_val: tl.constexpr = 0, #Improve accuracy mainly for A16W8 with post looop scaling
+#     #####################################
+#     meta_evict_policy: tl.constexpr = '',
+#     atomic_mode: tl.constexpr = 'relaxed',
+#     a_evict: tl.constexpr = 'evict_last',
+#     b_evict: tl.constexpr = 'evict_first',
+#     join_version: tl.constexpr = False,
+#     #################################
+#     load_scales_as_block: tl.constexpr = False,
+# ):
+#     """
+#     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1
+#     A is of shape (M, K): float16 or bfloat16
+#     B is of shape (K // elements_per_sample, N): int32 as a packed matrix
+#     C is of shape (M, N): float16 or bfloat16 depending on the input A
+#     scales and zeros is of shape (group_size, N): float16 or bfloat16
+#     """    
+
+#     pid   = tl.program_id(axis=0)
+#     pid_k = tl.program_id(axis=1) 
+#     pid_m, pid_n = pid % M, pid // M
+
+#     offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M) 
+#     offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
+#     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+
+#     #Vectorized coalesced load
+#     ##############################
+#     if data_contiguous:
+#         offs_bn = offs_n  
+#     else:
+#         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
+#     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
+#     offs_ak = offs_k
+#     offs_bk = offs_k
+#     ###############################
+
+#     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak 
+
+#     if(join_version):
+#         BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+#         offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E) 
+#         b_ptrs  = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn 
+#     else:
+#         #orig version
+#         b_ptrs  = b_ptr + (offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn 
+
+#     ###################################################################
+#     #Load
+#     if(A_load_order == 0):
+#         a = tl.load(a_ptrs, eviction_policy=a_evict)
+
+#     b = tl.load(b_ptrs, eviction_policy=b_evict)
+
+#     if(A_load_order == 1):
+#         a = tl.load(a_ptrs, eviction_policy=a_evict)
+    
+#     if(W_group_mode > 0):
+#         k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
+
+#     if(W_group_mode >= 2): #[2, 3, 4]
+#         scales = tl.load(scales_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n, eviction_policy=meta_evict_policy) 
+#     else:
+#         scales = None
+    
+#     if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
+#         if(zero_is_scalar):
+#             zeros = tl.load(zeros_ptr, eviction_policy=a_evict)
+#         else:
+#             zeros = tl.load(zeros_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n, eviction_policy=meta_evict_policy) 
+#     else:
+#         zeros = None
+    
+#     if(A_load_order == 2):
+#         a = tl.load(a_ptrs, eviction_policy=a_evict)
+
+#     #tl.join() version
+#     if(join_version):
+#         if(elements_per_sample == 2):
+#             b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False) 
+
+#         if(elements_per_sample == 8):
+#             b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K // 4, BLOCK_SIZE_N), can_reorder=False) 
+#             b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K // 2, BLOCK_SIZE_N), can_reorder=False) 
+#             b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
+#     ####################################################################
+#     # Unpack and dequantize
+#     q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+#     b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
+
+#     if(A_load_order == 3):
+#         a = tl.load(a_ptrs, eviction_policy=a_evict)
+
+#     if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
+
+#     #Dot product
+#     if(dot_prod_mode == 0):
+#         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
+#     if(dot_prod_mode == 1):
+#         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True) 
+
+#     if(dump_b_val > 0): acc /= dump_b_val
+
+#     ##################################################################
+#     #Channel-wise scaling
+#     if(channel_scale_mode == 1): #weight-only
+#         scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
+#         acc      = acc.to(meta_dtype) * scales_b[None, :]
+
+#     if(channel_scale_mode == 2): #activation-only
+#         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+#         scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
+#         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
+
+#     if(channel_scale_mode == 3): #weight + activation
+#         scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+#         scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N,   other=1, eviction_policy=meta_evict_policy)
+#         acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
+
+#     ####################################################################
+#     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
+#     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+#     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+#     offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
+#     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
+#     tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
+
+# gemv_kernel = gemv_INT_kernel
+# def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+#                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
+#                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int,  
+#                                          channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id: int,
+#                                          ) -> Tensor:
+    
+#     global KERNEL_CACHE
+
+#     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+#     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
+    
+#     native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
+#     kernel_output_dtype = (DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
+
+#     if KERNEL.ENABLE_CACHING and M == 1:
+#         if (M, N) not in KERNEL_CACHE:
+#             KERNEL_CACHE[(M, N)] = {
+#                 "data": torch.empty((KERNEL.CACHE_SIZE, M, N), device=W_q.device, dtype=kernel_output_dtype),
+#                 "ptr": 0,
+#             }
+
+#         entry = KERNEL_CACHE[(M, N)]
+#         if entry["ptr"] % KERNEL.CACHE_SIZE == 0:
+#             entry["data"].zero_()
+#             entry["ptr"] = 0
+
+#         output = entry["data"][entry["ptr"] % KERNEL.CACHE_SIZE]
+#         entry["ptr"] += 1
+#         use_prehook = False
+#     else:
+#         #output, use_prehook = torch.empty((M, N), device=W_q.device, dtype=kernel_output_dtype), True
+#         output, use_prehook = torch.zeros((M, N), device=W_q.device, dtype=kernel_output_dtype), False
+
+#     grid = lambda meta: (triton.cdiv(M, meta['BLOCK_SIZE_M']) * triton.cdiv(N, meta['BLOCK_SIZE_N']), triton.cdiv(K, meta['BLOCK_SIZE_K']))
+
+#     dtype = DTYPE_TO_TRITON[input_dtype]
+#     if(dtype in [tl.float16, tl.bfloat16, tl.float32]):
+#         acc_dtype = dtype
+#     else:
+#         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
+
+#     gemv_kernel[grid](
+#         x, W_q, output,
+#         scales, zeros, scales_x,
+#         M, N, K
+#         ###########################################
+#         W_nbits, group_size, unpack_mask, elements_per_sample, type_id, use_prehook,
+#         x.stride(0), x.stride(1),
+#         W_q.stride(0), W_q.stride(1),
+#         output.stride(0), output.stride(1),
+#         scales.stride(0), scales.stride(1),
+#         ############################################
+#         input_dtype  = DTYPE_TO_TRITON[input_dtype],
+#         output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
+#         acc_dtype    = acc_dtype,
+#         meta_dtype   = DTYPE_TO_TRITON[meta_dtype],
+#         ############################################
+#         channel_scale_mode = channel_scale_mode,
+#         W_group_mode       = W_group_mode,
+#         zero_is_scalar     = zeros.numel() == 1,
+#         data_contiguous    = data_contiguous,
+#         dump_b_val         = 0.001 if(W_group_mode in [0, 1] and acc_dtype == DType.FP16.value and W_nbits == 8) else 0, #Warning: Only use with INT8
+#     )
+
+#     if(not native_atomic):
+#         output = output.to(DTYPE_TO_TORCH[output_dtype])
+
+#     return output
+
+
 @triton.autotune(
     configs=get_autotune_config(),
     key = KEYS,
@@ -212,9 +455,10 @@ else:
 )
 
 @triton.jit
-def gemv_kernel(
+def gemv_MX_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
+    mapping_ptr,
     M, N, K, 
     ######### Quant parms #########
     W_nbits: tl.constexpr, 
@@ -239,16 +483,18 @@ def gemv_kernel(
     zero_is_scalar: tl.constexpr,
     ######### tuning params #########
     BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexpr, BLOCK_SIZE_K: tl.constexpr,
-    A_load_order: tl.constexpr, 
+    A_load_order: tl.constexpr, NUM_STAGES: tl.constexpr,
     dot_prod_mode:tl.constexpr,
     data_contiguous: tl.constexpr,
     dump_b_val: tl.constexpr = 0, #Improve accuracy mainly for A16W8 with post looop scaling
     #####################################
-    meta_evict_policy: tl.constexpr = '',
+    meta_evict_policy: tl.constexpr = 'evict_first',
     atomic_mode: tl.constexpr = 'relaxed',
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
     join_version: tl.constexpr = False,
+    #################################
+    load_scales_as_block: tl.constexpr = False,
 ):
     """
     GEMV for C = matmul(A, dequantize(B, scales, zeros)). This is optimized for M==1
@@ -266,8 +512,6 @@ def gemv_kernel(
     offs_k = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     offs_n = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
-    #Vectorized coalesced load
-    ##############################
     if data_contiguous:
         offs_bn = offs_n  
     else:
@@ -275,18 +519,12 @@ def gemv_kernel(
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
     offs_ak = offs_k
     offs_bk = offs_k
-    ###############################
-
+    
     a_ptrs  = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak 
+    b_ptrs  = b_ptr + (offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn 
 
-    if(join_version):
-        BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
-        offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E) 
-        b_ptrs  = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn 
-    else:
-        #orig version
-        b_ptrs  = b_ptr + (offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn 
-
+    if(W_nbits == 4): #4-bit
+        mapping = tl.load(mapping_ptr + tl.arange(0, 16), eviction_policy='evict_last')[None, :].broadcast_to((BLOCK_SIZE_K, 16))
     ###################################################################
     #Load
     if(A_load_order == 0):
@@ -296,68 +534,32 @@ def gemv_kernel(
 
     if(A_load_order == 1):
         a = tl.load(a_ptrs, eviction_policy=a_evict)
-    
-    if(W_group_mode > 0):
-        k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
 
-    if(W_group_mode >= 2): #[2, 3, 4]
-        scales = tl.load(scales_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n, eviction_policy=meta_evict_policy) 
+    if(load_scales_as_block):
+        scales_ptrs = scales_ptr + (offs_bk[:, None] // group_size) * stride_meta_g + offs_bn[None, :] * stride_meta_n 
     else:
-        scales = None
-    
-    if(W_group_mode == 1 or W_group_mode >= 3): #[1, 3, 4]
-        if(zero_is_scalar):
-            zeros = tl.load(zeros_ptr, eviction_policy=a_evict)
-        else:
-            zeros = tl.load(zeros_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n, eviction_policy=meta_evict_policy) 
-    else:
-        zeros = None
+        k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
+        scales_ptrs = scales_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n
+
+    scales = tl.load(scales_ptrs, eviction_policy=meta_evict_policy)
+    scales = (tl.exp2(scales.to(tl.float32) - 127) * 0.50).to(input_dtype)
     
     if(A_load_order == 2):
         a = tl.load(a_ptrs, eviction_policy=a_evict)
-
-    #tl.join() version
-    if(join_version):
-        if(elements_per_sample == 2):
-            b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False) 
-
-        if(elements_per_sample == 8):
-            b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K // 4, BLOCK_SIZE_N), can_reorder=False) 
-            b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K // 2, BLOCK_SIZE_N), can_reorder=False) 
-            b = tl.join(b, b).permute(0, 2, 1).reshape((BLOCK_SIZE_K, BLOCK_SIZE_N), can_reorder=False)
-    ####################################################################
+    
     # Unpack and dequantize
-    q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
-    b = dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample, W_group_mode, zero_is_scalar)
-
-    if(A_load_order == 3):
-        a = tl.load(a_ptrs, eviction_policy=a_evict)
-
-    if(dump_b_val > 0): b = b.to(tl.float32) * dump_b_val
+    if(W_nbits == 4): #4-bit
+        q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+        b = (b >> q_shift) & 15 
+        b = tl.gather(mapping, b, axis=1)
+    
+    b = b.to(input_dtype) * scales
 
     #Dot product
     if(dot_prod_mode == 0):
         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
     if(dot_prod_mode == 1):
         acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True) 
-
-    if(dump_b_val > 0): acc /= dump_b_val
-
-    ##################################################################
-    #Channel-wise scaling
-    if(channel_scale_mode == 1): #weight-only
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N, other=1, eviction_policy=meta_evict_policy)
-        acc      = acc.to(meta_dtype) * scales_b[None, :]
-
-    if(channel_scale_mode == 2): #activation-only
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
-        scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=meta_dtype)
-        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
-
-    if(channel_scale_mode == 3): #weight + activation
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
-        scales_b = tl.load(scales_ptr + offs_bn, mask=offs_bn < N,   other=1, eviction_policy=meta_evict_policy)
-        acc      = acc.to(meta_dtype) * (scales_a[:, None] * scales_b[None, :])
 
     ####################################################################
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
@@ -367,7 +569,8 @@ def gemv_kernel(
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
 
-KERNEL_CACHE = {}
+gemv_kernel = gemv_MX_kernel
+fp4_mapping = torch.tensor([0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3,  -4, -6, -8, -12], dtype=torch.int8, device='cuda:0')
 
 def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
@@ -379,6 +582,8 @@ def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
 
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
+
+    scales = scales.T
     
     native_atomic = (output_dtype in [DType.FP16.value, DType.FP32.value]) or NATIVE_ATOMIC
     kernel_output_dtype = (DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
@@ -413,7 +618,9 @@ def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
     gemv_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
-        M, N, K, 
+        fp4_mapping,
+        M, N, K,
+        ###########################################
         W_nbits, group_size, unpack_mask, elements_per_sample, type_id, use_prehook,
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
