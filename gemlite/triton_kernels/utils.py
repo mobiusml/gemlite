@@ -114,6 +114,11 @@ def gpu_supports_bfloat16_atomicadd():
     #return torch.cuda.get_device_capability()[0] >= 9 #Hopper and above
     return False
 
+NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+def get_num_SMs(device):
+    #return torch.cuda.get_device_properties(device).multi_processor_count
+    return NUM_SMS #cache it to avoid driver ping - should be ok as multi-gpu systems tend to have the same devices
+
 #Only powers of 2
 def generate_autotune_lookup_v1(max_m=16384):
     return [min(2 ** int(math.ceil(math.log2(M))), max_m) if (M > 0) else 0 for M in range(max_m + 1)]

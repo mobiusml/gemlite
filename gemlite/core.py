@@ -19,7 +19,7 @@ import triton.language as tl
 from triton.language.extra import libdevice
 from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
-from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP
+from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP, get_num_SMs
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
 
@@ -254,13 +254,74 @@ def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.f
 
     W_q = W_q.view(orig_shape)
     scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
-    #(torch.ceil(torch.log2(ideal_scale)) + 127).to(torch.uint8)
 
     return W_q, scales
 
+@triton.jit
+def scale_activations_mxfp8_triton_kernel(
+    tensor_ptr,
+    out_ptr,
+    scales_ptr,
+    E: tl.constexpr,
+    UNROLL: tl.constexpr,
+    max_val: tl.constexpr,
+    eps: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+):
+
+    pid = tl.program_id(axis=0) * UNROLL
+
+    for m in range(UNROLL):
+        offs = pid * GROUP_SIZE + tl.arange(0, GROUP_SIZE)
+        mask = (offs < E).to(tl.int1)
+        tensor = tl.load(tensor_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+
+        scales_log2 = tl.ceil(tl.log2(tl.max(tl.abs(tensor)) / max_val)).to(tl.int32)
+        scales = tl.where(scales_log2 >= 0, 1 << scales_log2, 1.0 / (1 << (-scales_log2)))
+        scales = tl.maximum(scales, eps)
+
+        out = (tensor / scales).to(out_ptr.dtype.element_ty)
+        tl.store(out_ptr + offs, out)
+        tl.store(scales_ptr + pid, scales_log2 + 127)
+
+        pid += 1
+
+
+def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn, eps: float = 2**-30) -> Tuple[torch.Tensor, torch.Tensor]:
+    tensor = tensor.contiguous()
+    group_size = 32
+    max_val = get_max_val(w_dtype)
+    
+    
+    orig_shape = tensor.shape
+    tensor = tensor.view(-1, tensor.shape[-1])
+    inter_shape = tensor.shape
+    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+    post_pad_shape = (inter_shape[0] + pad_rows, inter_shape[1])
+    E = tensor.numel()
+
+    UNROLL = triton.cdiv(E, get_num_SMs(tensor.device) * group_size)
+
+    out = torch.empty(inter_shape, device=tensor.device, dtype=w_dtype)
+    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] // group_size), device=tensor.device, dtype=torch.uint8)
+    grid = lambda meta: (triton.cdiv(E // UNROLL, group_size), )
+    scale_activations_mxfp8_triton_kernel[grid](
+                tensor, 
+                out, 
+                scales, 
+                E=E,
+                UNROLL=UNROLL,
+                max_val=max_val,
+                eps=eps,
+                GROUP_SIZE=group_size,
+                num_stages=1,
+                num_warps=4,
+                )
+    return out.view(orig_shape), scales
+
 
 scale_activations_per_token = scale_activations_per_token_triton
-scale_activations_mxfp8 = scale_activations_mxfp8_torch
+scale_activations_mxfp8 = scale_activations_mxfp8_triton
 #######################################################################################################################
 
 #Main functional forward call
