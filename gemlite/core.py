@@ -119,32 +119,32 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
 
 #Main activation scaling functions
 @torch.compile(fullgraph=True)
-def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+def scale_activations_per_token_torch(tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
     if fp32_scale:
-        x = x.to(torch.float32, copy=False)
-    x_shape = x.shape
-    out_x = x.view(-1, x.shape[-1])
-    scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
+        tensor = tensor.to(torch.float32, copy=False)
+    out_shape = tensor.shape
+    out = tensor.view(-1, tensor.shape[-1])
+    scales = torch.abs(out).amax(axis=1, keepdim=True)
     # if(fp32_scale):
-    #     scales_x = scales_x.to(torch.float32)
-    scales_x.div_(max_val)
-    out_x = x / scales_x
+    #     scales = scales.to(torch.float32)
+    scales.div_(max_val)
+    out = tensor / scales
 
     if not w_dtype.is_floating_point:
-        out_x.round_()
+        out.round_()
 
-    out_x = out_x.to(dtype=w_dtype)
-    return out_x.view(x_shape), scales_x
+    out = out.to(dtype=w_dtype)
+    return out.view(out_shape), scales
 
-
-@triton.jit
-def round_triton_nvidia(x):
-    return libdevice.round(x)
 
 @triton.jit
-def round_triton_amd(x):
-    return libdevice.floor(x + 0.50)
+def round_triton_nvidia(tensor):
+    return libdevice.round(tensor)
+
+@triton.jit
+def round_triton_amd(tensor):
+    return libdevice.floor(tensor + 0.50)
 
 if IS_HIP:
     round_triton = round_triton_amd
@@ -153,7 +153,7 @@ else:
 
 @triton.jit
 def scale_activations_per_token_kernel(
-    x_ptr, scale_ptr, y_ptr, 
+    tensor_ptr, scale_ptr, y_ptr, 
     M, K,
     stride_m, stride_k, stride_sm,
     ROUND: tl.constexpr, 
@@ -172,30 +172,30 @@ def scale_activations_per_token_kernel(
     for m in range(UNROLL):
         mask = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
         in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
-        x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
+        tensor = tl.load(tensor_ptr + in_ptrs, mask=mask, other=0.0)
         if fp32_scale:
-            x = x.to(tl.float32)
+            tensor = tensor.to(tl.float32)
 
-        scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True)
+        scales_x = tl.max(tl.abs(tensor), axis=1, keep_dims=True)
         scales_x /= max_val
-        x /= scales_x
+        tensor /= scales_x
 
         if ROUND:
-            x = round_triton(x)
+            tensor = round_triton(tensor)
 
         tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
-        tl.store(y_ptr + in_ptrs, x, mask=mask)
+        tl.store(y_ptr + in_ptrs, tensor, mask=mask)
         offs_m += BLOCK_M
 
-def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+def scale_activations_per_token_triton(tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
     max_val = get_max_val(w_dtype)
-    x_shape = x.shape
-    x = x.view(-1, x.shape[-1])
-    M, K = x.shape
+    x_shape = tensor.shape
+    tensor = tensor.view(-1, tensor.shape[-1])
+    M, K = tensor.shape
     scales = torch.empty(
-        (M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device
+        (M, 1), dtype=torch.float32 if fp32_scale else tensor.dtype, device=tensor.device
     )
-    y = torch.empty((M, K), dtype=w_dtype, device=x.device)
+    y = torch.empty((M, K), dtype=w_dtype, device=tensor.device)
 
     UNROLL = 1  # max(1, M // 128)
     BLOCK_M = 1
@@ -205,13 +205,13 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
     ROUND = not w_dtype.is_floating_point
 
     scale_activations_per_token_kernel[grid](
-        x,
+        tensor,
         scales,
         y,
         M,
         K,
-        x.stride(0),
-        x.stride(1),
+        tensor.stride(0),
+        tensor.stride(1),
         scales.stride(0),
         max_val=max_val,
         fp32_scale=fp32_scale,
@@ -226,7 +226,41 @@ def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_sca
     return y.view(x_shape), scales
 
 
-scale_activations = scale_activations_per_token_triton
+@torch.compile(fullgraph=True)
+def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
+    group_size = 32
+    max_val = get_max_val(w_dtype) #max_val == 6 if W_nbits == 4 else 448
+
+    orig_shape = tensor.shape
+    
+    tensor = tensor.view(-1, tensor.shape[-1])
+    inter_shape = tensor.shape
+
+    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+    if(pad_rows > 0):
+        tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_rows))
+    post_pad_shape = tensor.shape
+
+    W_flat = tensor.view(-1, group_size).float()
+    ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+    ideal_scale /= max_val
+    ideal_scale.clamp_(min=1e-8)
+
+    scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(eps) 
+
+    W_q = (W_flat / scales).clamp_(-max_val, max_val).to(torch.float8_e4m3fn)
+    if(pad_rows > 0):
+        W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
+
+    W_q = W_q.view(orig_shape)
+    scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    #(torch.ceil(torch.log2(ideal_scale)) + 127).to(torch.uint8)
+
+    return W_q, scales
+
+
+scale_activations_per_token = scale_activations_per_token_triton
+scale_activations_mxfp8 = scale_activations_mxfp8_torch
 #######################################################################################################################
 
 #Main functional forward call
@@ -252,8 +286,18 @@ def forward_functional(
     
     #Dynamic activation quantization
     if(scaled_activations):
-        compute_dtype = DTYPE_TO_TORCH[meta_args[5]] #input_dtype.value
-        x, scales_x = scale_activations(x, w_dtype=compute_dtype)
+        input_dtype_value = meta_args[5] #input_dtype.value
+        channel_scale_mode = meta_args[9]
+
+        if(input_dtype_value in [4, 3, 8, 12, 13]): #INT8 / FP8
+            x, scales_x = scale_activations_per_token(x, w_dtype=DTYPE_TO_TORCH[input_dtype_value])
+
+        if(input_dtype_value in [16] and channel_scale_mode == 4): #MXPF8
+            x, scales_x = scale_activations_mxfp8(x, w_dtype=torch.float8_e4m3fn)
+
+        if(input_dtype_value in [16] and channel_scale_mode == 2): #MXPF8 with post-scale for the activations
+            x, scales_x = scale_activations_per_token(x, w_dtype=torch.float8_e4m3fn)
+
     else:
         x, scales_x = x, None
 
@@ -514,9 +558,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(self.scales is None):
             self.scales = torch.tensor([[]], dtype=torch.int32, device=self.device)
 
-        if(self.scales is not None):
-            self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
-
         #Force contiguous
         if(contiguous):
             self.data_contiguous = True
@@ -538,6 +579,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = self.scales.T
             self.W_group_mode = 2
             self.channel_scale_mode = 0
+
+        if(self.scales is not None):
+            self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
 
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)

@@ -48,15 +48,23 @@ class QuantizerMXFP:
         assert W_q.is_floating_point(), "Input should be floating point fp4 values."
         return (W_q.view(-1, 1) == self.fp4_values.view(1 , -1)).to(torch.uint8).argmax(dim=1).to(torch.uint8).view(W_q.shape)
 
-    @torch.compile(fullgraph=True)
     def quantize_mxfp(self, W: torch.Tensor, W_nbits: int, group_size: int = 32, window_size: int = 0, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
+        if(W_nbits == 8):
+            return self.quantize_mxfp8(W=W, group_size=group_size, eps=eps, index=index)
+        if(W_nbits == 4):
+            return self.quantize_mxfp4(W=W, group_size=group_size, window_size=window_size, eps=eps, index=index)
+
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp4(self, W: torch.Tensor, group_size: int = 32, window_size: int = 0, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
 
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
-        ideal_scale /= self.max_val
+        W_nbits = 4
+        max_val = 6
+        ideal_scale /= max_val
 
         if(window_size == 0):
-            scales = (2 ** torch.round(torch.log2(ideal_scale)))
+            scales = (2 ** torch.round(torch.log2(ideal_scale))).clamp_(min=eps)
         else:
             initial_log2_scales = torch.round(torch.log2(ideal_scale))
             search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=initial_log2_scales.dtype).view(1, -1)
@@ -72,10 +80,26 @@ class QuantizerMXFP:
         scales = scales.to(torch.float8_e8m0fnu)
 
         if(index):
-            if(W_nbits == 8):
-                W_q = W_q.to(default_fp8)
-            if(W_nbits == 4):
-                W_q = self.to_index(W_q)
+            W_q = self.to_index(W_q)
+        return W_q, scales
+
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp8(self, W: torch.Tensor, group_size: int = 32, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+        max_val = torch.finfo(default_fp8).max
+        ideal_scale /= max_val
+        ideal_scale.clamp_(min=1e-10)
+
+        scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(min=eps)
+
+        W_q = (W_flat / scales).clamp_(-max_val, max_val).to(default_fp8).to(W_flat.dtype)
+        scales = scales.to(torch.float8_e8m0fnu)
+
+        if(index):
+            W_q = W_q.to(default_fp8)
+
         return W_q, scales
 
     @torch.compile(fullgraph=True)
@@ -256,6 +280,8 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
             scales = scales.to(dtype)
             assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
+            scales = scales.to(dtype)
+            zeros = zeros.to(dtype)
 
         elif(quant_type == "MXFP"):
             if(W_nbits == 8):
@@ -278,8 +304,8 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
         in_features, out_features = W_q.shape[::-1] 
 
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=dtype) if (scales is not None) else None
-        zeros = zeros.to(device=self.device, dtype=dtype) if (zeros is not None) else None
+        scales = scales.to(device=self.device) if (scales is not None) else None
+        zeros = zeros.to(device=self.device) if (zeros is not None) else None
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear = GemLiteLinearTriton(W_nbits, 
@@ -350,7 +376,7 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
 
 
 #Alias
-A16W8_CHANNELWISE_INT = A16W8
+A16W8_INT = A16W8
 
 class A16Wn_HQQ_INT(A16Wn):
     def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
@@ -475,6 +501,7 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.device = device
         self.dtype = dtype
         self.fp8 = False
+A8W8_INT8_dynamic = A8W8_int8_dynamic
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
     def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8):
@@ -482,6 +509,75 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
         self.device = device
         self.dtype = dtype
         self.fp8 = fp8
+A8W8_FP8_dynamic = A8W8_fp8_dynamic
+
+class A8W8_MXFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
+        self.device = device
+        self.dtype = dtype
+        self.fp8 = fp8
+        self.quantizer_mx = None
+        self.post_scale = post_scale
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.dtype in [torch.float8_e4m3fn], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXPF8 valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        dtype = self.dtype 
+        input_dtype = DType.MXFP8
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+        group_size = 32
+
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(8, 
+                        group_size=group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+
+        #If post_scale==False, it will use mxfp8 microscales for the activations, otherwise channelwise post-scaling is used
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 2 if self.post_scale else 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = QuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        group_size = 32
+        N, K = W.shape
+        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=8, window_size=0, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
 
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights

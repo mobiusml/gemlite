@@ -275,6 +275,7 @@ def gemm_splitK_INT_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
+    stride_meta_a_m, stride_meta_a_g,
     stride_meta_g, stride_meta_n,
     ######### Dtypes #########
     input_dtype: tl.constexpr,
@@ -456,6 +457,7 @@ def gemm_splitK_MX_kernel(
     stride_am, stride_ak,
     stride_bk, stride_bn,
     stride_cm, stride_cn,
+    stride_meta_a_m: tl.constexpr, stride_meta_a_g: tl.constexpr,
     stride_meta_n: tl.constexpr, stride_meta_g: tl.constexpr,
     ######### Dtypes #########
     input_dtype: tl.constexpr,
@@ -511,19 +513,25 @@ def gemm_splitK_MX_kernel(
         a_dtype: tl.constexpr = "fp16"
     if(input_dtype == tl.bfloat16):
         a_dtype: tl.constexpr = "bf16"
+    if(input_dtype == tl.float8e4nv):
+        a_dtype: tl.constexpr = "e4m3"
     if(elements_per_sample == 1): #FP8
         b_dtype: tl.constexpr = "e4m3"
     if(elements_per_sample == 2): #FP4
         b_dtype: tl.constexpr = "e2m1"
     
+
+    offs_k_scales = tl.arange(0, BLOCK_SIZE_K_S)
+    offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    load_scales_as_vector: tl.constexpr = not load_scales_as_block
     if(load_scales_as_block):
-        offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
-        offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-        scales_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_b_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
+        scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
     else:
-        offs_k_b_scales = tl.arange(0, BLOCK_SIZE_K_S)
-        offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N) 
-        scales_ptrs  = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
+        scales_b_ptrs  = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
+
+    #B-scales
+    if(channel_scale_mode == 4):
+        scales_a_ptrs = scales_a_ptr + offs_am[:, None] * stride_meta_a_m + offs_k_scales[None, :] * stride_meta_a_g
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
 
@@ -534,16 +542,32 @@ def gemm_splitK_MX_kernel(
 
         #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
         k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
-        if(load_scales_as_block):
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-        else:
-            scales = tl.load(scales_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-            scales = tl.broadcast_to(scales, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
+        scales_b = tl.load(scales_b_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
+        if(load_scales_as_vector):
+            scales_b = tl.broadcast_to(scales_b, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
         
-        acc = tl.dot_scaled(a, None, a_dtype, b, scales, b_dtype, acc)
+        if(channel_scale_mode == 0):
+            acc = tl.dot_scaled(a, None, a_dtype, b, scales_b, b_dtype, acc)
+
+        if(channel_scale_mode == 2):
+            acc = tl.dot_scaled(a, None, a_dtype, b, scales_b, b_dtype, acc)
+
+        if(channel_scale_mode == 4):
+            scales_a = tl.load(scales_a_ptrs + k_m * stride_meta_a_g, eviction_policy=meta_evict_policy)
+            if(load_scales_as_vector):
+                scales_a = tl.broadcast_to(scales_a, (BLOCK_SIZE_M, BLOCK_SIZE_K_S))
+            acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
+
+    #############################################################################################################
+    #Channel-wise scaling
+    if(channel_scale_mode == 2): #activation-only
+        dtype: tl.constexpr = c_ptr.dtype.element_ty
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)
+        scales_b = tl.full((BLOCK_SIZE_N,), value=1, dtype=dtype)
+        acc      = acc.to(dtype) * (scales_a[:, None] * scales_b[None, :])
 
     #############################################################################################################
     #Output
@@ -562,10 +586,10 @@ def gemm_splitK_MX_kernel(
 #gemm_splitK_kernel = gemm_splitK_INT_kernel
 gemm_splitK_kernel = gemm_splitK_MX_kernel
 def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
-						W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
-						input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
-						channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
-						) -> Tensor: 
+                        W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
+                        input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
+                        channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
+                        ) -> Tensor: 
         
     M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
@@ -576,6 +600,11 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
     output = torch.empty((M, N), device=W_q.device, dtype=DTYPE_TO_TORCH[output_dtype] if native_atomic else torch.float32)
     
     grid = lambda META: (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), META['SPLIT_K'])
+
+    if(scales_x is not None):
+        stride_meta_a_m, stride_meta_a_g = scales_x.stride(0), scales_x.stride(1)
+    else:
+        stride_meta_a_m, stride_meta_a_g = None, None
 
     gemm_splitK_kernel[grid](
         x, W_q, output, 
@@ -588,6 +617,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
         x.stride(0), x.stride(1),
         W_q.stride(0), W_q.stride(1),
         output.stride(0), output.stride(1),
+        stride_meta_a_m, stride_meta_a_g,
         scales.stride(0), scales.stride(1),
         ################################################
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
