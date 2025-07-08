@@ -33,7 +33,7 @@ class QuantizerMXFP:
         self.device = device
         self.fp4_values     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=compute_dtype, device=device) 
         self.fp4_p_vals     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=compute_dtype, device=device)
-        self.fp4_thresholds = (self.fp4_p_vals[:-1] + self.fp4_p_vals[1:]) / 2
+        self.fp4_thresholds = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=compute_dtype, device=device)  #(fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
         self.max_val        = self.fp4_values.abs().max()
 
     def round_to_closest(self, tensor, W_nbits):
@@ -107,7 +107,9 @@ class QuantizerMXFP:
         #Uses a greedy exhaustive search approach to look for the best scales in a neighborhood
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
-        ideal_scale /= self.max_val
+        W_nbits = 4
+        max_val = 6
+        ideal_scale /= max_val
 
         if(window_size > 0):
             search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=torch.int).view(1, -1)
@@ -119,7 +121,7 @@ class QuantizerMXFP:
             candidate_scales = candidate_scales.view(torch.float8_e4m3fn).float()
             candidate_scales[candidate_scales < eps] = eps
 
-            W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
+            W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1), W_nbits=W_nbits)
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
             scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
@@ -127,7 +129,7 @@ class QuantizerMXFP:
         else:
             scales = ideal_scale.to(torch.float8_e4m3fn)
 
-        W_q = self.round_to_closest(W_flat / scales.float())
+        W_q = self.round_to_closest(W_flat / scales.float(), W_nbits=W_nbits)
         if(index):
             W_q = self.to_index(W_q)
 
@@ -754,6 +756,138 @@ class A8W8_MXFP_dynamic(A8Wn_MXFP_dynamic):
 class A8W4_MXFP_dynamic(A8Wn_MXFP_dynamic):
     def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
         super().__init__(device=device, dtype=dtype, post_scale=post_scale, fp8=fp8, W_nbits=4)
+
+
+class A4W4_MXFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None):
+        self.device = device
+        self.dtype = dtype
+        self.quantizer_mx = None
+        self.W_nbits = 4
+        self.group_size = 32
+        self.input_dtype = DType.MXFP4
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXFP valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+
+        dtype = self.dtype 
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=self.group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=self.input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = QuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        N, K = W.shape
+        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=self.W_nbits, group_size=self.group_size, window_size=0, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
+
+
+#
+class A4W4_NVFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None):
+        self.device = device
+        self.dtype = dtype
+        self.quantizer_mx = None
+        self.W_nbits = 4
+        self.group_size = 16
+        self.input_dtype = DType.NVFP4
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e4m3fn], f"Invalid scales.dtype, should be an NVFP4 valid dtype (float8_e4m3fn), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+         
+        dtype = self.dtype
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+        
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=self.group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=self.input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = QuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        N, K = W.shape
+        W_q, scales = self.quantizer_mx.quantize_nvfp4(W, group_size=self.group_size, window_size=0, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
 
 ############################################################################################################################################################
 #BitNet

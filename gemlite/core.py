@@ -45,6 +45,7 @@ GEMLITE_ACC_DTYPE = {
     DType.MXBF16: DType.FP32,
     DType.MXFP8: DType.FP32,
     DType.MXFP4: DType.FP32,
+    DType.NVFP4: DType.FP32,
 }
 
 GEMLITE_TRITON_KERNELS = [
@@ -319,8 +320,90 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
     return out.view(orig_shape), scales
 
 
+
+def round_to_closest_fp4(tensor, fp4_p_vals, fp4_thresholds):
+    out = fp4_p_vals[torch.searchsorted(fp4_thresholds, tensor.abs())]
+    out *= tensor.sign()
+    return out
+
+
+#
+fp4_values     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.bfloat16, device="cuda") 
+fp4_p_vals     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=torch.bfloat16, device="cuda")
+fp4_thresholds = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=torch.bfloat16, device="cuda")
+@torch.compile(fullgraph=True)
+def scale_activations_mxfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
+    group_size = 32
+    max_val = 6
+
+    orig_shape = tensor.shape
+    
+    tensor = tensor.view(-1, tensor.shape[-1])
+    inter_shape = tensor.shape
+
+    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+    if(pad_rows > 0):
+        tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_rows))
+    post_pad_shape = tensor.shape
+
+    W_flat = tensor.view(-1, group_size).float()
+    ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+    ideal_scale /= max_val
+    ideal_scale.clamp_(min=1e-8)
+    scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(eps) 
+
+    W_q = W_flat / scales
+    if(pad_rows > 0):
+        W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
+
+    #1) Map to closest index
+    W_q = (W_q.view(-1, 1) - fp4_values.view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+    #2) Pack
+    W_q = pack_weights_over_cols_triton(W_q, W_nbits=4, packing_bitwidth=8, transpose=False)[0]
+
+    #Reshape scales
+    scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    return W_q, scales
+
+#
+@torch.compile(fullgraph=True)
+def scale_activations_nvfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
+    group_size = 16
+    max_val = 6
+
+    orig_shape = tensor.shape
+    
+    tensor = tensor.view(-1, tensor.shape[-1])
+    inter_shape = tensor.shape
+
+    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+    if(pad_rows > 0):
+        tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_rows))
+    post_pad_shape = tensor.shape
+
+    W_flat = tensor.view(-1, group_size).float()
+    ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+    ideal_scale /= max_val
+    ideal_scale.clamp_(min=1e-8)
+    scales = ideal_scale.to(torch.float8_e4m3fn).to(W_flat.dtype).clamp_(eps) 
+
+    W_q = W_flat / scales
+    if(pad_rows > 0):
+        W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
+
+    #1) Map to closest index
+    W_q = (W_q.view(-1, 1) - fp4_values.view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+    #2) Pack
+    W_q = pack_weights_over_cols_triton(W_q, W_nbits=4, packing_bitwidth=8, transpose=False)[0]
+
+    #Reshape scales
+    scales = scales.to(torch.float8_e4m3fn).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    return W_q, scales
+
 scale_activations_per_token = scale_activations_per_token_triton
 scale_activations_mxfp8 = scale_activations_mxfp8_triton
+scale_activations_mxfp4 = scale_activations_mxfp4_torch
+scale_activations_nvfp4 = scale_activations_nvfp4_torch
 #######################################################################################################################
 def enable_activation_scaling(batch_size):
     return True
@@ -350,6 +433,9 @@ def forward_functional(
         x = x.contiguous()
 
     batch_size = x.numel() // x.shape[-1]
+    orig_shape = x.shape
+    out_shape = x.shape[:-1] + (out_features,)
+    x_dtype = x.dtype
 
     scaled_activations = bool(meta_args[0]) and enable_activation_scaling(batch_size)
     #Dynamic activation quantization
@@ -367,7 +453,12 @@ def forward_functional(
         elif(input_dtype in [DType.MXFP8] and channel_scale_mode == 2): #MXPF8 with post-scale for the activations
             x, scales_x = scale_activations_per_token(x, w_dtype=torch.float8_e4m3fn)
 
-    out_shape = x.shape[:-1] + (out_features,)
+        elif(input_dtype in [DType.MXFP4] and channel_scale_mode == 4): #MXPF4
+            x, scales_x = scale_activations_mxfp4(x)
+
+        elif(input_dtype in [DType.NVFP4] and channel_scale_mode == 4): #NVPF4: TODO
+            x, scales_x = scale_activations_nvfp4(x)
+    
     x = x.view(-1, x.shape[-1])
 
     if(matmul_type >= 0):

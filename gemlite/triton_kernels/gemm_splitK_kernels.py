@@ -511,7 +511,7 @@ def gemm_splitK_MX_kernel(
     offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_ak = pid_k * BLOCK_SIZE_K_A_E + tl.arange(0, BLOCK_SIZE_K_A_E)
     a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
-    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K // elements_per_sample_a)).to(tl.int1)
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < (K // elements_per_sample_a))).to(tl.int1)
 
     #B
     BLOCK_SIZE_K_B_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
@@ -557,7 +557,7 @@ def gemm_splitK_MX_kernel(
         else:
         	scales_a = None
         
-        acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
+        acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc) #lhs_k_pack=True, rhs_k_pack=True
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
@@ -592,7 +592,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
                         channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
                         ) -> Tensor: 
         
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+    M, K, N = x.shape[0], W_q.shape[0] * elements_per_sample, W_q.shape[1]
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
 
     M_CLOSEST = get_closest_m(M)

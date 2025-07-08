@@ -448,16 +448,17 @@ def gemm_MX_kernel(
     pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K)
 
-    if(input_dtype == tl.float16):
+    a_ptr_dtype: tl.constexpr = a_ptr.dtype.element_ty
+    if(a_ptr_dtype == tl.float16):
         a_dtype: tl.constexpr = "fp16"
         elements_per_sample_a: tl.constexpr = 1
-    if(input_dtype == tl.bfloat16):
+    if(a_ptr_dtype == tl.bfloat16):
         a_dtype: tl.constexpr = "bf16"
         elements_per_sample_a: tl.constexpr = 1
-    if(input_dtype == tl.float8e4nv):
+    if(a_ptr_dtype == tl.float8e4nv):
         a_dtype: tl.constexpr = "e4m3"
         elements_per_sample_a: tl.constexpr = 1
-    if(input_dtype == tl.uint8):
+    if(a_ptr_dtype == tl.uint8):
         a_dtype: tl.constexpr = "e2m1" #FP4
         elements_per_sample_a: tl.constexpr = 2
 
@@ -545,7 +546,7 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
                 channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id:int, 
                 ) -> Tensor:
     
-    M, K, N = x.shape[0], x.shape[1], W_q.shape[1]
+    M, K, N = x.shape[0], W_q.shape[0] * elements_per_sample, W_q.shape[1]
     M_CLOSEST = get_closest_m(M)
 
     #assert K == W_q.shape[0] * elements_per_sample, "Invalid Input Shapes"
@@ -557,6 +558,7 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
         stride_meta_a_m, stride_meta_a_g = scales_x.stride(0), scales_x.stride(1)
     else:
         stride_meta_a_m, stride_meta_a_g = None, None
+        channel_scale_mode = 0
 
     gemm_kernel[grid](
         x, W_q, output, 
