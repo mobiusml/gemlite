@@ -292,7 +292,6 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
     group_size = 32
     max_val = get_max_val(w_dtype)
     
-    
     orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
     inter_shape = tensor.shape
@@ -323,6 +322,9 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
 scale_activations_per_token = scale_activations_per_token_triton
 scale_activations_mxfp8 = scale_activations_mxfp8_triton
 #######################################################################################################################
+def enable_activation_scaling(batch_size):
+    return True
+    #return batch_size >= 32
 
 #Main functional forward call
 @torch.library.custom_op("gemlite::forward_functional", mutates_args=())
@@ -334,33 +336,36 @@ def forward_functional(
     matmul_type: int = -1, #-1: auto, >=0: manual
 ) -> Tensor:
     
-    scaled_activations = bool(meta_args[0])
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
     out_features = tensor_args[0].shape[1]
+
+    #Get type_id for autotune: use same autotune for float16/bfloat16
     input_dtype = meta_args[5]
-    input_dtype = 1 if (input_dtype == 2) else input_dtype #bfloat16 / float16 
-    type_id = input_dtype*100 + W_nbits
+    input_dtype = DType.FP16.value if (input_dtype == DType.BF16.value) else input_dtype
+    input_dtype = DType.MXFP16.value if (input_dtype == DType.MXBF16.value) else input_dtype
+    type_id = input_dtype * 100 + W_nbits
 
     if not x.is_contiguous():
         x = x.contiguous()
-    
+
+    batch_size = x.numel() // x.shape[-1]
+
+    scaled_activations = bool(meta_args[0]) and enable_activation_scaling(batch_size)
     #Dynamic activation quantization
+    scales_x = None
     if(scaled_activations):
-        input_dtype_value = meta_args[5] #input_dtype.value
+        input_dtype = DType(meta_args[5])
         channel_scale_mode = meta_args[9]
 
-        if(input_dtype_value in [4, 3, 8, 12, 13]): #INT8 / FP8
-            x, scales_x = scale_activations_per_token(x, w_dtype=DTYPE_TO_TORCH[input_dtype_value])
+        if(input_dtype in FP8_INT8_DTYPES): #INT8 / FP8
+            x, scales_x = scale_activations_per_token(x, w_dtype=DTYPE_TO_TORCH[input_dtype.value])
 
-        if(input_dtype_value in [16] and channel_scale_mode == 4): #MXPF8
+        elif(input_dtype in [DType.MXFP8] and channel_scale_mode == 4): #MXPF8
             x, scales_x = scale_activations_mxfp8(x, w_dtype=torch.float8_e4m3fn)
 
-        if(input_dtype_value in [16] and channel_scale_mode == 2): #MXPF8 with post-scale for the activations
+        elif(input_dtype in [DType.MXFP8] and channel_scale_mode == 2): #MXPF8 with post-scale for the activations
             x, scales_x = scale_activations_per_token(x, w_dtype=torch.float8_e4m3fn)
-
-    else:
-        x, scales_x = x, None
 
     out_shape = x.shape[:-1] + (out_features,)
     x = x.view(-1, x.shape[-1])
@@ -392,7 +397,8 @@ def forward_functional_fake(
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8, 
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, 
+                            DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8, 
                             DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
     MIN_SIZE              = 32
     PACKING_BITWIDTH      = 32 #Default packing bitwidth

@@ -483,59 +483,63 @@ def gemm_splitK_MX_kernel(
 ):
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
-
     pid_m, pid_n = swizzle_tile(pid, M, N, BLOCK_SIZE_M, BLOCK_SIZE_N, GROUP_SIZE_M)
-       
     num_pid_k = tl.cdiv(K, BLOCK_SIZE_K * SPLIT_K)
 
-    #A
-    offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
-    offs_ak = pid_k * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
-    a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
-    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K)).to(tl.int1)
-    BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K * SPLIT_K
-
-    #B
-    BLOCK_SIZE_K_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
-    offs_bk = pid_k * BLOCK_SIZE_K_E + tl.arange(0, BLOCK_SIZE_K_E)
-    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    if(data_contiguous):
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_E), BLOCK_SIZE_K_E) #row_major
-    else:
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
-    b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
-    BLOCK_SIZE_K_B: tl.constexpr = (BLOCK_SIZE_K // elements_per_sample) * SPLIT_K
-
-    stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
-    BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
-
-    if(input_dtype == tl.float16):
+    a_ptr_dtype: tl.constexpr = a_ptr.dtype.element_ty
+    if(a_ptr_dtype == tl.float16):
         a_dtype: tl.constexpr = "fp16"
-    if(input_dtype == tl.bfloat16):
+        elements_per_sample_a: tl.constexpr = 1
+    if(a_ptr_dtype == tl.bfloat16):
         a_dtype: tl.constexpr = "bf16"
-    if(input_dtype == tl.float8e4nv):
+        elements_per_sample_a: tl.constexpr = 1
+    if(a_ptr_dtype == tl.float8e4nv):
         a_dtype: tl.constexpr = "e4m3"
+        elements_per_sample_a: tl.constexpr = 1
+    if(a_ptr_dtype == tl.uint8):
+        a_dtype: tl.constexpr = "e2m1" #FP4
+        elements_per_sample_a: tl.constexpr = 2
+
     if(elements_per_sample == 1): #FP8
         b_dtype: tl.constexpr = "e4m3"
     if(elements_per_sample == 2): #FP4
         b_dtype: tl.constexpr = "e2m1"
-    
 
+    #A
+    BLOCK_SIZE_K_A_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample_a
+    BLOCK_SIZE_K_A: tl.constexpr = BLOCK_SIZE_K_A_E * SPLIT_K
+    offs_am = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_ak = pid_k * BLOCK_SIZE_K_A_E + tl.arange(0, BLOCK_SIZE_K_A_E)
+    a_ptrs  = a_ptr + (offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak)
+    a_mask  = ((offs_am[:, None] < M) & (offs_ak[None, :] < K // elements_per_sample_a)).to(tl.int1)
+
+    #B
+    BLOCK_SIZE_K_B_E: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
+    BLOCK_SIZE_K_B: tl.constexpr = BLOCK_SIZE_K_B_E * SPLIT_K
+    offs_bk = pid_k * BLOCK_SIZE_K_B_E + tl.arange(0, BLOCK_SIZE_K_B_E)
+    offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    if(data_contiguous):
+        offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_B_E), BLOCK_SIZE_K_B_E) #row_major
+    else:
+        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
+    b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
+    
+    #Scales
+    stride_mul: tl.constexpr = BLOCK_SIZE_K / group_size
+    BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
     offs_k_scales = tl.arange(0, BLOCK_SIZE_K_S)
     offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     load_scales_as_vector: tl.constexpr = not load_scales_as_block
     if(load_scales_as_block):
         scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
     else:
-        scales_b_ptrs  = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
+        scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
 
     #B-scales
     if(channel_scale_mode == 4):
         scales_a_ptrs = scales_a_ptr + offs_am[:, None] * stride_meta_a_m + offs_k_scales[None, :] * stride_meta_a_g
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
-
-    #for k in range(num_pid_k):
     for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
         a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         b = tl.load(b_ptrs, eviction_policy=b_evict)
@@ -545,18 +549,15 @@ def gemm_splitK_MX_kernel(
         scales_b = tl.load(scales_b_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
         if(load_scales_as_vector):
             scales_b = tl.broadcast_to(scales_b, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
-        
-        if(channel_scale_mode == 0):
-            acc = tl.dot_scaled(a, None, a_dtype, b, scales_b, b_dtype, acc)
-
-        if(channel_scale_mode == 2):
-            acc = tl.dot_scaled(a, None, a_dtype, b, scales_b, b_dtype, acc)
 
         if(channel_scale_mode == 4):
             scales_a = tl.load(scales_a_ptrs + k_m * stride_meta_a_g, eviction_policy=meta_evict_policy)
             if(load_scales_as_vector):
                 scales_a = tl.broadcast_to(scales_a, (BLOCK_SIZE_M, BLOCK_SIZE_K_S))
-            acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
+        else:
+        	scales_a = None
+        
+        acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
@@ -605,6 +606,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
         stride_meta_a_m, stride_meta_a_g = scales_x.stride(0), scales_x.stride(1)
     else:
         stride_meta_a_m, stride_meta_a_g = None, None
+        channel_scale_mode = 0
 
     gemm_splitK_kernel[grid](
         x, W_q, output, 

@@ -95,3 +95,6 @@ PACKING_BITWIDTH_TO_TORCH_DTYPE = {
     32: torch.int32,
     64: torch.int64,
 }
+
+FP8_DTYPES = [DType.FP8, DType.FP8e4, DType.FP8e5, DType.FP8e4nuz, DType.FP8e5nuz]
+FP8_INT8_DTYPES = [DType.INT8] + FP8_DTYPES
