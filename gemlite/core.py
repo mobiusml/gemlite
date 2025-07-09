@@ -319,6 +319,38 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
     return out.view(orig_shape), scales
 
 fp4_values = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.bfloat16, device="cuda") 
+# @torch.compile(fullgraph=True)
+# def scale_activations_mxfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
+#     group_size = 32
+#     max_val = 6
+
+#     orig_shape = tensor.shape
+#     tensor = tensor.view(-1, tensor.shape[-1])
+#     inter_shape = tensor.shape
+
+#     pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+#     if(pad_rows > 0):
+#         tensor = torch.nn.functional.pad(tensor, (0, 0, 0, pad_rows))
+#     post_pad_shape = tensor.shape
+
+#     W_flat = tensor.view(-1, group_size).float()
+#     scales = W_flat.abs().amax(dim=1, keepdim=True)
+#     scales /= max_val
+#     scales = (2 ** torch.ceil(torch.log2(scales))).clamp_(eps)
+
+#     W_q = W_flat / scales
+#     if(pad_rows > 0):
+#         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
+
+#     #1) Map to closest index
+#     W_q = (W_q.view(-1, 1) - fp4_values.view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+#     #2) Pack
+#     W_q = pack_weights_over_cols_triton(W_q, W_nbits=4, packing_bitwidth=8, transpose=False)[0]
+
+#     #Reshape scales
+#     scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+#     return W_q, scales
+
 @torch.compile(fullgraph=True)
 def scale_activations_mxfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
     group_size = 32
@@ -351,12 +383,13 @@ def scale_activations_mxfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[
     scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
     return W_q, scales
 
-#
+
 @torch.compile(fullgraph=True)
 def scale_activations_nvfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[Tensor, Tensor]:
     group_size = 16
     max_val = 6
     fp8_dtype = torch.float8_e4m3fn
+    max_fp8 = torch.finfo(fp8_dtype).max #448
 
     orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
@@ -370,7 +403,7 @@ def scale_activations_nvfp4_torch(tensor: Tensor, eps: float = 2**-30) -> Tuple[
     W_flat = tensor.view(-1, group_size).float()
     scales = W_flat.abs().amax(dim=1, keepdim=True)
     scales /= max_val
-    scales = scales.to(fp8_dtype).to(W_flat.dtype).clamp_(eps)
+    scales = scales.clamp_(max=max_fp8).to(fp8_dtype).to(W_flat.dtype).clamp_(eps)
 
     W_q = W_flat / scales
     if(pad_rows > 0):

@@ -101,10 +101,12 @@ class QuantizerMXFP:
         W_nbits = 4
         max_val = 6
         fp8_dtype = torch.float8_e4m3fn
+        max_fp8 = torch.finfo(fp8_dtype).max #448
 
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
         ideal_scale /= max_val
+        ideal_scale.clamp_(max=max_fp8)
 
         if(window_size == 0):
             scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
@@ -123,7 +125,7 @@ class QuantizerMXFP:
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
             scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
 
-        scales = scales.clamp_(eps)
+        scales = scales.clamp_(min=eps)
         W_q = self.round_to_closest_fp4(W_flat / scales)
         scales = scales.to(fp8_dtype)
 
