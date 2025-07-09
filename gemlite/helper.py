@@ -29,54 +29,66 @@ def cleanup_linear(linear_layer, del_orig=True):
 
 class QuantizerMXFP:
     def __init__(self, compute_dtype=torch.bfloat16, device="cuda:0"):
-        self.compute_dtype = compute_dtype
-        self.device = device
+        self.compute_dtype  = compute_dtype
+        self.device         = device
         self.fp4_values     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=compute_dtype, device=device) 
         self.fp4_p_vals     = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=compute_dtype, device=device)
         self.fp4_thresholds = torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=compute_dtype, device=device)  #(fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
         self.max_val        = self.fp4_values.abs().max()
 
-    def round_to_closest(self, tensor, W_nbits):
-        if(W_nbits == 8):
-            out = tensor.to(default_fp8).to(tensor.dtype)
-        if(W_nbits ==4):
-            out = self.fp4_p_vals[torch.searchsorted(self.fp4_thresholds, tensor.abs())]
-            out *= tensor.sign()
+    def round_to_closest_fp4(self, tensor):
+        out = self.fp4_p_vals[torch.searchsorted(self.fp4_thresholds, tensor.abs())]
+        out *= tensor.sign()
         return out
 
     def to_index(self, W_q):
         assert W_q.is_floating_point(), "Input should be floating point fp4 values."
         return (W_q.view(-1, 1) == self.fp4_values.view(1 , -1)).to(torch.uint8).argmax(dim=1).to(torch.uint8).view(W_q.shape)
 
-    def quantize_mxfp(self, W: torch.Tensor, W_nbits: int, group_size: int = 32, window_size: int = 0, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
-        if(W_nbits == 8):
-            return self.quantize_mxfp8(W=W, group_size=group_size, eps=eps, index=index)
-        if(W_nbits == 4):
-            return self.quantize_mxfp4(W=W, group_size=group_size, window_size=window_size, eps=eps, index=index)
-
     @torch.compile(fullgraph=True)
-    def quantize_mxfp4(self, W: torch.Tensor, group_size: int = 32, window_size: int = 0, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
+    def quantize_mxfp8(self, W: torch.Tensor, eps: float = 2**-30, index: bool = False, mx_fp8_dtype: torch.dtype = torch.float8_e4m3fn) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 32
+        max_val = torch.finfo(mx_fp8_dtype).max
 
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+        ideal_scale /= max_val
+
+        scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(min=eps)
+
+        W_q = (W_flat / scales).to(mx_fp8_dtype).to(W_flat.dtype)
+        scales = scales.to(torch.float8_e8m0fnu)
+
+        if(index):
+            W_q = W_q.to(mx_fp8_dtype)
+
+        return W_q, scales
+
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp4(self, W: torch.Tensor, window_size: int = 0, eps: float = 2**-30, index: bool = False) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 32
         W_nbits = 4
         max_val = 6
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
         ideal_scale /= max_val
 
         if(window_size == 0):
-            scales = (2 ** torch.round(torch.log2(ideal_scale))).clamp_(min=eps)
+            scales = 2 ** torch.ceil(torch.log2(ideal_scale))
         else:
-            initial_log2_scales = torch.round(torch.log2(ideal_scale))
+            initial_log2_scales = torch.ceil(torch.log2(ideal_scale))
             search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=initial_log2_scales.dtype).view(1, -1)
             candidate_scales = torch.pow(2, initial_log2_scales + search_offsets)
             candidate_scales[candidate_scales < eps] = eps
 
-            W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1), W_nbits=W_nbits)
+            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
             scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
 
-        W_q = self.round_to_closest(W_flat / scales, W_nbits=W_nbits)
+        scales = scales.clamp_(eps)
+        W_q = self.round_to_closest_fp4(W_flat / scales)
         scales = scales.to(torch.float8_e8m0fnu)
 
         if(index):
@@ -84,52 +96,37 @@ class QuantizerMXFP:
         return W_q, scales
 
     @torch.compile(fullgraph=True)
-    def quantize_mxfp8(self, W: torch.Tensor, group_size: int = 32, eps: float = 2 ** -30, index: bool = False) -> (torch.Tensor, torch.Tensor):
-
-        W_flat = W.view(-1, group_size).float()
-        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
-        max_val = torch.finfo(default_fp8).max
-        ideal_scale /= max_val
-        ideal_scale.clamp_(min=1e-10)
-
-        scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(min=eps)
-
-        W_q = (W_flat / scales).clamp_(-max_val, max_val).to(default_fp8).to(W_flat.dtype)
-        scales = scales.to(torch.float8_e8m0fnu)
-
-        if(index):
-            W_q = W_q.to(default_fp8)
-
-        return W_q, scales
-
-    @torch.compile(fullgraph=True)
-    def quantize_nvfp4(self, W: torch.Tensor, group_size: int = 16, window_size: int = 0, eps: float = 1e-8, index: bool = False) -> (torch.Tensor, torch.Tensor):
-        #Uses a greedy exhaustive search approach to look for the best scales in a neighborhood
-        W_flat = W.view(-1, group_size).float()
-        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+    def quantize_nvfp4(self, W: torch.Tensor, window_size: int = 0, eps: float = 1e-8, index: bool = False) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 16
         W_nbits = 4
         max_val = 6
+        fp8_dtype = torch.float8_e4m3fn
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
         ideal_scale /= max_val
 
-        if(window_size > 0):
+        if(window_size == 0):
+            scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
+        else:
             search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=torch.int).view(1, -1)
-            candidate_scales = (ideal_scale.to(torch.float8_e4m3fn).view(torch.int8) + search_offsets).clamp_(-128, 127).to(torch.int8)
+            candidate_scales = (ideal_scale.to(fp8_dtype).view(torch.int8) + search_offsets).clamp_(-128, 127).to(torch.int8)
 
             #Avoid nan in int8 range (-1, 127 as int8 as e4m3 nans)
             candidate_scales[candidate_scales==-1] = 1
             candidate_scales[candidate_scales==127] = 1
-            candidate_scales = candidate_scales.view(torch.float8_e4m3fn).float()
+            candidate_scales = candidate_scales.view(fp8_dtype).float()
             candidate_scales[candidate_scales < eps] = eps
 
-            W_q_candidates = self.round_to_closest(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1), W_nbits=W_nbits)
+            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
             scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
-            scales = scales.to(torch.float8_e4m3fn)
-        else:
-            scales = ideal_scale.to(torch.float8_e4m3fn)
 
-        W_q = self.round_to_closest(W_flat / scales.float(), W_nbits=W_nbits)
+        scales = scales.clamp_(eps)
+        W_q = self.round_to_closest_fp4(W_flat / scales)
+        scales = scales.to(fp8_dtype)
+
         if(index):
             W_q = self.to_index(W_q)
 
@@ -259,6 +256,7 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
         self.quantizer_mx = None
+        self.mx_fp8_dtype = torch.float8_e4m3fn #default_fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
         return self.from_weights_(W_q, scales, zeros, W_nbits, group_size, bias, quant_type)
@@ -286,7 +284,7 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
 
         elif(quant_type == "MXFP"):
             if(W_nbits == 8):
-                assert W_q.dtype in [torch.float8_e4m3fn], f"Unsupported dtype of W_q. got {W_q.dtype}"
+                assert W_q.dtype in [self.mx_fp8_dtype], f"Unsupported dtype of W_q. got {W_q.dtype}"
             if(W_nbits == 4):
                 assert W_q.dtype in [torch.uint8], f"Unsupported dtype of W_q. got {W_q.dtype}"
 
@@ -363,7 +361,10 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         group_size = 32
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=W_nbits, window_size=0, index=True)
+        if(W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
         
         cleanup_linear(linear_layer, del_orig)
@@ -517,7 +518,7 @@ class A8W8_MXFP_dynamic:
     def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
         self.device = device
         self.dtype = dtype
-        self.fp8 = fp8
+        self.mx_fp8_dtype = fp8
         self.quantizer_mx = None
         self.post_scale = post_scale
         self.W_nbits = 8
@@ -570,7 +571,10 @@ class A8W8_MXFP_dynamic:
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         group_size = 32
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=self.W_nbits, window_size=0, index=True)
+        if(self.W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(self.W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
         
         cleanup_linear(linear_layer, del_orig)
@@ -681,7 +685,7 @@ class A8Wn_MXFP_dynamic:
         assert W_nbits is not None, "W_nbits argument should be eitehr 8 or 4, not None)."
         self.device = device
         self.dtype = dtype
-        self.fp8 = fp8
+        self.mx_fp8_dtype = fp8
         self.quantizer_mx = None
         self.post_scale = post_scale
         self.W_nbits = W_nbits
@@ -737,7 +741,10 @@ class A8Wn_MXFP_dynamic:
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         group_size = 32
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=self.W_nbits, window_size=0, index=True)
+        if(self.W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(self.W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
         
         cleanup_linear(linear_layer, del_orig)
@@ -756,7 +763,6 @@ class A8W8_MXFP_dynamic(A8Wn_MXFP_dynamic):
 class A8W4_MXFP_dynamic(A8Wn_MXFP_dynamic):
     def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
         super().__init__(device=device, dtype=dtype, post_scale=post_scale, fp8=fp8, W_nbits=4)
-
 
 class A4W4_MXFP_dynamic:
     def __init__(self, device='cuda:0', dtype=None):
@@ -781,6 +787,7 @@ class A4W4_MXFP_dynamic:
         assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
         assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXFP valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
         assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        assert self.group_size == 32, f"Only group_size=16 is supported for MXFP4, got {self.group_size}"
 
         dtype = self.dtype 
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
@@ -811,7 +818,7 @@ class A4W4_MXFP_dynamic:
         W = linear_layer.weight.data
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_mxfp(W, W_nbits=self.W_nbits, group_size=self.group_size, window_size=0, index=True)
+        W_q, scales = self.quantizer_mx.quantize_mxfp4(W, window_size=0, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
         
         cleanup_linear(linear_layer, del_orig)
@@ -823,8 +830,6 @@ class A4W4_MXFP_dynamic:
         torch.cuda.empty_cache()
         return out_layer
 
-
-#
 class A4W4_NVFP_dynamic:
     def __init__(self, device='cuda:0', dtype=None):
         self.device = device
@@ -848,6 +853,7 @@ class A4W4_NVFP_dynamic:
         assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
         assert scales.dtype in [torch.float8_e4m3fn], f"Invalid scales.dtype, should be an NVFP4 valid dtype (float8_e4m3fn), got {scales.dtype}."
         assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        assert self.group_size == 16, f"Only group_size=16 is supported for NVFP4, got {self.group_size}"
          
         dtype = self.dtype
         gemlite_dtype = TORCH_TO_DTYPE[dtype]
