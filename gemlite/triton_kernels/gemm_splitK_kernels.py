@@ -555,8 +555,8 @@ def gemm_splitK_MX_kernel(
             if(load_scales_as_vector):
                 scales_a = tl.broadcast_to(scales_a, (BLOCK_SIZE_M, BLOCK_SIZE_K_S))
         else:
-        	scales_a = None
-        
+            scales_a = None
+
         acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc) #lhs_k_pack=True, rhs_k_pack=True
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
