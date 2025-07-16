@@ -234,6 +234,27 @@ def next_power_of_2_log_triton(val, eps: tl.constexpr):
     return scales, scales_log2
 
 @triton.jit
+def next_power_of_2_logapprox_triton(val, eps: tl.constexpr):
+    scales_log2 = tl.inline_asm_elementwise(
+        """
+        {
+        lg2.approx.f32 $1, $1;
+        cvt.rpi.f32.f32 $1, $1;
+        cvt.rzi.s32.f32 $0, $1;
+        }
+        """,
+        "=r,r",
+        [val],
+        dtype=tl.int32, 
+        is_pure=True,
+        pack=1
+    )
+
+    scales = tl.where(scales_log2 >= 0, 1 << scales_log2, 1.0 / (1 << (-scales_log2)))
+    scales = tl.maximum(scales, eps)
+    return scales, scales_log2
+
+@triton.jit
 def next_power_of_2_bitwise_triton(val, eps: tl.constexpr):
     xi = tl.cast(val, tl.uint32, bitcast=True)
     exp  = (xi >> 23) & 0xFF
@@ -245,6 +266,8 @@ def next_power_of_2_bitwise_triton(val, eps: tl.constexpr):
     scales = tl.cast(yi, tl.float32, bitcast=True)
     scales = tl.maximum(scales, eps)
     return scales, scales_log2
+
+next_power_of_2_triton = next_power_of_2_bitwise_triton
 
 @torch.compile(fullgraph=True)
 def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[Tensor, Tensor]:
@@ -280,10 +303,9 @@ def scale_activations_mxfp8_triton_kernel(
     tensor_ptr,
     out_ptr,
     scales_ptr,
-    E: tl.constexpr,
-    UNROLL: tl.constexpr,
-    max_val: tl.constexpr,
+    E,
     eps: tl.constexpr,
+    UNROLL: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
 ):
 
@@ -294,9 +316,7 @@ def scale_activations_mxfp8_triton_kernel(
         mask = (offs < E).to(tl.int1)
         tensor = tl.load(tensor_ptr + offs, mask=mask, other=0.0).to(tl.float32)
 
-        scales_log2 = tl.ceil(tl.log2(tl.max(tl.abs(tensor)) / max_val)).to(tl.int32)
-        scales = tl.where(scales_log2 >= 0, 1 << scales_log2, 1.0 / (1 << (-scales_log2)))
-        scales = tl.maximum(scales, eps)
+        scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor)) / 6., eps)
 
         out = (tensor / scales).to(out_ptr.dtype.element_ty)
         tl.store(out_ptr + offs, out)
@@ -328,9 +348,8 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
                 out, 
                 scales, 
                 E=E,
+                eps=2 ** -30,
                 UNROLL=UNROLL,
-                max_val=max_val,
-                eps=eps,
                 GROUP_SIZE=group_size,
                 num_stages=1,
                 num_warps=4,
@@ -436,8 +455,7 @@ def scale_activations_mxfp4_triton_kernel_v1(
         mask = (offs < E).to(tl.int1)
         tensor = tl.load(tensor_ptr + offs, mask=mask, other=0.0).to(tl.float32)
 
-        #next power of 2: log:144 it/sec, bitwise: 147 it/sec
-        scales, scales_log2 = next_power_of_2_bitwise_triton(tl.max(tl.abs(tensor)) / 6., eps)
+        scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor)) / 6., eps)
 
         #Map to index
         wq = tensor / scales
@@ -522,7 +540,7 @@ def scale_activations_mxfp4_triton_kernel_v2(
     tensor = tl.load(tensor_ptrs, mask=mask, other=0.0).to(tl.float32)
     
     #next power of 2 via log
-    scales, scales_log2 = next_power_of_2_bitwise_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6., eps)
+    scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6., eps)
 
     #Map to index
     wq = tensor / scales
