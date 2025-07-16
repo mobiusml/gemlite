@@ -597,7 +597,7 @@ def scale_activations_mxfp4_triton_v2(tensor: torch.Tensor) -> Tuple[torch.Tenso
 
 scale_activations_per_token = scale_activations_per_token_triton
 scale_activations_mxfp8 = scale_activations_mxfp8_triton
-scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2 #torch: 122, triton v1: 147, triton v2: 147
+scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
 scale_activations_nvfp4 = scale_activations_nvfp4_torch
 #######################################################################################################################
 def enable_activation_scaling(batch_size):
