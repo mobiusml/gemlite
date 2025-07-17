@@ -534,7 +534,6 @@ def gemm_splitK_MX_kernel(
         scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
     else:
         scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
-
     #B-scales
     if(channel_scale_mode == 4):
         scales_a_ptrs = scales_a_ptr + offs_am[:, None] * stride_meta_a_m + offs_k_scales[None, :] * stride_meta_a_g
@@ -557,7 +556,7 @@ def gemm_splitK_MX_kernel(
         else:
             scales_a = None
 
-        acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc) #lhs_k_pack=True, rhs_k_pack=True
+        acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
