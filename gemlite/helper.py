@@ -384,7 +384,6 @@ A16W8_INT = A16W8
 
 class A16Wn_HQQ_INT(A16Wn):
     def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
-        assert W_nbits is not None, "W_nbits argument should be eitehr 8 or 4, not None)."
         super().__init__(device=device, dtype=dtype)
         self.W_nbits = W_nbits
 
