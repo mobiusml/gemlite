@@ -820,7 +820,7 @@ class A4W4_MXFP_dynamic:
         W = linear_layer.weight.data
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_mxfp4(W, window_size=0, index=True)
+        W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
         
         cleanup_linear(linear_layer, del_orig)
@@ -886,7 +886,7 @@ class A4W4_NVFP_dynamic:
         W = linear_layer.weight.data
         bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
         N, K = W.shape
-        W_q, scales = self.quantizer_mx.quantize_nvfp4(W, group_size=self.group_size, window_size=0, index=True)
+        W_q, scales = self.quantizer_mx.quantize_nvfp4(W, index=True)
         W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
         cleanup_linear(linear_layer, del_orig)
 
