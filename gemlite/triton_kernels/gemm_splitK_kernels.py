@@ -4,7 +4,7 @@ import torch, math, random, copy
 from torch import Tensor
 import triton
 import triton.language as tl
-
+from ..dtypes import is_mx_dtype
 from .config import AUTOTUNE
 from .utils import *
 
@@ -530,11 +530,12 @@ def gemm_splitK_MX_kernel(
     offs_k_scales = tl.arange(0, BLOCK_SIZE_K_S)
     offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
     load_scales_as_vector: tl.constexpr = not load_scales_as_block
+    #B scales
     if(load_scales_as_block):
         scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
     else:
         scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
-    #B-scales
+    #A scales
     if(channel_scale_mode == 4):
         scales_a_ptrs = scales_a_ptr + offs_am[:, None] * stride_meta_a_m + offs_k_scales[None, :] * stride_meta_a_g
 
@@ -584,7 +585,7 @@ def gemm_splitK_MX_kernel(
 
 
 #gemm_splitK_kernel = gemm_splitK_INT_kernel
-gemm_splitK_kernel = gemm_splitK_MX_kernel
+#gemm_splitK_kernel = gemm_splitK_MX_kernel
 def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
                         input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
@@ -606,6 +607,11 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
     else:
         stride_meta_a_m, stride_meta_a_g = None, None
         channel_scale_mode = 0
+
+    if(is_mx_dtype(input_dtype)):
+        gemm_splitK_kernel = gemm_splitK_MX_kernel
+    else:
+        gemm_splitK_kernel = gemm_splitK_INT_kernel
 
     gemm_splitK_kernel[grid](
         x, W_q, output, 
@@ -638,7 +644,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
     return output
 
 class gemm_splitK:
-    kernel = gemm_splitK_kernel
+    kernel = [gemm_splitK_INT_kernel, gemm_splitK_MX_kernel]
     forward = gemm_splitK_forward
     matmul_type = MATMUL_TYPE
 
