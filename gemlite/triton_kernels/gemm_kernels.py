@@ -4,7 +4,7 @@ import torch, math, random, copy
 from torch import Tensor
 import triton
 import triton.language as tl
-
+from ..dtypes import is_mx_dtype
 from .config import AUTOTUNE
 from .utils import *
 
@@ -560,6 +560,11 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
         stride_meta_a_m, stride_meta_a_g = None, None
         channel_scale_mode = 0
 
+    if(is_mx_dtype(input_dtype)):
+        gemm_kernel = gemm_MX_kernel
+    else:
+        gemm_kernel = gemm_INT_kernel
+
     gemm_kernel[grid](
         x, W_q, output, 
         scales, zeros, scales_x,
@@ -589,7 +594,7 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
 
     
 class gemm:
-    kernel = gemm_kernel
+    kernel = [gemm_INT_kernel, gemm_MX_kernel]
     forward = gemm_forward
     matmul_type = MATMUL_TYPE
 

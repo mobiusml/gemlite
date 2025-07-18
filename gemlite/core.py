@@ -526,7 +526,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(name in GEMLITE_TRITON_CONFIG_CACHE):
                 config[name].update(GEMLITE_TRITON_CONFIG_CACHE[name])
 
-            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 6)) #5: len(prune_keys)
+            for kernel in _GEMLITE_TRITON_MAPPING[name].kernel:
+                config[name].update(cache_kernel_config(kernel, 6)) #5: len(prune_keys)
 
         #Save combined cache
         with FILE_LOCK, open(filename, "w") as json_file: 

@@ -4,7 +4,7 @@ import torch, math, random, copy
 from torch import Tensor
 import triton
 import triton.language as tl
-
+from ..dtypes import is_mx_dtype
 from .config import AUTOTUNE, KERNEL
 from .utils import *
 
@@ -224,7 +224,7 @@ else:
 )
 
 @triton.jit
-def gemv_revsplitK_kernel(
+def gemv_INT_revsplitK_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
@@ -429,6 +429,11 @@ def gemv_revsplitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor
     else:
         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
 
+    if(is_mx_dtype(input_dtype)):
+        raise Exception('MX dtypes are not supported for this kernel.')
+    else:
+        gemv_revsplitK_kernel = gemv_INT_revsplitK_kernel
+
     gemv_revsplitK_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
@@ -458,7 +463,7 @@ def gemv_revsplitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor
 
 
 class gemv_revsplitK:
-    kernel      = gemv_revsplitK_kernel
+    kernel      = [gemv_INT_revsplitK_kernel]
     forward     = gemv_revsplitK_forward
     matmul_type = MATMUL_TYPE
 
