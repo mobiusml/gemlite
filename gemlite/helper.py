@@ -945,7 +945,7 @@ class A16W158:
         cleanup_linear(linear_layer, del_orig)
         return out_layer
 
-class A8W158:
+class A8W158_dynamic:
     def __init__(self, device='cuda:0', dtype=None, fp32_scale=True):
         self.device = device
         self.dtype = dtype
