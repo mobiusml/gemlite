@@ -176,10 +176,9 @@ def next_power_of_2_bitwise_triton(val, eps: tl.constexpr):
 next_power_of_2_triton = next_power_of_2_bitwise_triton
 
 @torch.compile(fullgraph=True)
-def scale_activations_mxfp8_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
+def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[Tensor, Tensor]:
     group_size = 32
     eps = 2 ** -30
-    w_dtype = torch.float8_e4m3fn
     max_val = get_max_val(w_dtype) #max_val == 6 if W_nbits == 4 else 448
 
     orig_shape = tensor.shape
@@ -231,10 +230,9 @@ def scale_activations_mxfp8_triton_kernel(
 
         pid += 1
 
-def scale_activations_mxfp8_triton(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 32
     eps = 2 ** -30
-    w_dtype = torch.float8_e4m3fn
     tensor = tensor.contiguous()
     
     orig_shape = tensor.shape
