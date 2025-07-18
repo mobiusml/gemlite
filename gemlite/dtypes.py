@@ -98,3 +98,11 @@ PACKING_BITWIDTH_TO_TORCH_DTYPE = {
 
 FP8_DTYPES = [DType.FP8, DType.FP8e4, DType.FP8e5, DType.FP8e4nuz, DType.FP8e5nuz]
 FP8_INT8_DTYPES = [DType.INT8] + FP8_DTYPES
+MX_DTYPES = [DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
+MX_DTYPES_val = [dtype.value for dtype in MX_DTYPES]
+
+def is_mx_dtype(input_dtype):
+    if(type(input_dtype) == int):
+        return input_dtype in MX_DTYPES_val
+    elif(type(input_dtype) == DType):
+        return input_dtype in MX_DTYPES
