@@ -462,76 +462,78 @@ def gemv_MX_kernel(
     else:
         offs_bn = tl.max_contiguous(tl.multiple_of(offs_n, BLOCK_SIZE_N), BLOCK_SIZE_N) 
     offs_am = tl.max_contiguous(tl.multiple_of(offs_m, BLOCK_SIZE_M), BLOCK_SIZE_M)
-    offs_ak = offs_k
-    offs_bk = offs_k
+    offs_ak = offs_k // elements_per_sample_a
+    offs_bk = offs_k // elements_per_sample
     
-    a_ptrs = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak 
-    b_ptrs = b_ptr + (offs_bk[:, None] // elements_per_sample) * stride_bk + offs_bn[None, :] * stride_bn 
+    a_ptrs = a_ptr + offs_am[:, None] * stride_am + offs_ak[None, :] * stride_ak #[1, BLOCK_SIZE_K]
+    b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn #[BLOCK_SIZE_K, BLOCK_SIZE_N]
+    a_mask = ((offs_am[:, None] < M) & (offs_ak[None, :] < (K // elements_per_sample_a))).to(tl.int1) 
 
-    if(W_nbits == 4): #4-bit
+    if(W_nbits == 4): #mxpf4 mapping
         mapping = tl.load(mapping_ptr + tl.arange(0, 16), eviction_policy='evict_last')[None, :].broadcast_to((BLOCK_SIZE_K, 16))
+
     ###################################################################
     #Load
     if(A_load_order == 0):
-        a = tl.load(a_ptrs, eviction_policy=a_evict)
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
 
     b = tl.load(b_ptrs, eviction_policy=b_evict)
 
     if(A_load_order == 1):
-        a = tl.load(a_ptrs, eviction_policy=a_evict)
-
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
 
     #Scales: only load_scales_as_block == False is supported here
     k_m = (pid_k * (BLOCK_SIZE_K / group_size)).to(tl.int32)
     #B scales
-    scales_b_ptrs = scales_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n #[1, BLOCK_SIZE_N]
+    scales_b_ptrs = scales_ptr + k_m * stride_meta_g + offs_bn[None, :] * stride_meta_n
     scales_b = tl.load(scales_b_ptrs, eviction_policy=meta_evict_policy)
     if(scales_ptr.dtype.element_ty == tl.uint8):
         scales_b = (tl.exp2(scales_b.to(tl.float32) - 127) * 0.50)
-    scales_b = scales_b.to(input_dtype)
+    scales_b = scales_b.to(acc_dtype)
 
     #A scales
     if(channel_scale_mode == 4):
-        scales_a_ptrs = scales_a_ptr + k_m * stride_meta_a_g + offs_am[None, :] * stride_meta_a_m #[1, BLOCK_SIZE_M]
+        scales_a_ptrs = scales_a_ptr + k_m * stride_meta_a_g + offs_am[None, :] * stride_meta_a_m
         scales_a = tl.load(scales_a_ptrs, eviction_policy=meta_evict_policy)
         if(scales_a_ptr.dtype.element_ty == tl.uint8):
             scales_a = (tl.exp2(scales_a.to(tl.float32) - 127) * 0.50)
-        scales_a = scales_a.to(input_dtype)
+        scales_a = scales_a.to(acc_dtype)
 
     if(channel_scale_mode == 2):
-        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy)[None,:]
+        scales_a = tl.load(scales_a_ptr + offs_am, mask=offs_am < M, other=1, eviction_policy=meta_evict_policy) #Scalar
         if(scales_a_ptr.dtype.element_ty == tl.uint8):
             scales_a = (tl.exp2(scales_a.to(tl.float32) - 127) * 0.50)
-        scales_a = scales_a.to(input_dtype)
+        scales_a = scales_a.to(acc_dtype)
 
     if(A_load_order == 2):
-        a = tl.load(a_ptrs, eviction_policy=a_evict)
+        a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
 
-    # Unpack and dequantize
-    if(elements_per_sample_a == 2): #4-bit weights
-        q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
-        b = (b >> q_shift) & 15 
-        b = tl.gather(mapping, b, axis=1)
+    #Unpack and dequantize A
+    a = a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) #we work with transposed activations
+    if(elements_per_sample_a == 2): #4-bit activations
+        q_shift = ((offs_k % 2) * 4).to(tl.int32)[:, None]
+        a = (a >> q_shift) & 15 
+        a = tl.gather(mapping, a, axis=1)
     
-    a = a.to(input_dtype)
+    a = a.to(acc_dtype)
     if(channel_scale_mode == 2):
-        a = tl.trans(tl.trans(a) * scales_a)
+        a = a * scales_a
     if(channel_scale_mode == 4):
-        a = tl.trans(tl.trans(a) * scales_a)
+        a = a * scales_a
     
-    # Unpack and dequantize
+    # Unpack and dequantize B
     if(elements_per_sample == 2): #4-bit weights
-        q_shift = ((offs_k % elements_per_sample) * W_nbits).to(tl.int32)[:, None]
+        q_shift = ((offs_k % 2) * 4).to(tl.int32)[:, None]
         b = (b >> q_shift) & 15 
         b = tl.gather(mapping, b, axis=1)
     
-    b = b.to(input_dtype) * scales_b
+    b = b.to(acc_dtype) * scales_b
 
     #Dot product
     if(dot_prod_mode == 0):
-        acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False).to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
+        acc = tl.sum(a.to(acc_dtype) * b.to(acc_dtype), axis=0, keep_dims=True) 
     if(dot_prod_mode == 1):
-        acc = tl.sum(a.reshape((BLOCK_SIZE_K, 1), can_reorder=False) * b.to(input_dtype), axis=0, keep_dims=True) 
+        acc = tl.sum(a * b.to(a.dtype), axis=0, keep_dims=True) 
 
     ####################################################################
     #Output: tl.atomic_add only supports 1D fp16 arrays, bfp16 would crash 
@@ -541,6 +543,7 @@ def gemv_MX_kernel(
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     tl.atomic_add(c_ptrs, acc, sem=atomic_mode) 
 
+#TODO: gemv not generating correct reuslts with mxfp dtypes use except for A16W4.
 def gemv_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                          W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                          input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int,  
