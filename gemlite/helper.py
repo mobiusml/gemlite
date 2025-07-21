@@ -531,7 +531,7 @@ class A8Wn_HQQ_INT_dynamic(A16Wn):
 
         return gemlite_linear
 
-    def from_hqqlinear(self, hqq_layer):
+    def from_hqqlinear(self, hqq_layer, del_orig=True):
         assert hqq_layer.meta['axis'] == 1, 'Only axis==1 is supported.'
 
         self.device = hqq_layer.W_q.device
@@ -557,11 +557,11 @@ class A8Wn_HQQ_INT_dynamic(A16Wn):
         return out_layer
 
 class A8W4_HQQ_INT_dynamic(A8Wn_HQQ_INT_dynamic):
-    def __init__(self, W_nbits, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
         super().__init__(device=device, packing_bitwidth=packing_bitwidth, dtype=dtype, post_scale=post_scale, fp8=fp8, fp32_scale=fp32_scale, W_nbits=4)
 
 class A8W2_HQQ_INT_dynamic(A8Wn_HQQ_INT_dynamic):
-    def __init__(self, W_nbits, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
         super().__init__(device=device, packing_bitwidth=packing_bitwidth, dtype=dtype, post_scale=post_scale, fp8=fp8, fp32_scale=fp32_scale, W_nbits=2)
 
 class A8Wn_MXFP_dynamic:
