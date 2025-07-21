@@ -86,20 +86,21 @@ def set_acc_dtype(dtype):
     GEMLITE_ACC_DTYPE[DType.FP16] = dtype
 
 #Return the default gemv kernel to use for M==1
-def get_default_gemv(W_nbits: int) -> str:
-    if IS_HIP:
-        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+def get_default_gemv(W_nbits: int, mx_dtype: bool = False) -> str:
+    #TODO: adapt mx for IS_HIP = True
+    if mx_dtype: 
+        return 'GEMM_SPLITK' #TODO: fix mxf bugs in GEMV outputs garbage.
     else:
         return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 
 #matmul type selection logic
-def get_matmul_type(batch_size: int, W_nbits: int):
+def get_matmul_type(batch_size: int, W_nbits: int, mx_dtype: bool = False):
     if batch_size > 64:
         return "GEMM"
     if batch_size > 1:
         return "GEMM_SPLITK"
     else:
-        return get_default_gemv(W_nbits)
+        return get_default_gemv(W_nbits, mx_dtype)
 
 #######################################################################################################################
 def enable_activation_scaling(batch_size):
@@ -167,7 +168,7 @@ def forward_functional(
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
     else:
-        matmul_type_str = get_matmul_type(x.shape[0], W_nbits) #batch_size, W_nbits
+        matmul_type_str = get_matmul_type(x.shape[0], W_nbits, is_mx_dtype(input_dtype)) #batch_size, W_nbits, is_mx_dtype
 
     out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous, type_id).view(out_shape)
 
@@ -289,9 +290,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         self.scaled_activations = bool(self.scaled_activations)
         self.data_contiguous = bool(self.data_contiguous)
 
-    def using_mx_dtype(self):
-        return self.input_dtype in [DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
-
     #Make sure to feed UINT8 W_q for packing
     def pack(
         self,
@@ -308,7 +306,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
 
         #Only 8-bit packing is supported for microscaling
-        if(self.using_mx_dtype()):
+        if(is_mx_dtype(self.input_dtype)):
             packing_bitwidth = 8
 
         #Non-packed weights
@@ -436,7 +434,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = self.scales.to(torch.float8_e8m0fnu).view(torch.uint8)
         if(self.input_dtype in [DType.NVFP4]):
             self.scales = self.scales.to(torch.float8_e4m3fn)
-        if(self.using_mx_dtype()):
+        if(is_mx_dtype(self.input_dtype)):
             self.scales = self.scales.T
             self.W_group_mode = 2
             self.channel_scale_mode = 0
