@@ -8,8 +8,8 @@ from ..dtypes import is_mx_dtype
 from .config import AUTOTUNE
 from .utils import *
 
-KEYS          = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'type_id', 'a_sizeof', 'b_sizeof'] 
-MATMUL_TYPE   = "GEMM_SPLITK"
+KEYS        = ['M_CLOSEST', 'N', 'K', 'group_size', 'elements_per_sample', 'type_id', 'a_sizeof', 'b_sizeof'] 
+MATMUL_TYPE = "GEMM_SPLITK"
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     from ..core import GEMLITE_TRITON_CONFIG_CACHE
@@ -47,6 +47,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             return
 
     gpu_shared_memory = get_gpu_shared_memory() 
+    load_scales_as_block = kwargs['load_scales_as_block']
     used = set()
     for config in configs:
         group_size_m = config.kwargs['GROUP_SIZE_M']
@@ -68,9 +69,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Only use higher split_k values for smaller m
         if(m >= 32): split_k = min(split_k, 8)
 
-        #Constraint: BLOCK_SIZE_K >= group_size
-        #block_size_k = min(block_size_k, g) #ONLY FOR load_as_block = False
-        #TODO: MANAGE THIS AUTOMATICALLY
+        #Constraint: BLOCK_SIZE_K >= group_size, only for oad_as_block = False
+        if(not load_scales_as_block):
+            block_size_k = min(block_size_k, g)
 
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
@@ -278,6 +279,7 @@ def gemm_splitK_INT_kernel(
     stride_meta_a_m, stride_meta_a_g,
     stride_meta_g, stride_meta_n,
     ######### Dtypes #########
+    load_scales_as_block, #False | IF FALSE, RESTRICT BLOCK_SIZE_K <= 32
     input_dtype: tl.constexpr,
     output_dtype: tl.constexpr,
     acc_dtype: tl.constexpr,
@@ -296,8 +298,6 @@ def gemm_splitK_INT_kernel(
     atomic_mode: tl.constexpr = 'relaxed',
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
-    #################################
-    load_scales_as_block: tl.constexpr = False,
 ):
     """
     Based on https://github.com/foundation-model-stack/foundation-model-stack/blob/triton/triton/kernels/gptq/splitk_dequant_gemm.py
@@ -460,6 +460,7 @@ def gemm_splitK_MX_kernel(
     stride_meta_a_m: tl.constexpr, stride_meta_a_g: tl.constexpr,
     stride_meta_n: tl.constexpr, stride_meta_g: tl.constexpr,
     ######### Dtypes #########
+    load_scales_as_block, #True | IF FALSE, RESTRICT BLOCK_SIZE_K <= 32
     input_dtype: tl.constexpr,
     output_dtype: tl.constexpr,
     meta_dtype: tl.constexpr,
@@ -479,7 +480,6 @@ def gemm_splitK_MX_kernel(
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
     #################################
-    load_scales_as_block: tl.constexpr = True, #True | IF FALSE, RESTRICT BLOCK_SIZE_K <= 32
 ):
     pid   = tl.program_id(axis=0)
     pid_k = tl.program_id(axis=1)
@@ -529,12 +529,9 @@ def gemm_splitK_MX_kernel(
     BLOCK_SIZE_K_S: tl.constexpr = BLOCK_SIZE_K // group_size
     offs_k_scales = tl.arange(0, BLOCK_SIZE_K_S)
     offs_n_b_scales = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    load_scales_as_vector: tl.constexpr = not load_scales_as_block
     #B scales
-    if(load_scales_as_block):
-        scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
-    else:
-        scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n
+    scales_b_ptrs = scales_ptr + offs_n_b_scales[:, None] * stride_meta_n + offs_k_scales[None, :] * stride_meta_g #[BLOCK_SIZE_N, BLOCK_SIZE_K // group_size]
+
     #A scales
     if(channel_scale_mode == 4):
         scales_a_ptrs = scales_a_ptr + offs_am[:, None] * stride_meta_a_m + offs_k_scales[None, :] * stride_meta_a_g
@@ -547,13 +544,9 @@ def gemm_splitK_MX_kernel(
         #k_m = ((k * SPLIT_K + pid_k) * stride_mul).to(tl.int32)
         k_m = (k * SPLIT_K + pid_k) * BLOCK_SIZE_K_S #OK for BLOCK_SIZE_K >=group_size
         scales_b = tl.load(scales_b_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-        if(load_scales_as_vector):
-            scales_b = tl.broadcast_to(scales_b, (BLOCK_SIZE_N, BLOCK_SIZE_K_S))
 
         if(channel_scale_mode == 4):
             scales_a = tl.load(scales_a_ptrs + k_m * stride_meta_a_g, eviction_policy=meta_evict_policy)
-            if(load_scales_as_vector):
-                scales_a = tl.broadcast_to(scales_a, (BLOCK_SIZE_M, BLOCK_SIZE_K_S))
         else:
             scales_a = None
 
@@ -610,8 +603,10 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
 
     if(is_mx_dtype(input_dtype)):
         gemm_splitK_kernel = gemm_splitK_MX_kernel
+        load_scales_as_block = True
     else:
         gemm_splitK_kernel = gemm_splitK_INT_kernel
+        load_scales_as_block = False
 
     gemm_splitK_kernel[grid](
         x, W_q, output, 
@@ -627,6 +622,7 @@ def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, s
         stride_meta_a_m, stride_meta_a_g,
         scales.stride(0), scales.stride(1),
         ################################################
+        load_scales_as_block = load_scales_as_block,
         input_dtype  = DTYPE_TO_TRITON[input_dtype],
         output_dtype = TORCH_DTYPE_TO_TRITON[output.dtype],
         acc_dtype    = DTYPE_TO_TRITON[acc_dtype],
