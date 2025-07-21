@@ -53,8 +53,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         num_stages    = config.num_stages
         num_warps     = config.num_warps
 
-        #Constraints
-        #BLOCK_SIZE_K <= group_size
+        #Constraints: BLOCK_SIZE_K <= group_size -> load_scales_as_block is always False for gemvs
         block_size_k = min(block_size_k, g)
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)

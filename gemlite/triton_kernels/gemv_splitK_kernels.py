@@ -57,8 +57,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         A_load_order  = config.kwargs['A_load_order']
         dot_prod_mode = config.kwargs['dot_prod_mode']
         
-        #Constraints
-        #BLOCK_SIZE_K >= group_size
+        ##Constraints: BLOCK_SIZE_K <= group_size -> load_scales_as_block is always False for gemvs
         block_size_k = min(block_size_k, g)
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
