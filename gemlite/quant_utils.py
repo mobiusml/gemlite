@@ -7,11 +7,13 @@ from triton.language.extra import libdevice
 from .triton_kernels.utils import IS_HIP, get_num_SMs, next_power_of_2
 from .dtypes import *
 
-#Cache workspace for multiple gpus
-fp4_values, thr_pos = [], []
+#Cache workspace for multiple gpus (less than a KB per GPU)
+fp4_values, fp4_p_vals, fp4_thresholds, thr_pos = [], [], [], []
 for g_id in range(torch.cuda.device_count()):
     current_device = "cuda:" + str(g_id)
-    fp4_values.append(torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.bfloat16, device=current_device))
+    fp4_values.append(torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.float32, device=current_device))
+    fp4_p_vals.append(torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=torch.float32, device=current_device))
+    fp4_thresholds.append(torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=torch.float32, device=current_device))  #(fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
     fp4_pos = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=torch.float32, device=current_device)
     thr_pos.append((fp4_pos[:-1] + fp4_pos[1:]) * 0.5)
 
@@ -23,6 +25,125 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
     else:
         max_val = torch.iinfo(compute_dtype).max
     return max_val
+
+class WeightQuantizerMXFP:
+    def __init__(self, compute_dtype=torch.bfloat16, device="cuda:0"):
+        self.compute_dtype = compute_dtype
+        self.device        = device
+
+    def round_to_closest_fp4(self, tensor):
+        device_index = tensor.device.index
+        out = fp4_p_vals[device_index][torch.searchsorted(fp4_thresholds[device_index].to(tensor.dtype), tensor.abs())].to(tensor.dtype)
+        out *= tensor.sign()
+        return out
+
+    def to_index(self, W_q):
+        assert W_q.is_floating_point(), "Input should be floating point fp4 values."
+        device_index = W_q.device.index
+        return (W_q.view(-1, 1) == fp4_values[device_index].to(W_q.dtype).view(1 , -1)).to(torch.uint8).argmax(dim=1).to(torch.uint8).view(W_q.shape)
+
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp8(self, W: torch.Tensor, index: bool = False, mx_fp8_dtype: torch.dtype = torch.float8_e4m3fn) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 32
+        eps: float = 2**-30
+        max_val = torch.finfo(mx_fp8_dtype).max
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+        ideal_scale /= max_val
+
+        scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(min=eps)
+
+        W_q = (W_flat / scales).to(mx_fp8_dtype).to(W_flat.dtype)
+        scales = scales.to(torch.float8_e8m0fnu)
+
+        if(index):
+            W_q = W_q.to(mx_fp8_dtype)
+
+        return W_q, scales
+
+    @torch.compile(fullgraph=True)
+    def quantize_mxfp4(self, W: torch.Tensor, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 32
+        eps: float = 2**-30
+        W_nbits = 4
+        max_val = 6
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+        ideal_scale /= max_val
+
+        if(window_size == 0):
+            scales = 2 ** torch.ceil(torch.log2(ideal_scale))
+        else:
+            initial_log2_scales = torch.ceil(torch.log2(ideal_scale))
+            search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=initial_log2_scales.dtype).view(1, -1)
+            candidate_scales = torch.pow(2, initial_log2_scales + search_offsets)
+            candidate_scales[candidate_scales < eps] = eps
+
+            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
+            W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
+            errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
+            scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
+
+        scales = scales.clamp_(eps)
+        W_q = self.round_to_closest_fp4(W_flat / scales)
+        scales = scales.to(torch.float8_e8m0fnu)
+
+        if(index):
+            W_q = self.to_index(W_q)
+        return W_q, scales
+
+    @torch.compile(fullgraph=True)
+    def quantize_nvfp4(self, W: torch.Tensor, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+        group_size: int = 16
+        eps: float = 1e-8
+        W_nbits = 4
+        max_val = 6
+        fp8_dtype = torch.float8_e4m3fn
+        max_fp8 = torch.finfo(fp8_dtype).max #448
+
+        W_flat = W.view(-1, group_size).float()
+        ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
+        ideal_scale /= max_val
+        ideal_scale.clamp_(max=max_fp8)
+
+        if(window_size == 0):
+            scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
+        else:
+            search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=torch.int).view(1, -1)
+            candidate_scales = (ideal_scale.to(fp8_dtype).view(torch.int8) + search_offsets).clamp_(-128, 127).to(torch.int8)
+
+            #Avoid nan in int8 range (-1, 127 as int8 as e4m3 nans)
+            candidate_scales[candidate_scales==-1] = 1
+            candidate_scales[candidate_scales==127] = 1
+            candidate_scales = candidate_scales.view(fp8_dtype).float()
+            candidate_scales[candidate_scales < eps] = eps
+
+            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
+            W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
+            errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
+            scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
+
+        scales = scales.clamp_(min=eps)
+        W_q = self.round_to_closest_fp4(W_flat / scales)
+        scales = scales.to(fp8_dtype)
+
+        if(index):
+            W_q = self.to_index(W_q)
+
+        return W_q, scales
+
+    def dequantize(self, W_q, scales, shape = None, dtype = None):
+        if(W_q.dtype == torch.uint8): #from indices
+            device_index = W_q.device.index
+            W_q = fp4_values[device_index][W_q.int()]
+
+        group_size = W_q.numel() // scales.numel()
+        out = (W_q.view([-1, group_size]).float() * scales.float())
+        if(shape is not None):
+            out = out.view(shape)
+        return out.to(self.compute_dtype if dtype is None else dtype)
 
 #Main activation scaling functions
 @torch.compile(fullgraph=True)
@@ -43,7 +164,6 @@ def scale_activations_per_token_torch(tensor: Tensor, w_dtype: torch.dtype, fp32
 
     out = out.to(dtype=w_dtype)
     return out.view(out_shape), scales
-
 
 @triton.jit
 def round_triton_nvidia(tensor):
@@ -288,7 +408,7 @@ def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 
     #1) Map to closest index
     device_index = W_q.device.index
-    W_q = (W_q.view(-1, 1) - fp4_values[device_index].view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+    W_q = (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
     #2) Pack
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
@@ -325,7 +445,7 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 
     #1) Map to closest index
     device_index = W_q.device.index
-    W_q = (W_q.view(-1, 1) - fp4_values[device_index].view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+    W_q = (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
     #2) Pack
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
