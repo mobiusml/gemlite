@@ -141,7 +141,7 @@ class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
         self.quantizer_mx = None
-        self.mx_fp8_dtype = torch.float8_e4m3fn #default_fp8
+        self.mx_fp8_dtype = default_fp8
 
     def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
         return self.from_weights_(W_q, scales, zeros, W_nbits, group_size, bias, quant_type)
@@ -418,7 +418,7 @@ class A8W8_MXFP_dynamic:
         assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
 
         #Pre-Quantized
-        assert weight.dtype in [torch.float8_e4m3fn], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert weight.is_floating_point() and weight.itemsize == 1, f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
         assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXPF8 valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
         assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
         dtype = self.dtype 
@@ -586,7 +586,7 @@ class A8Wn_MXFP_dynamic:
 
         #Pre-Quantized
         if(self.W_nbits == 8):
-            assert weight.dtype in [torch.float8_e4m3fn], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+            assert weight.is_floating_point() and weight.itemsize == 1, f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
         if(self.W_nbits == 4):
             assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
         assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXPF8 valid dtype (e8m0 / view(uint8)), got {scales.dtype}."

@@ -100,7 +100,7 @@ class WeightQuantizerMXFP:
         eps: float = 1e-8
         W_nbits = 4
         max_val = 6
-        fp8_dtype = torch.float8_e4m3fn
+        fp8_dtype = torch.float8_e4m3fn #This is for Nvidia only.
         max_fp8 = torch.finfo(fp8_dtype).max #448
 
         W_flat = W.view(-1, group_size).float()
@@ -299,7 +299,7 @@ next_power_of_2_triton = next_power_of_2_bitwise_triton
 def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[Tensor, Tensor]:
     group_size = 32
     eps = 2 ** -30
-    max_val = get_max_val(w_dtype) #max_val == 6 if W_nbits == 4 else 448
+    max_val = get_max_val(w_dtype)
 
     orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
@@ -315,7 +315,7 @@ def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.f
     scales /= max_val
     scales = (2 ** torch.ceil(torch.log2(scales))).clamp_(eps) 
 
-    W_q = (W_flat / scales).clamp_(-max_val, max_val).to(torch.float8_e4m3fn)
+    W_q = (W_flat / scales).clamp_(-max_val, max_val).to(w_dtype)
     if(pad_rows > 0):
         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
 
@@ -330,6 +330,7 @@ def scale_activations_mxfp8_triton_kernel(
     out_ptr,
     scales_ptr,
     E,
+    max_val: tl.constexpr,
     eps: tl.constexpr,
     UNROLL: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -342,7 +343,7 @@ def scale_activations_mxfp8_triton_kernel(
         mask = (offs < E).to(tl.int1)
         tensor = tl.load(tensor_ptr + offs, mask=mask, other=0.0).to(tl.float32)
 
-        scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor)) / 6., eps)
+        scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor)) / max_val, eps)
 
         out = (tensor / scales).to(out_ptr.dtype.element_ty)
         tl.store(out_ptr + offs, out)
@@ -353,6 +354,7 @@ def scale_activations_mxfp8_triton_kernel(
 def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 32
     eps = 2 ** -30
+    max_val = get_max_val(w_dtype)
     tensor = tensor.contiguous()
     
     orig_shape = tensor.shape
@@ -373,6 +375,7 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
                 out, 
                 scales, 
                 E=E,
+                max_val=max_val,
                 eps=eps,
                 UNROLL=UNROLL,
                 GROUP_SIZE=group_size,
@@ -422,7 +425,7 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     group_size = 16
     eps = 2 ** -30
     max_val = 6
-    fp8_dtype = torch.float8_e4m3fn
+    fp8_dtype = torch.float8_e4m3fn #Support Nvidia only
     max_fp8 = torch.finfo(fp8_dtype).max #448
 
     orig_shape = tensor.shape
@@ -680,7 +683,7 @@ def scale_activations_nvfp4_triton_kernel_v2(
 def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor, eps: float = 2**-30) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 16
     eps = 2 ** -30
-    fp8_dtype = torch.float8_e4m3fn
+    fp8_dtype = torch.float8_e4m3fn #Supports Nvidia only
     tensor = tensor.contiguous()
     
     orig_shape = tensor.shape
