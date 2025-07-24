@@ -21,9 +21,10 @@ else:
 ############################################################################################################################################################
 #Clean-up
 def cleanup_linear(linear_layer, del_orig=True):
-    if(del_orig):
+    if del_orig:
         for attr in ['weight', 'bias', 'weight_scale', 'W_q', 'meta']:
-            if(hasattr(linear_layer, attr)):
+            val = getattr(linear_layer, attr, None)
+            if val is not None and hasattr(val, '__len__') and len(val) > 0:
                 setattr(linear_layer, attr, None)
     torch.cuda.empty_cache()
 
