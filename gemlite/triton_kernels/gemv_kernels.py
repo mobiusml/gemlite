@@ -138,7 +138,7 @@ def get_fast_autotune_config_nvidia():
 
 
 def get_default_config_nvidia():
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0,'dot_prod_mode':0}, num_warps=1, num_stages=1)
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':64, 'BLOCK_SIZE_K':32, 'A_load_order':0, 'dot_prod_mode':0, 'NUM_STAGES':1}, num_warps=1, num_stages=1)
     return [config]
 
 ########################################################################################################################################################################
@@ -190,7 +190,7 @@ def get_fast_autotune_config_amd():
 
 
 def get_default_config_amd():
-    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0}, num_warps=1, num_stages=1)
+    config = triton.Config({'BLOCK_SIZE_M':1, 'BLOCK_SIZE_N':32, 'BLOCK_SIZE_K':16, 'A_load_order':0, 'dot_prod_mode':0, 'NUM_STAGES':1}, num_warps=1, num_stages=1)
     return [config]
 ########################################################################################################################################################################
 KERNEL_CACHE = {}
