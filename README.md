@@ -33,6 +33,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 - [Contributing](#contributing)
 
 # Recent Highlights
+- GemLite now supports MXFP for Blackwell!
 - GemLite now supports vLLM V1 (torch.compile compatible)!
 - GemLite now supports bfloat16!
 - GemLite is now available in <a href="https://github.com/vllm-project/vllm/">vllm</a> via the <a href="https://github.com/mobiusml/hqq/">hqq</a> lib! 
@@ -43,7 +44,7 @@ Extensive performance results across different bitwidths, batch sizes, and devic
 - **Helper functions**: helper functions make it easier to get started, especially useful for dynamic quantization.  
 - **New GEMV RevSplitK algorithm**: outperforms GEMM Split-K and GEMV for batch-size=1 with packed data.
 - **Channel-wise scaling**: Added support for channel-wise scaling for weights, activations, and both.
-- **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8 and INT8 x Wn.
+- **Precision support**: Includes FP16 x Wn, FP8 x FP8, FP8 x Wn, INT8 x INT8, INT8 x Wn, MXFPn x MXFPn.
 - **torch.compile() support**.
 
 
@@ -97,20 +98,35 @@ Additionally, we offer helper functions that operate as follows:
 
 ```Python
 from gemlite.helper import *
+device, dtype = 'cuda:0', torch.float16
 
-#Non-packed 8-bit weights (INT8 or FP8)
-gemlite_linear = A16W8(device='cuda:0').from_linear(linear_layer) #FP16 activations
-gemlite_linear = A8W8_int8_dynamic(device='cuda:0').from_linear(linear_layer) #INT8 activations
-gemlite_linear = A8W8_fp8_dynamic(device='cuda:0').from_linear(linear_layer) #FP8 activations
+#AxWy: x: activation precision in bits, y: weight precision in bits.
 
-#Packed weights for 4-bit/2-bit/1-bit (HQQ format)
-gemlite_linear = A16Wn(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP16 activations
-gemlite_linear = A8Wn_dynamic(device='cuda:0').from_hqqlinear(hqqlinear_layer) #FP8 activations
+#Weight-only
+gemlite_linear = A16W8_INT(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A16W8_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
+gemlite_linear = A16W4_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
+gemlite_linear = A16W2_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
+gemlite_linear = A16W158_INT(device=device, dtype=dtype).from_bitlinear(bitlinear_layer)
 
-#Packed weights for 1.58 bitnet (Bitlinear format)
-gemlite_linear = A16W158(device='cuda:0').from_bitlinear(bitlinear_layer) #FP16 activations
-gemlite_linear = A8W158(device='cuda:0').from_bitlinear(bitlinear_layer) #int8 activations
+#8-bit activation dynamic quant
+gemlite_linear = A8W8_INT8_dynamic(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A8W8_FP8_dynamic(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A8W4_HQQ_INT_dynamic(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
+gemlite_linear = A8W158_INT_dynamic(device=device, dtype=dtype).from_bitlinear(bitlinear_layer)
 
+#MXFP weight-only
+gemlite_linear = A16W8_MXFP(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A16W4_MXFP(device=device, dtype=dtype).from_linear(layer)
+
+#MXFP/NVFP dynamic quant - if post_scale=True, uses channel-wise activation quant.
+#Limited support for MXFP: Nvidia sm_120 / AMD for the moment.
+gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=dtype, post_scale=False).from_linear(layer)
+gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=dtype, post_scale=True).from_linear(layer)
+gemlite_linear = A8W4_MXFP_dynamic(device=device, dtype=dtype, post_scale=False).from_linear(layer)
+gemlite_linear = A8W4_MXFP_dynamic(device=device, dtype=dtype, post_scale=True).from_linear(layer)
+gemlite_linear = A4W4_MXFP_dynamic(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A4W4_NVFP_dynamic(device=device, dtype=dtype).from_linear(layer)
 ```
 ### Config Caching
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
@@ -156,10 +172,9 @@ This newly proposed algorithm in GemLite operates in contrast to the GEMM Split-
 All kernels are flexible, supporting 8, 4, 2, and 1-bit weight precisions as well as float16, bfloat16 and int8/fp8 activations.
 
 ## Limitations
-* All kernels require a minimum group-size of 32.
-* <b><a href="https://github.com/mobiusml/gemlite/blob/master/gemlite/triton_kernels/gemv.py">Gemv RevSplit-K</a></b>, which is the default kernel for batch-size=1, does not work with 1-bit weights packed as 32-bit with a group-size of 32. In this case, you should use 8-bit bitpacking via `.pack(...,packing_bitwidth=8)`, or revert to using the `GEMV` kernel instead.
+* All kernels require a minimum group-size of 16.
 * On datacenter gpus (A100, H100, H200), 8-bit packing via `gemlite.set_packing_bitwidth(8)` is faster with larger batches.
-* `bfloat16` is about 5-7% slower for `1 <= M <= 64` because of the fp32 fallback atomic addition implementation. You can set the default gemv to the Split-K kernel which could run faster for `M == 1` in some cases depending on the GPU (A100 confirmed, but slower on the H100) `gemlite.core.get_default_gemv = lambda W_nbits: 'GEMM_SPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'`.
+* `bfloat16` is about 5-7% slower for `1 <= M <= 64` because of the fp32 fallback atomic addition implementation. 
 
 ## Performance
 ### End-2-End Performance
