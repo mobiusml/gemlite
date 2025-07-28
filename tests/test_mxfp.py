@@ -51,7 +51,7 @@ class TestGemliteMXFP(unittest.TestCase):
 
 	@unittest.skipIf(not is_fp8_supported(), "Skipping test: GPU does not support FP8")
 	def test_A8W8_MXFP_dynamic(self):
-		gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=compute_dtype).from_linear(linear_layer, del_orig=False)
+		gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=compute_dtype, post_scale=False).from_linear(linear_layer, del_orig=False)
 		self.assertTrue(gemlite_linear.W_q.numel() * gemlite_linear.W_q.itemsize == (in_features * out_features))
 		self.assertTrue(gemlite_linear.scaled_activations)
 		self.eval(gemlite_linear, tol = 2e-4)
