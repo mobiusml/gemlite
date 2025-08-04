@@ -15,6 +15,8 @@ from .core import (
     forward_functional,
 )
 
+from . import helper
+
 load_config  = GemLiteLinear.load_config
 cache_config = GemLiteLinear.cache_config
 reset_config = GemLiteLinear.reset_config
