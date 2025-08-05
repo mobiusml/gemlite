@@ -70,7 +70,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         if(m >= 32): split_k = min(split_k, 8)
 
         #Constraint: BLOCK_SIZE_K >= group_size, only for oad_as_block = False
-        if(not load_scales_as_block):
+        if(load_scales_as_block):
+            num_stages = max(num_stages, 2) #for dot_scaled kernels with pipelined loads
+        else:
             block_size_k = min(block_size_k, g)
 
         block_size_k = next_power_of_2(block_size_k)
