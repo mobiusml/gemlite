@@ -10,18 +10,12 @@ from typing import List, Union, Tuple, Callable
 import logging
 from functools import partial
     
-#Dtypes
 from .dtypes import *
-
-# Triton
-import triton
-import triton.language as tl
-from triton.language.extra import libdevice
-from triton.testing import do_bench, do_bench_cudagraph
 from .triton_kernels import *
 from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP
 from .triton_kernels import utils
 from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
+from .quant_utils import scale_activations_per_token, scale_activations_mxfp8, scale_activations_mxfp4, scale_activations_nvfp4
 
 import threading
 FILE_LOCK = threading.Lock()
@@ -41,14 +35,19 @@ GEMLITE_ACC_DTYPE = {
     DType.FP8e5: DType.FP32, 
     DType.FP8e5nuz: DType.FP32,
     DType.INT8: DType.INT32,
+    DType.MXFP16: DType.FP32,
+    DType.MXBF16: DType.FP32,
+    DType.MXFP8: DType.FP32,
+    DType.MXFP4: DType.FP32,
+    DType.NVFP4: DType.FP32,
 }
 
 GEMLITE_TRITON_KERNELS = [
-    gemv_A16fWnO16f,
-    gemv_revsplitK_A16fWnO16f,
-    gemv_splitK_A16fWnO16f,
-    gemm_splitK_A16fWnO16f, #gemm_splitK_A16fWnO16f / gemm_splitK_persistent_A16fWnO16f
-    gemm_A16fWnO16f,
+    gemv,
+    gemv_revsplitK,
+    gemv_splitK,
+    gemm_splitK, #gemm_splitK / gemm_splitK_persistent
+    gemm,
 ]
 
 GEMLITE_TRITON_MAPPING       = {kernel.matmul_type : kernel for kernel in GEMLITE_TRITON_KERNELS}
@@ -87,143 +86,32 @@ def set_acc_dtype(dtype):
     GEMLITE_ACC_DTYPE[DType.FP16] = dtype
 
 #Return the default gemv kernel to use for M==1
-def get_default_gemv(W_nbits: int) -> str:
-    if IS_HIP:
-        return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
+def get_default_gemv(W_nbits: int, mx_dtype: bool = False) -> str:
+    #TODO: adapt mx for IS_HIP = True
+    if mx_dtype: 
+        return 'GEMM_SPLITK' #TODO: fix mxf bugs in GEMV outputs garbage.
     else:
         return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 
 #matmul type selection logic
-def get_matmul_type(batch_size: int, W_nbits: int):
+def get_matmul_type(batch_size: int, W_nbits: int, mx_dtype: bool = False):
     if batch_size > 64:
         return "GEMM"
     if batch_size > 1:
         return "GEMM_SPLITK"
     else:
-        return get_default_gemv(W_nbits)
+        return get_default_gemv(W_nbits, mx_dtype)
 
 #######################################################################################################################
-#Activation scaling
+def enable_activation_scaling(batch_size):
+    """
+    This functions enables adaptive activation quantization based on the batch-size. 
+    For example, it would only do dynamic activation in more compute-bound settings (batch_size >=32 / 64). 
+    Only works with the MXFP format - use with A8W4_MXFP/A4W4_MXFP.
+    """
+    return True
+    #return batch_size >= 32
 
-#Get max val based on compute type
-def get_max_val(compute_dtype: torch.dtype) -> float:
-    if(compute_dtype.is_floating_point):
-        max_val = torch.finfo(compute_dtype).max
-    else:
-        max_val = torch.iinfo(compute_dtype).max
-    return max_val
-
-#Main activation scaling functions
-@torch.compile(fullgraph=True)
-def scale_activations_per_token_torch(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    max_val = get_max_val(w_dtype)
-    if fp32_scale:
-        x = x.to(torch.float32, copy=False)
-    x_shape = x.shape
-    out_x = x.view(-1, x.shape[-1])
-    scales_x = torch.abs(out_x).amax(axis=1, keepdim=True)
-    # if(fp32_scale):
-    #     scales_x = scales_x.to(torch.float32)
-    scales_x.div_(max_val)
-    out_x = x / scales_x
-
-    if not w_dtype.is_floating_point:
-        out_x.round_()
-
-    out_x = out_x.to(dtype=w_dtype)
-    return out_x.view(x_shape), scales_x
-
-
-@triton.jit
-def round_triton_nvidia(x):
-    return libdevice.round(x)
-
-@triton.jit
-def round_triton_amd(x):
-    return libdevice.floor(x + 0.50)
-
-if IS_HIP:
-    round_triton = round_triton_amd
-else:
-    round_triton = round_triton_nvidia
-
-@triton.jit
-def scale_activations_per_token_kernel(
-    x_ptr, scale_ptr, y_ptr, 
-    M, K,
-    stride_m, stride_k, stride_sm,
-    ROUND: tl.constexpr, 
-    UNROLL: tl.constexpr,
-    max_val: tl.constexpr,
-    fp32_scale: tl.constexpr, 
-    BLOCK_M: tl.constexpr, 
-    BLOCK_K: tl.constexpr,
-):
-    pid_m = tl.program_id(0) * UNROLL
-    pid_k = tl.program_id(1)
-
-    offs_k  = pid_k * BLOCK_K + tl.arange(0, BLOCK_K)
-    offs_m  = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
-
-    for m in range(UNROLL):
-        mask = ((offs_m < M)[:, None] & (offs_k < K)[None, :]).to(tl.int1)
-        in_ptrs = offs_m[:, None] * stride_m + offs_k[None, :] * stride_k
-        x = tl.load(x_ptr + in_ptrs, mask=mask, other=0.0)
-        if fp32_scale:
-            x = x.to(tl.float32)
-
-        scales_x = tl.max(tl.abs(x), axis=1, keep_dims=True)
-        scales_x /= max_val
-        x /= scales_x
-
-        if ROUND:
-            x = round_triton(x)
-
-        tl.store(scale_ptr + offs_m[:, None] * stride_sm, scales_x)
-        tl.store(y_ptr + in_ptrs, x, mask=mask)
-        offs_m += BLOCK_M
-
-def scale_activations_per_token_triton(x: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
-    max_val = get_max_val(w_dtype)
-    x_shape = x.shape
-    x = x.view(-1, x.shape[-1])
-    M, K = x.shape
-    scales = torch.empty(
-        (M, 1), dtype=torch.float32 if fp32_scale else x.dtype, device=x.device
-    )
-    y = torch.empty((M, K), dtype=w_dtype, device=x.device)
-
-    UNROLL = 1  # max(1, M // 128)
-    BLOCK_M = 1
-    BLOCK_K = triton.next_power_of_2(K)
-    grid = (triton.cdiv(M, BLOCK_M * UNROLL), triton.cdiv(K, BLOCK_K))
-
-    ROUND = not w_dtype.is_floating_point
-
-    scale_activations_per_token_kernel[grid](
-        x,
-        scales,
-        y,
-        M,
-        K,
-        x.stride(0),
-        x.stride(1),
-        scales.stride(0),
-        max_val=max_val,
-        fp32_scale=fp32_scale,
-        ROUND=ROUND,
-        UNROLL=UNROLL,
-        BLOCK_M=BLOCK_M,
-        BLOCK_K=BLOCK_K,
-        num_stages=1,
-        num_warps=4,
-    )
-
-    return y.view(x_shape), scales
-
-
-scale_activations = scale_activations_per_token_triton
-#######################################################################################################################
 
 #Main functional forward call
 @torch.library.custom_op("gemlite::forward_functional", mutates_args=())
@@ -235,31 +123,52 @@ def forward_functional(
     matmul_type: int = -1, #-1: auto, >=0: manual
 ) -> Tensor:
     
-    scaled_activations = bool(meta_args[0])
     data_contiguous = bool(meta_args[1])
     W_nbits = meta_args[1]
     out_features = tensor_args[0].shape[1]
+
+    #Get type_id for autotune: use same autotune for float16/bfloat16
     input_dtype = meta_args[5]
-    input_dtype = 1 if (input_dtype == 2) else input_dtype #bfloat16 / float16 
-    type_id = input_dtype*100 + W_nbits
+    input_dtype = DType.FP16.value if (input_dtype == DType.BF16.value) else input_dtype
+    input_dtype = DType.MXFP16.value if (input_dtype == DType.MXBF16.value) else input_dtype
+    type_id = input_dtype * 100 + W_nbits
 
     if not x.is_contiguous():
         x = x.contiguous()
-    
-    #Dynamic activation quantization
-    if(scaled_activations):
-        compute_dtype = DTYPE_TO_TORCH[meta_args[5]] #input_dtype.value
-        x, scales_x = scale_activations(x, w_dtype=compute_dtype)
-    else:
-        x, scales_x = x, None
 
+    batch_size = x.numel() // x.shape[-1]
+    orig_shape = x.shape
     out_shape = x.shape[:-1] + (out_features,)
+    x_dtype = x.dtype
+
+    scaled_activations = bool(meta_args[0]) and enable_activation_scaling(batch_size)
+    #Dynamic activation quantization
+    scales_x = None
+    if(scaled_activations):
+        input_dtype = DType(meta_args[5])
+        channel_scale_mode = meta_args[9]
+
+        if(input_dtype in FP8_INT8_DTYPES): #INT8 / FP8
+            x, scales_x = scale_activations_per_token(x, w_dtype=DTYPE_TO_TORCH[input_dtype.value])
+
+        elif(input_dtype in [DType.MXFP8] and channel_scale_mode == 4): #MXPF8
+            x, scales_x = scale_activations_mxfp8(x, w_dtype=torch.float8_e4m3fn)
+
+        elif(input_dtype in [DType.MXFP8] and channel_scale_mode == 2): #MXPF8 with post-scale for the activations
+            x, scales_x = scale_activations_per_token(x, w_dtype=torch.float8_e4m3fn)
+
+        elif(input_dtype in [DType.MXFP4] and channel_scale_mode == 4): #MXPF4
+            x, scales_x = scale_activations_mxfp4(x)
+
+        elif(input_dtype in [DType.NVFP4] and channel_scale_mode == 4): #NVPF4: TODO
+            x, scales_x = scale_activations_nvfp4(x)
+    
     x = x.view(-1, x.shape[-1])
 
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
     else:
-        matmul_type_str = get_matmul_type(x.shape[0], W_nbits) #batch_size, W_nbits
+        matmul_type_str = get_matmul_type(x.shape[0], W_nbits, is_mx_dtype(input_dtype)) #batch_size, W_nbits, is_mx_dtype
 
     out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous, type_id).view(out_shape)
 
@@ -283,7 +192,9 @@ def forward_functional_fake(
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8]
+    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, 
+                            DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8, 
+                            DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
     MIN_SIZE              = 32
     PACKING_BITWIDTH      = 32 #Default packing bitwidth
 
@@ -314,8 +225,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             raise NotImplementedError("Unsupport input dtype: " + str(input_dtype))
 
         if(group_size is not None):
-            if(group_size < 32):
-                raise NotImplementedError("Only group_size >= 32 is supported.")
+            if(group_size < 16):
+                raise NotImplementedError("Only group_size >= 16 is supported.")
 
         group_size = 1 if (group_size is None) else group_size
 
@@ -394,6 +305,10 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
 
+        #Only 8-bit packing is supported for microscaling
+        if(is_mx_dtype(self.input_dtype)):
+            packing_bitwidth = 8
+
         #Non-packed weights
         self.W_q = None
         if(W_q.dtype in [torch.int8] or W_q.is_floating_point()):
@@ -423,6 +338,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             
             if contiguous is None:
                 contiguous = True
+                #TODO: check this for MX dtypes
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
@@ -501,9 +417,6 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(self.scales is None):
             self.scales = torch.tensor([[]], dtype=torch.int32, device=self.device)
 
-        if(self.scales is not None):
-            self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
-
         #Force contiguous
         if(contiguous):
             self.data_contiguous = True
@@ -515,6 +428,19 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.scales = self.scales.contiguous()
         if(isinstance(self.zeros, torch.Tensor)):
             self.zeros = self.zeros.contiguous()
+
+        #MX dtypes scaling
+        if(self.input_dtype in [DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4]):
+            self.scales = self.scales.to(torch.float8_e8m0fnu).view(torch.uint8)
+        if(self.input_dtype in [DType.NVFP4]):
+            self.scales = self.scales.to(torch.float8_e4m3fn)
+        if(is_mx_dtype(self.input_dtype)):
+            self.scales = self.scales.T
+            self.W_group_mode = 2
+            self.channel_scale_mode = 0
+
+        if(self.scales is not None):
+            self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
 
         #Register buffers
         self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)
@@ -576,20 +502,20 @@ class GemLiteLinearTriton(torch.nn.Module):
     
         #Can't use GEMLITE_TRITON_MAPPING for some reason kernel.cache is empty
         _GEMLITE_TRITON_MAPPING = {}
-        from .triton_kernels.gemv_A16fWnO16f_int32packing import gemv_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV'] = gemv_A16fWnO16f
+        from .triton_kernels.gemv_kernels import gemv
+        _GEMLITE_TRITON_MAPPING['GEMV'] = gemv
 
-        from .triton_kernels.gemv_revsplitK_A16fWnO16f_int32packing import gemv_revsplitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK_A16fWnO16f
+        from .triton_kernels.gemv_revsplitK_kernels import gemv_revsplitK
+        _GEMLITE_TRITON_MAPPING['GEMV_REVSPLITK'] = gemv_revsplitK
 
-        from .triton_kernels.gemv_splitK_A16fWnO16f_int32packing import gemv_splitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK_A16fWnO16f
+        from .triton_kernels.gemv_splitK_kernels import gemv_splitK
+        _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK
 
-        from .triton_kernels.gemm_splitK_A16fWnO16f_int32packing import gemm_splitK_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK_A16fWnO16f
+        from .triton_kernels.gemm_splitK_kernels import gemm_splitK
+        _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK
 
-        from .triton_kernels.gemm_A16fWnO16f_int32packing import gemm_A16fWnO16f
-        _GEMLITE_TRITON_MAPPING['GEMM'] = gemm_A16fWnO16f
+        from .triton_kernels.gemm_kernels import gemm
+        _GEMLITE_TRITON_MAPPING['GEMM'] = gemm
 
         for name in _GEMLITE_TRITON_MAPPING:
             if(name not in config): 
@@ -598,7 +524,8 @@ class GemLiteLinearTriton(torch.nn.Module):
             if(name in GEMLITE_TRITON_CONFIG_CACHE):
                 config[name].update(GEMLITE_TRITON_CONFIG_CACHE[name])
 
-            config[name].update(cache_kernel_config(_GEMLITE_TRITON_MAPPING[name].kernel, 6)) #5: len(prune_keys)
+            for kernel in _GEMLITE_TRITON_MAPPING[name].kernel:
+                config[name].update(cache_kernel_config(kernel, 6)) #5: len(prune_keys)
 
         #Save combined cache
         with FILE_LOCK, open(filename, "w") as json_file: 

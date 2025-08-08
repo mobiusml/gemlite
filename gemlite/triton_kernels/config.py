@@ -21,19 +21,19 @@ class KERNEL:
 
 def reload_all_modules():
 	#Avoid circular imports
-	from . import gemm_A16fWnO16f_int32packing
-	from . import gemm_splitK_A16fWnO16f_int32packing
-	from . import gemm_splitK_persistent_A16fWnO16f_int32packing
-	from . import gemv_A16fWnO16f_int32packing
-	from . import gemv_splitK_A16fWnO16f_int32packing
-	from . import gemv_revsplitK_A16fWnO16f_int32packing
+	from . import gemm_kernels
+	from . import gemm_splitK_kernels
+	from . import gemm_splitK_persistent_kernels
+	from . import gemv_kernels
+	from . import gemv_splitK_kernels
+	from . import gemv_revsplitK_kernels
 
-	imp.reload(gemm_A16fWnO16f_int32packing)
-	imp.reload(gemm_splitK_A16fWnO16f_int32packing)
-	imp.reload(gemm_splitK_persistent_A16fWnO16f_int32packing)
-	imp.reload(gemv_A16fWnO16f_int32packing)
-	imp.reload(gemv_splitK_A16fWnO16f_int32packing)
-	imp.reload(gemv_revsplitK_A16fWnO16f_int32packing)
+	imp.reload(gemm_kernels)
+	imp.reload(gemm_splitK_kernels)
+	imp.reload(gemm_splitK_persistent_kernels)
+	imp.reload(gemv_kernels)
+	imp.reload(gemv_splitK_kernels)
+	imp.reload(gemv_revsplitK_kernels)
 
 def set_kernel_caching(enable: bool):
 	KERNEL.ENABLE_CACHING = enable

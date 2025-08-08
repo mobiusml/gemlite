@@ -4,7 +4,7 @@ import torch, math, random, copy
 from torch import Tensor
 import triton
 import triton.language as tl
-
+from ..dtypes import is_mx_dtype
 from .config import AUTOTUNE, KERNEL
 from .utils import *
 
@@ -53,8 +53,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         num_stages    = config.num_stages
         num_warps     = config.num_warps
 
-        #Constraints
-        #BLOCK_SIZE_K <= group_size
+        #Constraints: BLOCK_SIZE_K <= group_size -> load_scales_as_block is always False for gemvs
         block_size_k = min(block_size_k, g)
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
@@ -224,7 +223,7 @@ else:
 )
 
 @triton.jit
-def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
+def gemv_INT_revsplitK_kernel(
     a_ptr, b_ptr, c_ptr,
     scales_ptr, zeros_ptr, scales_a_ptr,
     M, N, K, 
@@ -388,7 +387,7 @@ def gemv_revsplitK_A16fWnO16f_int32packing_kernel(
     
 KERNEL_CACHE = {}
 
-def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
+def gemv_revsplitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                                                    W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int, 
                                                    input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
                                                    channel_scale_mode: int, W_group_mode: int, data_contiguous: bool, type_id: int,
@@ -429,7 +428,12 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     else:
         acc_dtype = DTYPE_TO_TRITON[acc_dtype]
 
-    gemv_revsplitK_A16fWnO16f_int32packing_kernel[grid](
+    if(is_mx_dtype(input_dtype)):
+        raise Exception('MX dtypes are not supported for this kernel.')
+    else:
+        gemv_revsplitK_kernel = gemv_INT_revsplitK_kernel
+
+    gemv_revsplitK_kernel[grid](
         x, W_q, output,
         scales, zeros, scales_x,
         M, N, K, 
@@ -457,9 +461,9 @@ def gemv_revsplitK_A16fWnO16f_int32packing_forward(x: Tensor, W_q: Tensor, scale
     return output
 
 
-class gemv_revsplitK_A16fWnO16f:
-    kernel      = gemv_revsplitK_A16fWnO16f_int32packing_kernel
-    forward     = gemv_revsplitK_A16fWnO16f_int32packing_forward
+class gemv_revsplitK:
+    kernel      = [gemv_INT_revsplitK_kernel]
+    forward     = gemv_revsplitK_forward
     matmul_type = MATMUL_TYPE
 
-__all__ = ["gemv_revsplitK_A16fWnO16f"]
+__all__ = ["gemv_revsplitK"]

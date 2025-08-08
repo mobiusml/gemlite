@@ -1,12 +1,12 @@
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
 #********************************************************
-
 import torch
 import gc
 import time
 from tqdm import tqdm
 from gemlite.core import GemLiteLinearTriton, DType, TORCH_TO_DTYPE
 from gemlite.triton_kernels.utils import M_MAPPING
+from gemlite.quant_utils import WeightQuantizerMXFP
 from .triton_kernels.utils import IS_HIP
 
 if IS_HIP:
@@ -70,7 +70,7 @@ def patch_model(model, device, processor, skip_modules=[]):
     gc.collect()
 
 #16-bit activations / 8-bit weigths
-class A16W8: #INT8 weights
+class A16W8: #INT8 weight-only channel-wise
     def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
         self.device = device
         self.dtype = dtype
@@ -135,27 +135,62 @@ class A16W8: #INT8 weights
         return out_layer
 
 #FP16 activations / Wn packed weights
-class A16Wn:
+class A16Wn: #8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type 
     def __init__(self, device='cuda:0', dtype=None, packing_bitwidth=None, post_scale=default_post_scale):
         self.post_scale = post_scale
         self.device = device
         self.dtype = dtype
         self.packing_bitwidth = packing_bitwidth
+        self.quantizer_mx = None
+        self.mx_fp8_dtype = default_fp8
 
-    def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
+    def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
+        return self.from_weights_(W_q, scales, zeros, W_nbits, group_size, bias, quant_type)
+
+    def from_weights_(self, W_q, scales, zeros, W_nbits, group_size, bias=None, quant_type = "INT"):
+
+        assert quant_type in ["INT", "MXFP"], f"Invalid quant_type. Got {quant_type}, valid values are INT, MXFP."
+
+        if(quant_type == "MXFP"):
+            assert W_nbits in [8, 4], "Unsupported W_nbit for MXFP quant_dtype."
+            assert group_size == 32, "group_size should 32 for MXFP."
+
         if(isinstance(W_q, torch.nn.Parameter)):
             W_q = W_q.data
         if(isinstance(bias, torch.nn.Parameter)):
             bias = bias.data
-        dtype = scales.dtype if(self.dtype is None) else self.dtype
-        scales = scales.to(dtype)
-        assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
-        gemlite_dtype = TORCH_TO_DTYPE[dtype]
-        in_features, out_features = W_q.shape[::-1]
+
+        if(quant_type == "INT"):
+            dtype = scales.dtype if(self.dtype is None) else self.dtype
+            scales = scales.to(dtype)
+            assert scales.dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid scales.dtype, should floating point."
+            gemlite_dtype = TORCH_TO_DTYPE[dtype]
+            scales = scales.to(dtype)
+            zeros = zeros.to(dtype)
+
+        elif(quant_type == "MXFP"):
+            if(W_nbits == 8):
+                assert W_q.dtype in [self.mx_fp8_dtype], f"Unsupported dtype of W_q. got {W_q.dtype}"
+            if(W_nbits == 4):
+                assert W_q.dtype in [torch.uint8], f"Unsupported dtype of W_q. got {W_q.dtype}"
+
+            dtype = torch.float16 if (self.dtype is None) else self.dtype
+            if(dtype == torch.float16):
+                gemlite_dtype = DType.MXFP16
+            elif(dtype == torch.bfloat16):
+                gemlite_dtype = DType.MXBF16
+            else:
+                raise Exception(f"Unsupported dtype for MXFP. Got {dtype}, supported [torch.float16, torch.bfloat16]")
+            self.post_scale = False
+
+            N, K = W_q.shape
+            W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)#.float()
+
+        in_features, out_features = W_q.shape[::-1] 
 
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=dtype)
-        zeros = zeros.to(device=self.device, dtype=dtype)
+        scales = scales.to(device=self.device) if (scales is not None) else None
+        zeros = zeros.to(device=self.device) if (zeros is not None) else None
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear = GemLiteLinearTriton(W_nbits, 
@@ -167,9 +202,9 @@ class A16Wn:
                         scaled_activations=False,
                         )
 
-        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth) 
+        gemlite_linear.pack(W_q, scales, zeros, bias=bias, packing_bitwidth=self.packing_bitwidth)
 
-        if(group_size == in_features):
+        if(group_size == in_features and quant_type == "INT"):
             if(self.post_scale):
                 gemlite_linear.W_group_mode = 1
                 gemlite_linear.channel_scale_mode = 1
@@ -196,13 +231,85 @@ class A16Wn:
 
         cleanup_linear(hqq_layer, del_orig)
 
-        out_layer = self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
+        out_layer = self.from_weights_(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="INT")
         
         #Clean-up
         del W_q
         torch.cuda.empty_cache()
 
         return out_layer
+
+    def mxfp_from_linear(self, linear_layer, W_nbits, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = WeightQuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        group_size = 32
+        N, K = W.shape
+        if(W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights_(W_q=W_q, scales=scales, zeros=None, W_nbits=W_nbits, group_size=group_size, bias=bias, quant_type="MXFP")
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
+
+
+#Alias
+A16W8_INT = A16W8
+
+class A16Wn_HQQ_INT(A16Wn):
+    def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
+        super().__init__(device=device, dtype=dtype)
+        self.W_nbits = W_nbits
+
+    def from_weights(self, W_q, scales, zeros, bias=None):
+        group_size = W_q.numel() // scales.numel()
+        return super().from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=self.W_nbits, group_size=group_size, bias=bias, quant_type="INT")
+
+class A16W8_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=8)
+
+class A16W4_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=4)
+
+class A16W2_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=2)
+
+class A16W1_HQQ_INT(A16Wn_HQQ_INT):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=1)
+
+class A16Wn_MXFP(A16Wn):
+    def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
+        super().__init__(device=device, dtype=dtype)
+        self.W_nbits = W_nbits
+
+    def from_weights(self, W_q, scales, bias=None):
+        group_size = W_q.numel() // scales.numel()
+        return super().from_weights(W_q=W_q, scales=scales, zeros=None, W_nbits=self.W_nbits, group_size=group_size, bias=bias, quant_type="MXFP")
+
+    def from_linear(self, linear_layer, del_orig=True):
+        return super().mxfp_from_linear(linear_layer=linear_layer, W_nbits=self.W_nbits, del_orig=del_orig)
+
+class A16W8_MXFP(A16Wn_MXFP):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=8)
+
+class A16W4_MXFP(A16Wn_MXFP):
+    def __init__(self, device='cuda:0', dtype=None):
+        super().__init__(device=device, dtype=dtype, W_nbits=4)
 
 ############################################################################################################################################################
 #8-bit dynamic activations / 8-bit weights
@@ -282,6 +389,7 @@ class A8W8_int8_dynamic(A8W8_dynamic):
         self.device = device
         self.dtype = dtype
         self.fp8 = False
+A8W8_INT8_dynamic = A8W8_int8_dynamic
 
 class A8W8_fp8_dynamic(A8W8_dynamic):
     def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8):
@@ -289,11 +397,85 @@ class A8W8_fp8_dynamic(A8W8_dynamic):
         self.device = device
         self.dtype = dtype
         self.fp8 = fp8
+A8W8_FP8_dynamic = A8W8_fp8_dynamic
+
+class A8W8_MXFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
+        self.device = device
+        self.dtype = dtype
+        self.mx_fp8_dtype = fp8
+        self.quantizer_mx = None
+        self.post_scale = post_scale
+        self.W_nbits = 8
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.is_floating_point() and weight.itemsize == 1, f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXPF8 valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        dtype = self.dtype 
+        input_dtype = DType.MXFP8
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+        group_size = 32
+
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+
+        #If post_scale==False, it will use mxfp8 microscales for the activations, otherwise channelwise post-scaling is used
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 2 if self.post_scale else 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = WeightQuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        group_size = 32
+        N, K = W.shape
+        if(self.W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(self.W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
 
 ############################################################################################################################################################
 #FP8 dynamic activations / W4 packed weights
-class A8Wn_dynamic(A16Wn):
-    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
+class A8Wn_HQQ_INT_dynamic(A16Wn):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False, W_nbits=None):
+        assert W_nbits is not None, "W_nbits argument should be eitehr 8 or 4, not None)."
         super().__init__()
         self.post_scale = post_scale
         self.device = device
@@ -301,8 +483,13 @@ class A8Wn_dynamic(A16Wn):
         self.packing_bitwidth = packing_bitwidth
         self.fp8 = fp8
         self.fp32_scale = fp32_scale
+        self.W_nbits = W_nbits
 
-    def from_weights(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
+    def from_weights(self, W_q, scales, zeros, bias=None):
+        group_size = W_q.numel() // scales.numel()
+        return self.from_weights_(W_q=W_q, scales=scales, zeros=zeros, W_nbits=self.W_nbits, group_size=group_size, bias=bias)
+
+    def from_weights_(self, W_q, scales, zeros, W_nbits, group_size, bias=None):
         if(isinstance(W_q, torch.nn.Parameter)):
             W_q = W_q.data
         if(isinstance(bias, torch.nn.Parameter)):
@@ -318,8 +505,8 @@ class A8Wn_dynamic(A16Wn):
         input_dtype = TORCH_TO_DTYPE[self.fp8]
             
         W_q = W_q.to(self.device)
-        scales = scales.to(device=self.device, dtype=torch.float32 if self.fp32_scale else dtype)
-        zeros = zeros.to(device=self.device, dtype=dtype)
+        scales = scales.to(device=self.device, dtype=torch.float32 if self.fp32_scale else dtype) if (scales is not None) else None
+        zeros = zeros.to(device=self.device, dtype=dtype) if (zeros is not None) else None
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         in_features, out_features = W_q.shape[::-1]
@@ -345,7 +532,7 @@ class A8Wn_dynamic(A16Wn):
 
         return gemlite_linear
 
-    def from_hqqlinear(self, hqq_layer):
+    def from_hqqlinear(self, hqq_layer, del_orig=True):
         assert hqq_layer.meta['axis'] == 1, 'Only axis==1 is supported.'
 
         self.device = hqq_layer.W_q.device
@@ -362,16 +549,240 @@ class A8Wn_dynamic(A16Wn):
         
         cleanup_linear(hqq_layer, del_orig)
 
-        out_layer = self.from_weights(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
+        out_layer = self.from_weights_(W_q=W_q, scales=scales, zeros=zeros, W_nbits=W_nbits, group_size=group_size, bias=bias)
         
         #Clean-up
         del W_q
         torch.cuda.empty_cache()
 
         return out_layer
+
+class A8W4_HQQ_INT_dynamic(A8Wn_HQQ_INT_dynamic):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
+        super().__init__(device=device, packing_bitwidth=packing_bitwidth, dtype=dtype, post_scale=post_scale, fp8=fp8, fp32_scale=fp32_scale, W_nbits=4)
+
+class A8W2_HQQ_INT_dynamic(A8Wn_HQQ_INT_dynamic):
+    def __init__(self, device='cuda:0', packing_bitwidth=None, dtype=None, post_scale=default_post_scale, fp8=default_fp8, fp32_scale=False):
+        super().__init__(device=device, packing_bitwidth=packing_bitwidth, dtype=dtype, post_scale=post_scale, fp8=fp8, fp32_scale=fp32_scale, W_nbits=2)
+
+class A8Wn_MXFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8, W_nbits=None):
+        assert W_nbits is not None, "W_nbits argument should be eitehr 8 or 4, not None)."
+        self.device = device
+        self.dtype = dtype
+        self.mx_fp8_dtype = fp8
+        self.quantizer_mx = None
+        self.post_scale = post_scale
+        self.W_nbits = W_nbits
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        if(self.W_nbits == 8):
+            assert weight.is_floating_point() and weight.itemsize == 1, f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        if(self.W_nbits == 4):
+            assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXPF8 valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        dtype = self.dtype 
+        input_dtype = DType.MXFP8
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+        group_size = 32
+
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+
+        #If post_scale==False, it will use mxfp8 microscales for the activations, otherwise channelwise post-scaling is used
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 2 if self.post_scale else 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = WeightQuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        group_size = 32
+        N, K = W.shape
+        if(self.W_nbits == 8):
+            W_q, scales = self.quantizer_mx.quantize_mxfp8(W, index=True, mx_fp8_dtype=self.mx_fp8_dtype)
+        if(self.W_nbits == 4):
+            W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
+
+class A8W8_MXFP_dynamic(A8Wn_MXFP_dynamic):
+    def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
+        super().__init__(device=device, dtype=dtype, post_scale=post_scale, fp8=fp8, W_nbits=8)
+
+class A8W4_MXFP_dynamic(A8Wn_MXFP_dynamic):
+    def __init__(self, device='cuda:0', dtype=None, post_scale=True, fp8=default_fp8):
+        super().__init__(device=device, dtype=dtype, post_scale=post_scale, fp8=fp8, W_nbits=4)
+
+class A4W4_MXFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None):
+        self.device = device
+        self.dtype = dtype
+        self.quantizer_mx = None
+        self.W_nbits = 4
+        self.group_size = 32
+        self.input_dtype = DType.MXFP4
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e8m0fnu, torch.uint8], f"Invalid scales.dtype, should be an MXFP valid dtype (e8m0 / view(uint8)), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        assert self.group_size == 32, f"Only group_size=16 is supported for MXFP4, got {self.group_size}"
+
+        dtype = self.dtype 
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=self.group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=self.input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = WeightQuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        N, K = W.shape
+        W_q, scales = self.quantizer_mx.quantize_mxfp4(W, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
+        
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
+
+class A4W4_NVFP_dynamic:
+    def __init__(self, device='cuda:0', dtype=None):
+        self.device = device
+        self.dtype = dtype
+        self.quantizer_mx = None
+        self.W_nbits = 4
+        self.group_size = 16
+        self.input_dtype = DType.NVFP4
+
+    def from_weights(self, weight, bias=None, scales=None):
+        if(isinstance(weight, torch.nn.Parameter)):
+            weight = weight.data
+        if(isinstance(bias, torch.nn.Parameter)):
+            bias = bias.data
+
+        in_features, out_features = weight.shape[::-1]
+
+        assert scales is not None, "Scales parameter cannot be None. Use from_linear() call to pre-quantize the weights."
+
+        #Pre-Quantized
+        assert weight.dtype in [torch.uint8], f"Invalid weight.dtype, should be an MXPF8 (FP8 dtype) valid dtype, got {weight.dtype}."
+        assert scales.dtype in [torch.float8_e4m3fn], f"Invalid scales.dtype, should be an NVFP4 valid dtype (float8_e4m3fn), got {scales.dtype}."
+        assert self.dtype is not None, f"Input dtype should be either torch.float16 or torch.bfloat16, not None."
+        assert self.group_size == 16, f"Only group_size=16 is supported for NVFP4, got {self.group_size}"
+         
+        dtype = self.dtype
+        gemlite_dtype = TORCH_TO_DTYPE[dtype]
+        
+        W_q = weight.to(device=self.device)
+        scales = scales.to(device=self.device) 
+        bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
+
+        gemlite_linear = GemLiteLinearTriton(self.W_nbits, 
+                        group_size=self.group_size, 
+                        in_features=in_features, 
+                        out_features=out_features, 
+                        input_dtype=self.input_dtype,
+                        output_dtype=gemlite_dtype,
+                        scaled_activations=True,
+                        )
+
+        gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
+        gemlite_linear.W_group_mode       = 0
+        gemlite_linear.channel_scale_mode = 4
+        return gemlite_linear
+
+
+    def from_linear(self, linear_layer, del_orig=True):
+        if(self.quantizer_mx is None):
+            self.quantizer_mx = WeightQuantizerMXFP(device=self.device, compute_dtype=linear_layer.weight.dtype)
+
+        W = linear_layer.weight.data
+        bias = linear_layer.bias.clone() if (linear_layer.bias is not None) else None 
+        N, K = W.shape
+        W_q, scales = self.quantizer_mx.quantize_nvfp4(W, index=True)
+        W_q, scales = W_q.view([N, K]), scales.view(N, K // self.group_size)
+        cleanup_linear(linear_layer, del_orig)
+
+        out_layer = self.from_weights(weight=W_q, scales=scales, bias=bias)
+
+        #Clean-uo
+        del W_q
+        torch.cuda.empty_cache()
+        return out_layer
+
 ############################################################################################################################################################
 #BitNet
-class A16W158:
+class A16W158_INT:
     def __init__(self, device='cuda:0', dtype=None, fp32_scale=True):
         self.device = device
         self.dtype = dtype
@@ -418,7 +829,7 @@ class A16W158:
         cleanup_linear(linear_layer, del_orig)
         return out_layer
 
-class A8W158:
+class A8W158_INT_dynamic:
     def __init__(self, device='cuda:0', dtype=None, fp32_scale=True):
         self.device = device
         self.dtype = dtype
@@ -431,7 +842,7 @@ class A8W158:
             bias = bias.data
 
         dtype = weight.dtype if(self.dtype is None) else self.dtype
-        assert dtypee in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
+        assert dtype in [torch.float16, torch.bfloat16, torch.float32], "Invalid weight.dtype, should be floating point."
 
         weight        = weight.to(device=self.device, dtype=dtype)
         W_q           = (weight + 1).to(torch.uint8)
