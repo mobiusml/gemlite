@@ -120,7 +120,7 @@ gemlite_linear = A16W8_MXFP(device=device, dtype=dtype).from_linear(layer)
 gemlite_linear = A16W4_MXFP(device=device, dtype=dtype).from_linear(layer)
 
 #MXFP/NVFP dynamic quant - if post_scale=True, uses channel-wise activation quant.
-#Limited support for MXFP: Nvidia sm_120 / AMD for the moment.
+#Support depends on triton's ability to support native mxfp/nvfp mma.
 gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=dtype, post_scale=False).from_linear(layer)
 gemlite_linear = A8W8_MXFP_dynamic(device=device, dtype=dtype, post_scale=True).from_linear(layer)
 gemlite_linear = A8W4_MXFP_dynamic(device=device, dtype=dtype, post_scale=False).from_linear(layer)
