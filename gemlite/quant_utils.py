@@ -323,9 +323,9 @@ def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.f
     scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
 
     return W_q, scales
-
+####################################################################################################################
 @triton.jit
-def scale_activations_mxfp8_triton_kernel(
+def scale_activations_mxfp8_triton_v1_kernel(
     tensor_ptr,
     out_ptr,
     scales_ptr,
@@ -351,7 +351,7 @@ def scale_activations_mxfp8_triton_kernel(
 
         pid += 1
 
-def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
+def scale_activations_mxfp8_triton_v1(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 32
     eps = 2 ** -30
     max_val = get_max_val(w_dtype)
@@ -370,7 +370,7 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
     scales = torch.empty((post_pad_shape[0], post_pad_shape[1] // group_size), device=tensor.device, dtype=torch.uint8)
     
     grid = lambda meta: (triton.cdiv(E // UNROLL, group_size), )
-    scale_activations_mxfp8_triton_kernel[grid](
+    scale_activations_mxfp8_triton_v1_kernel[grid](
                 tensor, 
                 out, 
                 scales, 
@@ -384,6 +384,84 @@ def scale_activations_mxfp8_triton(tensor: torch.Tensor, w_dtype: torch.dtype = 
                 )
 
     return out.view(orig_shape), scales
+
+@triton.jit
+def scale_activations_mxfp8_triton_kernel_v2(
+    tensor_ptr,
+    out_ptr,
+    scales_ptr,
+    M, K,
+    stride_m_t, stride_k_t,
+    stride_m_s, stride_k_s,
+    stride_m_o, stride_k_o,
+    #########################
+    max_val: tl.constexpr,
+    eps: tl.constexpr,
+    GROUP_SIZE: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,
+):
+
+    pid_m = tl.program_id(axis=0)
+    pid_k = tl.program_id(axis=1)
+    out_dtype: tl.constexpr = out_ptr.dtype.element_ty
+
+    offs_m = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
+    offs_k = pid_k * GROUP_SIZE + tl.arange(0, GROUP_SIZE)
+
+    #Load
+    mask = (offs_m[:, None] < M).to(tl.int1)
+    tensor_ptrs = tensor_ptr + (offs_m[:, None] * stride_m_t + offs_k[None, :] * stride_k_t)
+    tensor = tl.load(tensor_ptrs, mask=mask, other=0.0).to(tl.float32)
+    
+    #next power of 2 via log
+    scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / max_val, eps)
+
+    #Map to index
+    out = (tensor / scales).to(out_dtype)
+
+    #Store
+    tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out)
+
+    offs_k = pid_k * 1 + tl.arange(0, 1)
+    tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales_log2 + 127)
+
+def scale_activations_mxfp8_triton_v2(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
+    group_size = 32
+    eps = 2 ** -30
+    max_val = get_max_val(w_dtype)
+    tensor = tensor.contiguous()
+    
+    orig_shape = tensor.shape
+    tensor = tensor.view(-1, tensor.shape[-1])
+    inter_shape = tensor.shape
+    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
+    post_pad_shape = (inter_shape[0] + pad_rows, inter_shape[1])
+    M, K = tensor.shape
+
+    out = torch.empty(inter_shape, device=tensor.device, dtype=w_dtype)
+    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] // group_size), device=tensor.device, dtype=torch.uint8)
+
+    BLOCK_SIZE_M = min(next_power_of_2(M), 4)
+    grid = lambda meta: (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
+
+    scale_activations_mxfp8_triton_kernel_v2[grid](
+                tensor,
+                out,
+                scales,
+                M, K,
+                tensor.stride(0), tensor.stride(1),
+                scales.stride(0), scales.stride(1),
+                out.stride(0), out.stride(1),
+                #########################
+                max_val=max_val,
+                eps=eps,
+                GROUP_SIZE=group_size,
+                BLOCK_SIZE_M=BLOCK_SIZE_M,
+                num_stages=1,
+                num_warps=4,
+                )
+
+    return out, scales
 
 @torch.compile(fullgraph=True)
 def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
@@ -720,6 +798,6 @@ def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor, eps: float = 2**-30)
     return out, scales
 
 scale_activations_per_token = scale_activations_per_token_triton
-scale_activations_mxfp8 = scale_activations_mxfp8_triton
+scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2
 scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
 scale_activations_nvfp4 = scale_activations_nvfp4_triton_v2
