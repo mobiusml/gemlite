@@ -952,15 +952,6 @@ def warmup(
                             linear         = HQQLinear(linear, quant_config=quant_config, compute_dtype=dtype, device=device)
                             gemlite_linear = processor(**processor_arg).from_hqqlinear(linear)
 
-                    # if(W_nbits == 8):
-                    #     processor      = A16W8 if (mode == 'static') else (A8W8_fp8_dynamic if mode == 'dynamic_fp8' else A8W8_int8_dynamic)
-                    #     gemlite_linear = processor(device=device).from_linear(linear)
-                    # else:
-                    #     processor      = A16Wn if (mode == 'static') else A8Wn_dynamic
-                    #     quant_config   = BaseQuantizeConfig(nbits=W_nbits, group_size=group_size, axis=1)
-                    #     linear         = HQQLinear(linear, quant_config=quant_config, compute_dtype=dtype, device=device)
-                    #     gemlite_linear = processor(device=device).from_hqqlinear(linear)
-
                 for batch_size in tqdm(batch_sizes):
                     _ = gemlite_linear(torch.randn((batch_size, in_features), dtype=dtype, device=device) / 100.)
                     torch.cuda.synchronize()
