@@ -1,5 +1,6 @@
-# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
-#********************************************************
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import torch, math, random, copy
 from torch import Tensor
 import triton

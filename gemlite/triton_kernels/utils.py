@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import torch, triton, math
 import triton.language as tl
 from triton.runtime import driver
@@ -52,7 +55,17 @@ def linear_tile(pid, M, N, BLOCK_SIZE_M: tl.constexpr, BLOCK_SIZE_N: tl.constexp
 
 #################################################################################################################
 @triton.jit
-def dequantize(b, scales, zeros, q_shift, meta_dtype, unpack_mask, elements_per_sample: tl.constexpr, W_group_mode: tl.constexpr, zero_is_scalar: tl.constexpr):
+def dequantize(
+    b,
+    scales,
+    zeros,
+    q_shift,
+    meta_dtype,
+    unpack_mask,
+    elements_per_sample: tl.constexpr,
+    W_group_mode: tl.constexpr,
+    zero_is_scalar: tl.constexpr,
+):
     #Unpack
     if(elements_per_sample > 1):
         b = (b >> q_shift) & unpack_mask # int32 -> int32

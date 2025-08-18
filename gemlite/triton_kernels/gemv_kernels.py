@@ -1,5 +1,6 @@
-# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
-#********************************************************
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import torch, math, random, copy
 from torch import Tensor
 import triton
@@ -15,7 +16,13 @@ NATIVE_ATOMIC = gpu_supports_bfloat16_atomicadd()
 #Init MXFP workspace for dequant
 fp4_mapping = []
 for g_id in range(torch.cuda.device_count()):
-    fp4_mapping.append(torch.tensor([0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3,  -4, -6, -8, -12], dtype=torch.int8, device='cuda:'+str(g_id)))
+    fp4_mapping.append(
+        torch.tensor(
+            [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12],
+            dtype=torch.int8,
+            device="cuda:" + str(g_id),
+        )
+    )
 
 def kernel_config_pruner(configs, nargs, **kwargs):
     global KEYS

@@ -1,5 +1,6 @@
-# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
-# ********************************************************
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import sys
 if sys.version_info < (3, 12): import imp
 else: import importlib as imp

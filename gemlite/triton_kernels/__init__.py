@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 from .gemm_kernels import gemm
 from .gemm_splitK_kernels import gemm_splitK
 from .gemm_splitK_persistent_kernels import gemm_splitK_persistent
