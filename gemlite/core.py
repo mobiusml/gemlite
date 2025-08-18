@@ -300,7 +300,20 @@ class GemLiteLinearTriton(torch.nn.Module):
         fma_mode: bool = True,
         contiguous: Union[int, None] = None,
         packing_bitwidth: Union[int, None] = None,
-    ):
+    ):  
+
+        #Check inputs
+        raise_unsupported = False
+        if zeros is not None and self.input_dtype == DType.INT8:
+            if isinstance(zeros, Tensor):
+                if zeros.mean() != zeros.int().float().mean():
+                    raise_unsupported = True
+            elif isinstance(zeros, float):
+                raise_unsupported = True
+
+        if raise_unsupported:
+            raise Exception("INT8 inputs is not compatible with floating-point zeros.")
+
         #Set packing bitwidth
         if(packing_bitwidth is None):
             packing_bitwidth = GemLiteLinearTriton.PACKING_BITWIDTH
