@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import torch
 import triton.language as tl
 from enum import Enum

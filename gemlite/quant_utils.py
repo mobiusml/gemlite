@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 from typing import Tuple
 import torch
 from torch import Tensor
@@ -7,17 +10,6 @@ from triton.language.extra import libdevice
 from .triton_kernels.utils import IS_HIP, get_num_SMs, next_power_of_2
 from .dtypes import *
 
-#Cache workspace for multiple gpus (less than a KB per GPU)
-fp4_values, fp4_p_vals, fp4_thresholds, thr_pos = [], [], [], []
-for g_id in range(torch.cuda.device_count()):
-    current_device = "cuda:" + str(g_id)
-    fp4_values.append(torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6], dtype=torch.float32, device=current_device))
-    fp4_p_vals.append(torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=torch.float32, device=current_device))
-    fp4_thresholds.append(torch.tensor([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.], dtype=torch.float32, device=current_device))  #(fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
-    fp4_pos = torch.tensor([0, 0.5, 1, 1.5, 2, 3, 4, 6], dtype=torch.float32, device=current_device)
-    thr_pos.append((fp4_pos[:-1] + fp4_pos[1:]) * 0.5)
-
-
 #Get max val based on compute type
 def get_max_val(compute_dtype: torch.dtype) -> float:
     if(compute_dtype.is_floating_point):
@@ -26,6 +18,47 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
         max_val = torch.iinfo(compute_dtype).max
     return max_val
 
+####################################################################################################################
+#MXFP4 / NVFP4 weight quantizer
+####################################################################################################################
+
+#Cache workspace for multiple gpus (less than a KB per GPU)
+fp4_values, fp4_p_vals, fp4_thresholds, thr_pos = [], [], [], []
+for g_id in range(torch.cuda.device_count()):
+    current_device = "cuda:" + str(g_id)
+
+    fp4_values.append(
+        torch.tensor(
+            [0, 0.5, 1, 1.5, 2, 3, 4, 6, -0, -0.5, -1, -1.5, -2, -3, -4, -6],
+            dtype=torch.float32,
+            device=current_device,
+        )
+    )
+
+    fp4_p_vals.append(
+        torch.tensor(
+            [0, 0.5, 1, 1.5, 2, 3, 4, 6],
+            dtype=torch.float32,
+            device=current_device,
+        )
+    )
+
+    fp4_thresholds.append(
+        torch.tensor(
+            [0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0],
+            dtype=torch.float32,
+            device=current_device,
+        )
+    )  # (fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
+
+    fp4_pos = torch.tensor(
+        [0, 0.5, 1, 1.5, 2, 3, 4, 6],
+        dtype=torch.float32,
+        device=current_device,
+    )
+
+    thr_pos.append((fp4_pos[:-1] + fp4_pos[1:]) * 0.5)
+
 class WeightQuantizerMXFP:
     def __init__(self, compute_dtype=torch.bfloat16, device="cuda:0"):
         self.compute_dtype = compute_dtype
@@ -33,17 +66,33 @@ class WeightQuantizerMXFP:
 
     def round_to_closest_fp4(self, tensor):
         device_index = tensor.device.index
-        out = fp4_p_vals[device_index][torch.searchsorted(fp4_thresholds[device_index].to(tensor.dtype), tensor.abs())].to(tensor.dtype)
+        out = fp4_p_vals[device_index][
+            torch.searchsorted(
+                fp4_thresholds[device_index].to(tensor.dtype), tensor.abs()
+            )
+        ].to(tensor.dtype)
         out *= tensor.sign()
         return out
 
     def to_index(self, W_q):
         assert W_q.is_floating_point(), "Input should be floating point fp4 values."
         device_index = W_q.device.index
-        return (W_q.view(-1, 1) == fp4_values[device_index].to(W_q.dtype).view(1 , -1)).to(torch.uint8).argmax(dim=1).to(torch.uint8).view(W_q.shape)
+        return (
+            (W_q.view(-1, 1) == fp4_values[device_index].to(W_q.dtype).view(1, -1))
+            .to(torch.uint8)
+            .argmax(dim=1)
+            .to(torch.uint8)
+            .view(W_q.shape)
+        )
 
     @torch.compile(fullgraph=True)
-    def quantize_mxfp8(self, W: torch.Tensor, index: bool = False, mx_fp8_dtype: torch.dtype = torch.float8_e4m3fn) -> (torch.Tensor, torch.Tensor):
+    def quantize_mxfp8(
+        self,
+        W: torch.Tensor,
+        index: bool = False,
+        mx_fp8_dtype: torch.dtype = torch.float8_e4m3fn,
+    ) -> (torch.Tensor, torch.Tensor):
+
         group_size: int = 32
         eps: float = 2**-30
         max_val = torch.finfo(mx_fp8_dtype).max
@@ -61,9 +110,12 @@ class WeightQuantizerMXFP:
             W_q = W_q.to(mx_fp8_dtype)
 
         return W_q, scales
-
+    
     @torch.compile(fullgraph=True)
-    def quantize_mxfp4(self, W: torch.Tensor, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+    def quantize_mxfp4(
+        self, W: torch.Tensor, window_size: int = 0, index: bool = False
+    ) -> (torch.Tensor, torch.Tensor):
+
         group_size: int = 32
         eps: float = 2**-30
         W_nbits = 4
@@ -77,7 +129,12 @@ class WeightQuantizerMXFP:
             scales = 2 ** torch.ceil(torch.log2(ideal_scale))
         else:
             initial_log2_scales = torch.ceil(torch.log2(ideal_scale))
-            search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=initial_log2_scales.dtype).view(1, -1)
+            search_offsets = torch.arange(
+                -window_size,
+                window_size + 1,
+                device=W.device,
+                dtype=initial_log2_scales.dtype,
+            ).view(1, -1)
             candidate_scales = torch.pow(2, initial_log2_scales + search_offsets)
             candidate_scales[candidate_scales < eps] = eps
 
@@ -93,9 +150,12 @@ class WeightQuantizerMXFP:
         if(index):
             W_q = self.to_index(W_q)
         return W_q, scales
-
+    
     @torch.compile(fullgraph=True)
-    def quantize_nvfp4(self, W: torch.Tensor, window_size: int = 0, index: bool = False) -> (torch.Tensor, torch.Tensor):
+    def quantize_nvfp4(
+        self, W: torch.Tensor, window_size: int = 0, index: bool = False
+    ) -> (torch.Tensor, torch.Tensor):
+
         group_size: int = 16
         eps: float = 1e-8
         W_nbits = 4
@@ -111,8 +171,15 @@ class WeightQuantizerMXFP:
         if(window_size == 0):
             scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
         else:
-            search_offsets = torch.arange(-window_size, window_size + 1, device=W.device, dtype=torch.int).view(1, -1)
-            candidate_scales = (ideal_scale.to(fp8_dtype).view(torch.int8) + search_offsets).clamp_(-128, 127).to(torch.int8)
+            search_offsets = torch.arange(
+                -window_size, window_size + 1, device=W.device, dtype=torch.int
+            ).view(1, -1)
+
+            candidate_scales = (
+                (ideal_scale.to(fp8_dtype).view(torch.int8) + search_offsets)
+                .clamp_(-128, 127)
+                .to(torch.int8)
+            )
 
             #Avoid nan in int8 range (-1, 127 as int8 as e4m3 nans)
             candidate_scales[candidate_scales==-1] = 1
@@ -145,9 +212,15 @@ class WeightQuantizerMXFP:
             out = out.view(shape)
         return out.to(self.compute_dtype if dtype is None else dtype)
 
-#Main activation scaling functions
+####################################################################################################################
+#INT8 / FP8 activations
+####################################################################################################################
+# Main activation scaling functions
 @torch.compile(fullgraph=True)
-def scale_activations_per_token_torch(tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+def scale_activations_per_token_torch(
+    tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
+) -> Tuple[Tensor, Tensor]:
+
     max_val = get_max_val(w_dtype)
     if fp32_scale:
         tensor = tensor.to(torch.float32, copy=False)
@@ -214,7 +287,11 @@ def scale_activations_per_token_kernel(
         tl.store(y_ptr + in_ptrs, tensor, mask=mask)
         offs_m += BLOCK_M
 
-def scale_activations_per_token_triton(tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True) -> Tuple[Tensor, Tensor]:
+
+def scale_activations_per_token_triton(
+    tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
+) -> Tuple[Tensor, Tensor]:
+
     max_val = get_max_val(w_dtype)
     x_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
@@ -252,6 +329,10 @@ def scale_activations_per_token_triton(tensor: Tensor, w_dtype: torch.dtype, fp3
 
     return y.view(x_shape), scales
 
+
+####################################################################################################################
+#MXFP8
+####################################################################################################################
 @triton.jit
 def next_power_of_2_log_triton(val, eps: tl.constexpr):
     scales_log2 = tl.ceil(tl.log2(val)).to(tl.int32)
@@ -296,9 +377,12 @@ def next_power_of_2_bitwise_triton(val, eps: tl.constexpr):
 next_power_of_2_triton = next_power_of_2_bitwise_triton
 
 @torch.compile(fullgraph=True)
-def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[Tensor, Tensor]:
+def scale_activations_mxfp8_torch(
+    tensor: Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn
+) -> Tuple[Tensor, Tensor]:
+
     group_size = 32
-    eps = 2 ** -30
+    eps = 2**-30
     max_val = get_max_val(w_dtype)
 
     orig_shape = tensor.shape
@@ -320,10 +404,14 @@ def scale_activations_mxfp8_torch(tensor: Tensor, w_dtype: torch.dtype = torch.f
         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
 
     W_q = W_q.view(orig_shape)
-    scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    scales = (
+        scales.to(torch.float8_e8m0fnu)
+        .view(torch.uint8)
+        .view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    )
 
     return W_q, scales
-####################################################################################################################
+
 @triton.jit
 def scale_activations_mxfp8_triton_v1_kernel(
     tensor_ptr,
@@ -351,9 +439,13 @@ def scale_activations_mxfp8_triton_v1_kernel(
 
         pid += 1
 
-def scale_activations_mxfp8_triton_v1(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
+
+def scale_activations_mxfp8_triton_v1(
+    tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
     group_size = 32
-    eps = 2 ** -30
+    eps = 2**-30
     max_val = get_max_val(w_dtype)
     tensor = tensor.contiguous()
     
@@ -367,7 +459,12 @@ def scale_activations_mxfp8_triton_v1(tensor: torch.Tensor, w_dtype: torch.dtype
     UNROLL = min(triton.cdiv(triton.cdiv(E, group_size), get_num_SMs(tensor.device)), 1)
 
     out = torch.empty(inter_shape, device=tensor.device, dtype=w_dtype)
-    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] // group_size), device=tensor.device, dtype=torch.uint8)
+
+    scales = torch.empty(
+        (post_pad_shape[0], post_pad_shape[1] // group_size),
+        device=tensor.device,
+        dtype=torch.uint8,
+    )
     
     grid = lambda meta: (triton.cdiv(E // UNROLL, group_size), )
     scale_activations_mxfp8_triton_v1_kernel[grid](
@@ -425,12 +522,16 @@ def scale_activations_mxfp8_triton_kernel_v2(
     offs_k = pid_k * 1 + tl.arange(0, 1)
     tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales_log2 + 127)
 
-def scale_activations_mxfp8_triton_v2(tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn) -> Tuple[torch.Tensor, torch.Tensor]:
+
+def scale_activations_mxfp8_triton_v2(
+    tensor: torch.Tensor, w_dtype: torch.dtype = torch.float8_e4m3fn
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    
     group_size = 32
-    eps = 2 ** -30
+    eps = 2**-30
     max_val = get_max_val(w_dtype)
     tensor = tensor.contiguous()
-    
+
     orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
     inter_shape = tensor.shape
@@ -439,7 +540,11 @@ def scale_activations_mxfp8_triton_v2(tensor: torch.Tensor, w_dtype: torch.dtype
     M, K = tensor.shape
 
     out = torch.empty(inter_shape, device=tensor.device, dtype=w_dtype)
-    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] // group_size), device=tensor.device, dtype=torch.uint8)
+    scales = torch.empty(
+        (post_pad_shape[0], post_pad_shape[1] // group_size),
+        device=tensor.device,
+        dtype=torch.uint8,
+    )
 
     BLOCK_SIZE_M = min(next_power_of_2(M), 4)
     grid = lambda meta: (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
@@ -463,8 +568,12 @@ def scale_activations_mxfp8_triton_v2(tensor: torch.Tensor, w_dtype: torch.dtype
 
     return out, scales
 
+####################################################################################################################
+#MXPF4 / NVFP4
+####################################################################################################################
 @torch.compile(fullgraph=True)
 def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
+
     group_size = 32
     eps = 2 ** -30
     max_val = 6
@@ -489,12 +598,23 @@ def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 
     #1) Map to closest index
     device_index = W_q.device.index
-    W_q = (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+
+    W_q = (
+        (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1, -1))
+        .abs()
+        .argmin(dim=1)
+        .to(torch.uint8)
+        .view(inter_shape)
+    )
     #2) Pack
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
     #Reshape scales
-    scales = scales.to(torch.float8_e8m0fnu).view(torch.uint8).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    scales = (
+        scales.to(torch.float8_e8m0fnu)
+        .view(torch.uint8)
+        .view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    )
     return W_q, scales
 
 
@@ -526,7 +646,14 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 
     #1) Map to closest index
     device_index = W_q.device.index
-    W_q = (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1,-1)).abs().argmin(dim=1).to(torch.uint8).view(inter_shape)
+    W_q = (
+        (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1, -1))
+        .abs()
+        .argmin(dim=1)
+        .to(torch.uint8)
+        .view(inter_shape)
+    )
+
     #2) Pack
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
@@ -580,6 +707,7 @@ def scale_activations_mxfp4_triton_kernel_v1(
 
 
 def scale_activations_mxfp4_triton_v1(tensor: Tensor) -> Tuple[Tensor, Tensor]:
+
     group_size = 32
     eps = 2 ** -30
     tensor = tensor.contiguous()
@@ -594,7 +722,11 @@ def scale_activations_mxfp4_triton_v1(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     UNROLL = min(triton.cdiv(triton.cdiv(E, group_size), get_num_SMs(tensor.device)), 1)
 
     out = torch.empty(inter_shape, device=tensor.device, dtype=torch.uint8)
-    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] * 2 // group_size), device=tensor.device, dtype=torch.uint8)
+    scales = torch.empty(
+        (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
+        device=tensor.device,
+        dtype=torch.uint8,
+    )
     device_index = tensor.device.index
     
     grid = lambda meta: (triton.cdiv(E // UNROLL, group_size), )
@@ -678,7 +810,11 @@ def scale_activations_mxfp4_triton_v2(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     M, K = tensor.shape
 
     out = torch.empty(inter_shape, device=tensor.device, dtype=torch.uint8) 
-    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] * 2 // group_size), device=tensor.device, dtype=torch.uint8)
+    scales = torch.empty(
+        (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
+        device=tensor.device,
+        dtype=torch.uint8,
+    )
     device_index = tensor.device.index
 
     BLOCK_SIZE_M = min(next_power_of_2(M), 4) 
@@ -758,10 +894,14 @@ def scale_activations_nvfp4_triton_kernel_v2(
     offs_k = pid_k * 1 + tl.arange(0, 1)
     tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales)
 
-def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor, eps: float = 2**-30) -> Tuple[torch.Tensor, torch.Tensor]:
+
+def scale_activations_nvfp4_triton_v2(
+    tensor: torch.Tensor, eps: float = 2**-30
+) -> Tuple[torch.Tensor, torch.Tensor]:
+
     group_size = 16
-    eps = 2 ** -30
-    fp8_dtype = torch.float8_e4m3fn #Supports Nvidia only
+    eps = 2**-30
+    fp8_dtype = torch.float8_e4m3fn  # Supports Nvidia only
     tensor = tensor.contiguous()
     
     orig_shape = tensor.shape
@@ -772,7 +912,11 @@ def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor, eps: float = 2**-30)
     M, K = tensor.shape
 
     out = torch.empty(inter_shape, device=tensor.device, dtype=torch.uint8) 
-    scales = torch.empty((post_pad_shape[0], post_pad_shape[1] * 2 // group_size), device=tensor.device, dtype=fp8_dtype)
+    scales = torch.empty(
+        (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
+        device=tensor.device,
+        dtype=fp8_dtype,
+    )
     device_index = tensor.device.index
 
     BLOCK_SIZE_M = min(next_power_of_2(M), 8) 
@@ -797,6 +941,7 @@ def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor, eps: float = 2**-30)
 
     return out, scales
 
+####################################################################################################################
 scale_activations_per_token = scale_activations_per_token_triton
 scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2
 scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2

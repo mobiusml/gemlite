@@ -1,5 +1,6 @@
-# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2024
-# ********************************************************
+# SPDX-License-Identifier: Apache-2.0
+# Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
+
 import torch
 from torch import Tensor
 import numpy as np
@@ -14,8 +15,18 @@ from .dtypes import *
 from .triton_kernels import *
 from .triton_kernels.utils import gpu_supports_float16_acc, IS_HIP
 from .triton_kernels import utils
-from .bitpack import pack_weights_over_cols_triton, pack_weights_over_cols_torch
-from .quant_utils import scale_activations_per_token, scale_activations_mxfp8, scale_activations_mxfp4, scale_activations_nvfp4
+
+from .bitpack import (
+    pack_weights_over_cols_triton,
+    pack_weights_over_cols_torch,
+)
+
+from .quant_utils import (
+    scale_activations_per_token,
+    scale_activations_mxfp8,
+    scale_activations_mxfp4,
+    scale_activations_nvfp4,
+)
 
 import threading
 FILE_LOCK = threading.Lock()
@@ -23,7 +34,7 @@ FILE_LOCK = threading.Lock()
 logger = logging.getLogger(__name__)
 
 ###################################################################################################################################
-# Triton backend
+# Global variables
 ###################################################################################################################################
 GEMLITE_ACC_DTYPE = {
     DType.FP16: DType.FP16 if gpu_supports_float16_acc() else DType.FP32,
@@ -170,7 +181,13 @@ def forward_functional(
     else:
         matmul_type_str = get_matmul_type(x.shape[0], W_nbits, is_mx_dtype(input_dtype)) #batch_size, W_nbits, is_mx_dtype
 
-    out = GEMLITE_TRITON_MAPPING[matmul_type_str].forward(x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous, type_id).view(out_shape)
+    out = (
+        GEMLITE_TRITON_MAPPING[matmul_type_str]
+        .forward(
+            x, *tensor_args, scales_x, *meta_args[1:-1], data_contiguous, type_id
+        )
+        .view(out_shape)
+    )
 
     if bias is not None:
         out += bias
@@ -192,11 +209,24 @@ def forward_functional_fake(
 #Main class
 class GemLiteLinearTriton(torch.nn.Module):
     SUPPORTED_BITS_TRITON = [1, 2, 4, 8, 16]
-    SUPPORTED_DTYPES      = [DType.FP16, DType.BF16, DType.FP32, 
-                            DType.FP8, DType.FP8e4, DType.FP8e4nuz, DType.FP8e5, DType.FP8e5nuz, DType.INT8, 
-                            DType.MXFP16, DType.MXBF16, DType.MXFP8, DType.MXFP4, DType.NVFP4]
-    MIN_SIZE              = 32
-    PACKING_BITWIDTH      = 32 #Default packing bitwidth
+    SUPPORTED_DTYPES = [
+        DType.FP16,
+        DType.BF16,
+        DType.FP32,
+        DType.FP8,
+        DType.FP8e4,
+        DType.FP8e4nuz,
+        DType.FP8e5,
+        DType.FP8e5nuz,
+        DType.INT8,
+        DType.MXFP16,
+        DType.MXBF16,
+        DType.MXFP8,
+        DType.MXFP4,
+        DType.NVFP4,
+    ]
+    MIN_SIZE = 32
+    PACKING_BITWIDTH = 32  # Default packing bitwidth
 
     def __init__(
         self,
@@ -214,11 +244,23 @@ class GemLiteLinearTriton(torch.nn.Module):
         super().__init__()
 
         if W_nbits not in GemLiteLinearTriton.SUPPORTED_BITS_TRITON:
-            raise NotImplementedError("Only " + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON) + " W_nbits are supported.")
+            raise NotImplementedError(
+                "Only "
+                + str(GemLiteLinearTriton.SUPPORTED_BITS_TRITON)
+                + " W_nbits are supported."
+            )
 
-        if (in_features is not None and out_features is not None):
-            if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (in_features % group_size !=0 if (group_size is not None) else False):
-                raise NotImplementedError("Invalid input shapes: " + str(in_features) + ' , ' + str(out_features) + '. in_features should be divisible by 32 or the group_size')
+        if in_features is not None and out_features is not None:
+            if (in_features % GemLiteLinearTriton.MIN_SIZE != 0) or (
+                in_features % group_size != 0 if (group_size is not None) else False
+            ):
+                raise NotImplementedError(
+                    "Invalid input shapes: "
+                    + str(in_features)
+                    + " , "
+                    + str(out_features)
+                    + ". in_features should be divisible by 32 or the group_size"
+                )
 
         #Warning: Input dtype should be the same as dequantize() weights dtype.
         if input_dtype not in GemLiteLinearTriton.SUPPORTED_DTYPES:
@@ -388,7 +430,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             #Asymmetric or Symmetric with shift
             if(isinstance(zeros, torch.Tensor)):
                 if(fma_mode and (self.meta_is_channelwise is False)): #W ~ Wq * scales + zeros
-                    self.zeros = (-zeros.float()*scales.float()).to(zeros.dtype).view((self.out_features, -1)).t()
+                    self.zeros = (-zeros.float() * scales.float()).to(zeros.dtype).view((self.out_features, -1)).t()
                     self.W_group_mode = 4
                 else: #W ~ (Wq - zeros) * scales
                     self.zeros = zeros.view((self.out_features, -1)).t()
@@ -455,14 +497,23 @@ class GemLiteLinearTriton(torch.nn.Module):
         if(self.scales is not None):
             self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
 
-        #Register buffers
+        #Register tensors as buffers
         self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)
         self.bias       = torch.nn.Parameter(self.bias, requires_grad=False) if self.bias is not None else None
         self.scales     = torch.nn.Parameter(self.scales,requires_grad=False)
         self.zeros      = torch.nn.Parameter(self.zeros, requires_grad=False)
-        self.metadata   = torch.nn.Parameter(torch.tensor(self.get_meta_args(), device=self.device, dtype=torch.int32), requires_grad=False)
-        self.orig_shape = torch.nn.Parameter(torch.tensor([self.out_features, self.in_features], device=self.device, dtype=torch.int32), requires_grad=False)
 
+        #Register metadata
+        self.metadata = torch.nn.Parameter(
+            torch.tensor(self.get_meta_args(), device=self.device, dtype=torch.int32),
+            requires_grad=False,
+        )
+        
+        self.orig_shape = torch.nn.Parameter(
+            torch.tensor([self.out_features, self.in_features], device=self.device, dtype=torch.int32),
+            requires_grad=False,
+        )
+        
         return self
 
     #Return the main arguments
@@ -545,7 +596,9 @@ class GemLiteLinearTriton(torch.nn.Module):
             json.dump(config, json_file)
 
     @staticmethod
-    def load_config(filename: str, print_error: bool = True, overwrite: bool = False):
+    def load_config(
+        filename: str, print_error: bool = True, overwrite: bool = False
+    ):
         global GEMLITE_TRITON_CONFIG_CACHE
         if(filename is None):
             return False
