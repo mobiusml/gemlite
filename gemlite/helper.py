@@ -384,9 +384,9 @@ class A8W8_dynamic:
             bias = bias.data
 
         if(self.fp8): #FP8
-            w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
+            w_dtype, input_dtype, min_val, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).min, torch.finfo(self.fp8).max
         else: #INT8
-            w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
+            w_dtype, input_dtype, min_val, max_val = torch.int8, DType.INT8, torch.iinfo(torch.int8).min, torch.iinfo(torch.int8).max
 
         in_features, out_features = weight.shape[::-1]
 
@@ -404,10 +404,12 @@ class A8W8_dynamic:
             data_ptr = weight.data_ptr()
             weight = weight.to(dtype=torch.float32, copy=False, device=self.device)
             scales = weight.abs().amax(axis=1, keepdim=True) / max_val
+            scales.clamp_(min=1e-6)
+            W_q = (weight / scales).clamp_(min=min_val, max=max_val)
             if(w_dtype.is_floating_point):
-                W_q = (weight / scales).to(w_dtype)
+                W_q = W_q.to(w_dtype)
             else:
-                W_q = (weight / scales).round_().to(w_dtype)
+                W_q = W_q.round_().to(w_dtype)
             if(data_ptr != weight.data_ptr()):
                 del weight
                 torch.cuda.empty_cache()
