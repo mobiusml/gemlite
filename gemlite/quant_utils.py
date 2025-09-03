@@ -18,6 +18,16 @@ def get_max_val(compute_dtype: torch.dtype) -> float:
         max_val = torch.iinfo(compute_dtype).max
     return max_val
 
+def get_min_val(compute_dtype: torch.dtype) -> float:
+    if(compute_dtype.is_floating_point):
+        min_val = torch.finfo(compute_dtype).min
+    else:
+        min_val = torch.iinfo(compute_dtype).min
+    return min_val
+
+def get_range_val(compute_dtype: torch.dtype) -> float:
+    return get_min_val(compute_dtype), get_max_val(compute_dtype)
+
 ####################################################################################################################
 #MXFP4 / NVFP4 weight quantizer
 ####################################################################################################################
@@ -221,7 +231,7 @@ def scale_activations_per_token_torch(
     tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
 ) -> Tuple[Tensor, Tensor]:
 
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_range_val(w_dtype)
     if fp32_scale:
         tensor = tensor.to(torch.float32, copy=False)
     out_shape = tensor.shape
@@ -230,7 +240,9 @@ def scale_activations_per_token_torch(
     # if(fp32_scale):
     #     scales = scales.to(torch.float32)
     scales.div_(max_val)
+    scales.clamp_(min=1e-6)
     out = tensor / scales
+    out.clamp_(min_val, max_val)
 
     if not w_dtype.is_floating_point:
         out.round_()
@@ -258,6 +270,7 @@ def scale_activations_per_token_kernel(
     stride_m, stride_k, stride_sm,
     ROUND: tl.constexpr, 
     UNROLL: tl.constexpr,
+    min_val: tl.constexpr,
     max_val: tl.constexpr,
     fp32_scale: tl.constexpr, 
     BLOCK_M: tl.constexpr, 
@@ -278,7 +291,9 @@ def scale_activations_per_token_kernel(
 
         scales_x = tl.max(tl.abs(tensor), axis=1, keep_dims=True)
         scales_x /= max_val
+        scales_x = tl.maximum(scales_x, 1e-6)
         tensor /= scales_x
+        tensor = tl.minimum(tl.maximum(tensor, min_val), max_val)
 
         if ROUND:
             tensor = round_triton(tensor)
@@ -292,7 +307,7 @@ def scale_activations_per_token_triton(
     tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
 ) -> Tuple[Tensor, Tensor]:
 
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_range_val(w_dtype)
     x_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
     M, K = tensor.shape
@@ -317,6 +332,7 @@ def scale_activations_per_token_triton(
         tensor.stride(0),
         tensor.stride(1),
         scales.stride(0),
+        min_val=min_val,
         max_val=max_val,
         fp32_scale=fp32_scale,
         ROUND=ROUND,
@@ -943,6 +959,6 @@ def scale_activations_nvfp4_triton_v2(
 
 ####################################################################################################################
 scale_activations_per_token = scale_activations_per_token_triton
-scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2
+scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2 
 scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
 scale_activations_nvfp4 = scale_activations_nvfp4_triton_v2
