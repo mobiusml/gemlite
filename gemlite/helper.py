@@ -72,10 +72,11 @@ def patch_model(model, device, processor, skip_modules=[]):
     gc.collect()
 
 #16-bit activations / 8-bit weigths
-class A16W8: #INT8 weight-only channel-wise
-    def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
+class A16W8: #INT8/FP8 weight-only channel-wise
+    def __init__(self, device='cuda:0', dtype=None, fp8=None, fp32_scale=False):
         self.device = device
         self.dtype = dtype
+        self.fp8 = fp8
         self.fp32_scale = fp32_scale
 
     def from_weights(self, weight, bias=None, scales=None):
@@ -88,7 +89,11 @@ class A16W8: #INT8 weight-only channel-wise
 
         if(scales is None):
             #Quantize
-            w_dtype, max_val = torch.int8, 127
+            if(self.fp8): #FP8
+                w_dtype, min_val, max_val = self.fp8, torch.finfo(self.fp8).min, torch.finfo(self.fp8).max
+            else: #INT8
+                w_dtype, min_val, max_val = torch.int8, torch.iinfo(torch.int8).min, torch.iinfo(torch.int8).max
+
             dtype = weight.dtype if(self.dtype is None) else self.dtype
             
             assert dtype in [
@@ -101,16 +106,18 @@ class A16W8: #INT8 weight-only channel-wise
             data_ptr = weight.data_ptr()
             weight = weight.to(dtype=torch.float32, copy=False, device=self.device)
             scales = weight.abs().amax(axis=1, keepdim=True) / max_val
+            scales.clamp_(min=1e-6)
+            W_q = (weight / scales).clamp_(min=min_val, max=max_val)
             if(w_dtype.is_floating_point):
-                W_q = (weight / scales).to(w_dtype)
+                W_q = W_q.to(w_dtype)
             else:
-                W_q = (weight / scales).round_().to(w_dtype)
+                W_q = W_q.round_().to(w_dtype)
             if(data_ptr != weight.data_ptr()):
                 del weight
                 torch.cuda.empty_cache()
         else:
             #Pre-Quantized
-            assert weight.dtype in [torch.int8], f"Invalid weight.dtype, should be int8, got {weight.dtype}"
+            assert weight.itemsize == 1, f"Invalid weight.dtype, should be 8-bit (INT8 or FP8), got {weight.dtype}"
             if(self.dtype is None):
                 dtype = scales.dtype if scales.dtype in [torch.float16, torch.bfloat16] else torch.float16
             else:
@@ -302,7 +309,13 @@ class A16Wn:  # 8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
 
 
 #Alias
-A16W8_INT = A16W8
+class A16W8_INT8(A16W8):
+    def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
+        super().__init__(device=device, dtype=dtype, fp8=None, fp32_scale=fp32_scale)
+
+class A16W8_FP8(A16W8):
+    def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8, fp32_scale=False):
+        super().__init__(device=device, dtype=dtype, fp8=fp8, fp32_scale=fp32_scale)
 
 class A16Wn_HQQ_INT(A16Wn):
     def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
@@ -384,9 +397,9 @@ class A8W8_dynamic:
             bias = bias.data
 
         if(self.fp8): #FP8
-            w_dtype, input_dtype, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).max
+            w_dtype, input_dtype, min_val, max_val = self.fp8, TORCH_TO_DTYPE[self.fp8], torch.finfo(self.fp8).min, torch.finfo(self.fp8).max
         else: #INT8
-            w_dtype, input_dtype, max_val = torch.int8, DType.INT8, 127
+            w_dtype, input_dtype, min_val, max_val = torch.int8, DType.INT8, torch.iinfo(torch.int8).min, torch.iinfo(torch.int8).max
 
         in_features, out_features = weight.shape[::-1]
 
@@ -404,10 +417,12 @@ class A8W8_dynamic:
             data_ptr = weight.data_ptr()
             weight = weight.to(dtype=torch.float32, copy=False, device=self.device)
             scales = weight.abs().amax(axis=1, keepdim=True) / max_val
+            scales.clamp_(min=1e-6)
+            W_q = (weight / scales).clamp_(min=min_val, max=max_val)
             if(w_dtype.is_floating_point):
-                W_q = (weight / scales).to(w_dtype)
+                W_q = W_q.to(w_dtype)
             else:
-                W_q = (weight / scales).round_().to(w_dtype)
+                W_q = W_q.round_().to(w_dtype)
             if(data_ptr != weight.data_ptr()):
                 del weight
                 torch.cuda.empty_cache()

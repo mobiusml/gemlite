@@ -103,7 +103,8 @@ device, dtype = 'cuda:0', torch.float16
 #AxWy: x: activation precision in bits, y: weight precision in bits.
 
 #Weight-only
-gemlite_linear = A16W8_INT(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A16W8_INT8(device=device, dtype=dtype).from_linear(layer)
+gemlite_linear = A16W8_FP8(device=device, dtype=dtype).from_linear(layer)
 gemlite_linear = A16W8_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
 gemlite_linear = A16W4_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)
 gemlite_linear = A16W2_HQQ_INT(device=device, dtype=dtype).from_hqqlinear(hqq_layer)

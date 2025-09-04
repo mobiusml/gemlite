@@ -10,13 +10,13 @@ from triton.language.extra import libdevice
 from .triton_kernels.utils import IS_HIP, get_num_SMs, next_power_of_2
 from .dtypes import *
 
-#Get max val based on compute type
-def get_max_val(compute_dtype: torch.dtype) -> float:
+#Get dtype min/max range based on compute dtype
+def get_dtype_range(compute_dtype: torch.dtype) -> float:
     if(compute_dtype.is_floating_point):
-        max_val = torch.finfo(compute_dtype).max
+        dtype_info = torch.finfo(compute_dtype)
     else:
-        max_val = torch.iinfo(compute_dtype).max
-    return max_val
+        dtype_info = torch.iinfo(compute_dtype)
+    return dtype_info.min, dtype_info.max
 
 ####################################################################################################################
 #MXFP4 / NVFP4 weight quantizer
@@ -95,6 +95,7 @@ class WeightQuantizerMXFP:
 
         group_size: int = 32
         eps: float = 2**-30
+        min_val = torch.finfo(mx_fp8_dtype).min
         max_val = torch.finfo(mx_fp8_dtype).max
 
         W_flat = W.view(-1, group_size).float()
@@ -103,11 +104,13 @@ class WeightQuantizerMXFP:
 
         scales = (2 ** torch.ceil(torch.log2(ideal_scale))).clamp_(min=eps)
 
-        W_q = (W_flat / scales).to(mx_fp8_dtype).to(W_flat.dtype)
+        W_q = (W_flat / scales).clamp_(min=min_val, max=max_val)
         scales = scales.to(torch.float8_e8m0fnu)
 
         if(index):
             W_q = W_q.to(mx_fp8_dtype)
+        else:
+            W_q = W_q.to(mx_fp8_dtype).to(W_flat.dtype)
 
         return W_q, scales
     
@@ -221,7 +224,7 @@ def scale_activations_per_token_torch(
     tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
 ) -> Tuple[Tensor, Tensor]:
 
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_dtype_range(w_dtype)
     if fp32_scale:
         tensor = tensor.to(torch.float32, copy=False)
     out_shape = tensor.shape
@@ -230,7 +233,9 @@ def scale_activations_per_token_torch(
     # if(fp32_scale):
     #     scales = scales.to(torch.float32)
     scales.div_(max_val)
+    scales.clamp_(min=1e-6)
     out = tensor / scales
+    out.clamp_(min_val, max_val)
 
     if not w_dtype.is_floating_point:
         out.round_()
@@ -258,6 +263,7 @@ def scale_activations_per_token_kernel(
     stride_m, stride_k, stride_sm,
     ROUND: tl.constexpr, 
     UNROLL: tl.constexpr,
+    min_val: tl.constexpr,
     max_val: tl.constexpr,
     fp32_scale: tl.constexpr, 
     BLOCK_M: tl.constexpr, 
@@ -278,7 +284,9 @@ def scale_activations_per_token_kernel(
 
         scales_x = tl.max(tl.abs(tensor), axis=1, keep_dims=True)
         scales_x /= max_val
+        scales_x = tl.maximum(scales_x, 1e-6)
         tensor /= scales_x
+        tensor = tl.minimum(tl.maximum(tensor, min_val), max_val)
 
         if ROUND:
             tensor = round_triton(tensor)
@@ -292,7 +300,7 @@ def scale_activations_per_token_triton(
     tensor: Tensor, w_dtype: torch.dtype, fp32_scale: bool = True
 ) -> Tuple[Tensor, Tensor]:
 
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_dtype_range(w_dtype)
     x_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
     M, K = tensor.shape
@@ -317,6 +325,7 @@ def scale_activations_per_token_triton(
         tensor.stride(0),
         tensor.stride(1),
         scales.stride(0),
+        min_val=min_val,
         max_val=max_val,
         fp32_scale=fp32_scale,
         ROUND=ROUND,
@@ -383,7 +392,7 @@ def scale_activations_mxfp8_torch(
 
     group_size = 32
     eps = 2**-30
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_dtype_range(w_dtype)
 
     orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
@@ -399,7 +408,7 @@ def scale_activations_mxfp8_torch(
     scales /= max_val
     scales = (2 ** torch.ceil(torch.log2(scales))).clamp_(eps) 
 
-    W_q = (W_flat / scales).clamp_(-max_val, max_val).to(w_dtype)
+    W_q = (W_flat / scales).clamp_(-min_val, max_val).to(w_dtype)
     if(pad_rows > 0):
         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
 
@@ -418,6 +427,7 @@ def scale_activations_mxfp8_triton_v1_kernel(
     out_ptr,
     scales_ptr,
     E,
+    min_val: tl.constexpr,
     max_val: tl.constexpr,
     eps: tl.constexpr,
     UNROLL: tl.constexpr,
@@ -433,7 +443,9 @@ def scale_activations_mxfp8_triton_v1_kernel(
 
         scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor)) / max_val, eps)
 
-        out = (tensor / scales).to(out_ptr.dtype.element_ty)
+        out = tensor / scales
+        out = tl.clamp(out, min=min_val, max=max_val)
+        out = out.to(out_ptr.dtype.element_ty)
         tl.store(out_ptr + offs, out)
         tl.store(scales_ptr + pid, scales_log2 + 127)
 
@@ -446,7 +458,7 @@ def scale_activations_mxfp8_triton_v1(
 
     group_size = 32
     eps = 2**-30
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_dtype_range(w_dtype)
     tensor = tensor.contiguous()
     
     orig_shape = tensor.shape
@@ -472,6 +484,7 @@ def scale_activations_mxfp8_triton_v1(
                 out, 
                 scales, 
                 E=E,
+                min_val=min_val,
                 max_val=max_val,
                 eps=eps,
                 UNROLL=UNROLL,
@@ -492,6 +505,7 @@ def scale_activations_mxfp8_triton_kernel_v2(
     stride_m_s, stride_k_s,
     stride_m_o, stride_k_o,
     #########################
+    min_val: tl.constexpr,
     max_val: tl.constexpr,
     eps: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
@@ -514,7 +528,9 @@ def scale_activations_mxfp8_triton_kernel_v2(
     scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / max_val, eps)
 
     #Map to index
-    out = (tensor / scales).to(out_dtype)
+    out = tensor / scales
+    out = tl.clamp(out, min=min_val, max=max_val)
+    out = out.to(out_dtype)
 
     #Store
     tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out)
@@ -529,7 +545,7 @@ def scale_activations_mxfp8_triton_v2(
     
     group_size = 32
     eps = 2**-30
-    max_val = get_max_val(w_dtype)
+    min_val, max_val = get_dtype_range(w_dtype)
     tensor = tensor.contiguous()
 
     orig_shape = tensor.shape
@@ -558,6 +574,7 @@ def scale_activations_mxfp8_triton_v2(
                 scales.stride(0), scales.stride(1),
                 out.stride(0), out.stride(1),
                 #########################
+                min_val=min_val,
                 max_val=max_val,
                 eps=eps,
                 GROUP_SIZE=group_size,
@@ -943,6 +960,6 @@ def scale_activations_nvfp4_triton_v2(
 
 ####################################################################################################################
 scale_activations_per_token = scale_activations_per_token_triton
-scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2
+scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2 
 scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
 scale_activations_nvfp4 = scale_activations_nvfp4_triton_v2
