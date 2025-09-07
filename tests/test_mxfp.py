@@ -75,3 +75,10 @@ class TestGemliteMXFP(unittest.TestCase):
 		self.assertTrue(gemlite_linear.scaled_activations)
 		self.eval(gemlite_linear, tol = 1e-3)
 
+	def test_A4W4_NVFP_dynamic(self):
+		gemlite_linear = A4W4_MXFP_dynamic(device=device, dtype=compute_dtype).from_linear(linear_layer, del_orig=False)
+		self.assertTrue(gemlite_linear.W_q.numel() * gemlite_linear.W_q.itemsize == (in_features * out_features // 2))
+		self.assertTrue(gemlite_linear.scaled_activations)
+		self.eval(gemlite_linear, tol = 1e-3)
+
+
