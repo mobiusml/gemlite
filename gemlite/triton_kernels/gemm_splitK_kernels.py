@@ -558,6 +558,10 @@ def gemm_splitK_MX_kernel(
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
 
+    #NVFP4 meta-scale
+    if(group_size == 16):
+        acc *= ((0.05) ** 2)
+
     #############################################################################################################
     #Channel-wise scaling
     if(channel_scale_mode == 2): #activation-only

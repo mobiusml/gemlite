@@ -18,6 +18,7 @@ def get_dtype_range(compute_dtype: torch.dtype) -> float:
         dtype_info = torch.iinfo(compute_dtype)
     return dtype_info.min, dtype_info.max
 
+nvfp4_meta_scale = 0.05
 ####################################################################################################################
 #MXFP4 / NVFP4 weight quantizer
 ####################################################################################################################
@@ -172,7 +173,8 @@ class WeightQuantizerMXFP:
         ideal_scale.clamp_(max=max_fp8)
 
         if(window_size == 0):
-            scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
+            #scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
+            scales = ideal_scale.to(ideal_scale.dtype) 
         else:
             search_offsets = torch.arange(
                 -window_size, window_size + 1, device=W.device, dtype=torch.int
@@ -197,7 +199,7 @@ class WeightQuantizerMXFP:
 
         scales = scales.clamp_(min=eps)
         W_q = self.round_to_closest_fp4(W_flat / scales)
-        scales = scales.to(fp8_dtype)
+        scales = (scales / nvfp4_meta_scale).to(fp8_dtype)
 
         if(index):
             W_q = self.to_index(W_q)
@@ -638,7 +640,7 @@ def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 @torch.compile(fullgraph=True)
 def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     group_size = 16
-    eps = 2 ** -30
+    eps = 2 ** -6
     max_val = 6
     fp8_dtype = torch.float8_e4m3fn #Support Nvidia only
     max_fp8 = torch.finfo(fp8_dtype).max #448
@@ -655,7 +657,7 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     W_flat = tensor.view(-1, group_size).float()
     scales = W_flat.abs().amax(dim=1, keepdim=True)
     scales /= max_val
-    scales = scales.clamp_(max=max_fp8).to(fp8_dtype).to(W_flat.dtype).clamp_(eps)
+    scales = scales.clamp_(min=eps)
 
     W_q = W_flat / scales
     if(pad_rows > 0):
@@ -675,7 +677,12 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
     #Reshape scales
-    scales = scales.to(fp8_dtype).view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    scales = (
+        (scales / nvfp4_meta_scale)
+        .clamp_(max=max_fp8)
+        .to(fp8_dtype)
+        .view(post_pad_shape[0], post_pad_shape[1] // group_size)
+    )
     return W_q, scales
 
 
@@ -891,7 +898,7 @@ def scale_activations_nvfp4_triton_kernel_v2(
     
     #FP8 scales
     scales = tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6.
-    scales = tl.minimum(scales, max_fp8).to(fp8_dtype).to(tl.float32)
+    scales = tl.minimum(scales, max_fp8)#.to(fp8_dtype).to(tl.float32)
     scales = tl.maximum(scales, eps)
 
     #Map to index
@@ -912,12 +919,9 @@ def scale_activations_nvfp4_triton_kernel_v2(
     tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales)
 
 
-def scale_activations_nvfp4_triton_v2(
-    tensor: torch.Tensor, eps: float = 2**-30
-) -> Tuple[torch.Tensor, torch.Tensor]:
-
+def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 16
-    eps = 2**-30
+    eps = 2 ** -6
     fp8_dtype = torch.float8_e4m3fn  # Supports Nvidia only
     tensor = tensor.contiguous()
     
@@ -932,7 +936,7 @@ def scale_activations_nvfp4_triton_v2(
     scales = torch.empty(
         (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
         device=tensor.device,
-        dtype=fp8_dtype,
+        dtype=torch.float32,
     )
     device_index = tensor.device.index
 
@@ -956,10 +960,11 @@ def scale_activations_nvfp4_triton_v2(
                 num_warps=4,
                 )
 
+    scales = (scales / nvfp4_meta_scale).to(fp8_dtype)
     return out, scales
 
 ####################################################################################################################
 scale_activations_per_token = scale_activations_per_token_triton
 scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2 
-scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
-scale_activations_nvfp4 = scale_activations_nvfp4_triton_v2
+scale_activations_mxfp4 = scale_activations_mxfp4_torch #scale_activations_mxfp4_triton_v2
+scale_activations_nvfp4 = scale_activations_nvfp4_torch #scale_activations_nvfp4_triton_v2
