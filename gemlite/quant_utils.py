@@ -408,7 +408,7 @@ def scale_activations_mxfp8_torch(
     scales /= max_val
     scales = (2 ** torch.ceil(torch.log2(scales))).clamp_(eps) 
 
-    W_q = (W_flat / scales).clamp_(-min_val, max_val).to(w_dtype)
+    W_q = (W_flat / scales).clamp_(min_val, max_val).to(w_dtype)
     if(pad_rows > 0):
         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
 
