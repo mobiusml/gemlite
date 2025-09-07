@@ -58,7 +58,15 @@ for g_id in range(torch.cuda.device_count()):
         device=current_device,
     )
 
-    thr_pos.append((fp4_pos[:-1] + fp4_pos[1:]) * 0.5)
+    thr_pos.append(
+        torch.tensor(
+            [0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0, 7.0],
+            dtype=torch.float32,
+            device=current_device,
+        )
+    )  # (fp4_p_vals[:-1] + fp4_p_vals[1:]) / 2
+
+    thr_pos.append((fp4_pos[:-1] + fp4_pos[1:]) * 0.5) #fp4_pos[:-1] + fp4_pos[1:]) * 0.5
 
 class WeightQuantizerMXFP:
     def __init__(self, compute_dtype=torch.bfloat16, device="cuda:0"):
@@ -804,11 +812,15 @@ def scale_activations_mxfp4_triton_kernel_v2(
     #next power of 2 via log
     scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6., eps)
 
-    #Map to index
+    # #Map to index
+    # wq = tensor / scales
+    # idx_pos = tl.sum(wq[:, :, None] + 0.25 > thr_pos[None, :, :], axis=2) - 1
+    # idx_neg = tl.sum(wq[:, :, None] < -thr_pos[None, :, :], axis=2) + 7
+    # out = tl.where(wq >= 0, idx_pos, idx_neg).to(out_dtype)
+
     wq = tensor / scales
-    idx_pos = tl.sum(wq[:, :, None] > thr_pos[None, :, :], axis=2) - 1
-    idx_neg = tl.sum(wq[:, :, None] < -thr_pos[None, :, :], axis=2) + 7
-    out = tl.where(wq >= 0, idx_pos, idx_neg).to(out_dtype)
+    idx_abs = tl.sum(tl.abs(wq[:, :, None]) > thr_pos[None, :, :], axis=2)
+    out = tl.where(wq >= 0, idx_abs, idx_abs + 8).to(out_dtype)
 
     #Pack
     lo, hi = tl.split(out.reshape((BLOCK_SIZE_M, HALF_GROUP_SIZE, 2), can_reorder=False))
