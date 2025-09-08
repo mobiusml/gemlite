@@ -18,7 +18,7 @@ def get_dtype_range(compute_dtype: torch.dtype) -> float:
         dtype_info = torch.iinfo(compute_dtype)
     return dtype_info.min, dtype_info.max
 
-nvfp4_meta_scale = 0.05
+NVFP4_META_SCALE = 0.05
 ####################################################################################################################
 #MXFP4 / NVFP4 weight quantizer
 ####################################################################################################################
@@ -169,7 +169,7 @@ class WeightQuantizerMXFP:
     ) -> (torch.Tensor, torch.Tensor):
 
         group_size: int = 16
-        eps: float = 1e-8
+        eps: float = 1e-6
         W_nbits = 4
         max_val = 6
         fp8_dtype = torch.float8_e4m3fn #This is for Nvidia only.
@@ -178,18 +178,19 @@ class WeightQuantizerMXFP:
         W_flat = W.view(-1, group_size).float()
         ideal_scale = W_flat.abs().amax(dim=1, keepdim=True)
         ideal_scale /= max_val
-        ideal_scale.clamp_(max=max_fp8)
+        meta_scales = NVFP4_META_SCALE #ideal_scale.max().clamp_(min=eps) - TODO: use max()
+        ideal_scale /= meta_scales
+        ideal_scale = ideal_scale.clamp_(max=max_fp8).to(fp8_dtype)
 
         if(window_size == 0):
-            #scales = ideal_scale.to(fp8_dtype).to(ideal_scale.dtype)
-            scales = ideal_scale.to(ideal_scale.dtype) 
+            scales = ideal_scale
         else:
             search_offsets = torch.arange(
                 -window_size, window_size + 1, device=W.device, dtype=torch.int
             ).view(1, -1)
 
             candidate_scales = (
-                (ideal_scale.to(fp8_dtype).view(torch.int8) + search_offsets)
+                (ideal_scale.view(torch.int8) + search_offsets)
                 .clamp_(-128, 127)
                 .to(torch.int8)
             )
@@ -200,14 +201,13 @@ class WeightQuantizerMXFP:
             candidate_scales = candidate_scales.view(fp8_dtype).float()
             candidate_scales[candidate_scales < eps] = eps
 
-            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / candidate_scales.unsqueeze(-1))
+            W_q_candidates = self.round_to_closest_fp4(W_flat.unsqueeze(1) / (candidate_scales * meta_scales).unsqueeze(-1))
             W_r_candidates = W_q_candidates * candidate_scales.unsqueeze(-1)
             errors = (W_flat.unsqueeze(1) - W_r_candidates).abs().mean(dim=-1)
-            scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True))
+            scales = torch.gather(candidate_scales, 1, torch.argmin(errors, dim=1, keepdim=True)).to(fp8_dtype)
 
-        scales = scales.clamp_(min=eps)
-        W_q = self.round_to_closest_fp4(W_flat / scales)
-        scales = (scales / nvfp4_meta_scale).to(fp8_dtype)
+        scales_full = (scales.to(W_flat.dtype) * meta_scales).clamp_(min=eps)
+        W_q = self.round_to_closest_fp4(W_flat / scales_full)
 
         if(index):
             W_q = self.to_index(W_q)
@@ -505,6 +505,7 @@ def scale_activations_mxfp8_triton_v1(
 
     return out.view(orig_shape), scales
 
+#
 @triton.jit
 def scale_activations_mxfp8_triton_kernel_v2(
     tensor_ptr,
@@ -530,7 +531,7 @@ def scale_activations_mxfp8_triton_kernel_v2(
     offs_k = pid_k * GROUP_SIZE + tl.arange(0, GROUP_SIZE)
 
     #Load
-    mask = (offs_m[:, None] < M).to(tl.int1)
+    mask = ((offs_m[:, None] < M) & (offs_k[None, :] < K)).to(tl.int1)
     tensor_ptrs = tensor_ptr + (offs_m[:, None] * stride_m_t + offs_k[None, :] * stride_k_t)
     tensor = tl.load(tensor_ptrs, mask=mask, other=0.0).to(tl.float32)
     
@@ -554,7 +555,7 @@ def scale_activations_mxfp8_triton_v2(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     
     group_size = 32
-    eps = 2**-30
+    eps = 2 ** -30
     min_val, max_val = get_dtype_range(w_dtype)
     tensor = tensor.contiguous()
 
@@ -594,6 +595,7 @@ def scale_activations_mxfp8_triton_v2(
                 )
 
     return out, scales
+
 
 ####################################################################################################################
 #MXPF4 / NVFP4
@@ -644,11 +646,11 @@ def scale_activations_mxfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     )
     return W_q, scales
 
-
 @torch.compile(fullgraph=True)
 def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
+
     group_size = 16
-    eps = 2 ** -6
+    eps = 1e-6
     max_val = 6
     fp8_dtype = torch.float8_e4m3fn #Support Nvidia only
     max_fp8 = torch.finfo(fp8_dtype).max #448
@@ -665,14 +667,17 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     W_flat = tensor.view(-1, group_size).float()
     scales = W_flat.abs().amax(dim=1, keepdim=True)
     scales /= max_val
-    scales = scales.clamp_(min=eps)
+    meta_scales = NVFP4_META_SCALE #scales.max().clamp_(min=eps) - TODO: use max()
+    scales /= meta_scales
+    scales = scales.clamp(max=max_fp8).to(fp8_dtype).to(W_flat.dtype)
 
-    W_q = W_flat / scales
+    W_q = W_flat / (scales * meta_scales)
     if(pad_rows > 0):
         W_q = W_q.view(post_pad_shape)[:inter_shape[0], :]
 
     #1) Map to closest index
     device_index = W_q.device.index
+
     W_q = (
         (W_q.view(-1, 1) - fp4_values[device_index].to(W_q.dtype).view(1, -1))
         .abs()
@@ -680,14 +685,12 @@ def scale_activations_nvfp4_torch(tensor: Tensor) -> Tuple[Tensor, Tensor]:
         .to(torch.uint8)
         .view(inter_shape)
     )
-
     #2) Pack
     W_q = (W_q[:,::2] | W_q[:,1::2] << 4).to(torch.uint8)
 
     #Reshape scales
     scales = (
-        (scales / nvfp4_meta_scale)
-        .clamp_(max=max_fp8)
+        scales
         .to(fp8_dtype)
         .view(post_pad_shape[0], post_pad_shape[1] // group_size)
     )
@@ -722,9 +725,8 @@ def scale_activations_mxfp4_triton_kernel_v1(
 
         #Map to index
         wq = tensor / scales
-        idx_pos = tl.sum(wq[:, None] > thr_pos, axis=1) - 1
-        idx_neg = tl.sum(wq[:, None] < -thr_pos, axis=1) + 7
-        out = tl.where(wq >= 0, idx_pos, idx_neg).to(out_dtype)
+        idx_abs = tl.sum(tl.abs(wq[:, None]) > thr_pos, axis=1)
+        out = tl.where(wq >= 0, idx_abs, idx_abs + 8).to(out_dtype)
 
         #Pack
         lo, hi = tl.split(out.reshape((HALF_GROUP_SIZE, 2), can_reorder=False))
@@ -805,19 +807,14 @@ def scale_activations_mxfp4_triton_kernel_v2(
     offs_k = pid_k * GROUP_SIZE + tl.arange(0, GROUP_SIZE)
 
     #Load
-    mask = (offs_m[:, None] < M).to(tl.int1)
+    mask = ((offs_m[:, None] < M) & (offs_k[None, :] < K)).to(tl.int1)
     tensor_ptrs = tensor_ptr + (offs_m[:, None] * stride_m_t + offs_k[None, :] * stride_k_t)
     tensor = tl.load(tensor_ptrs, mask=mask, other=0.0).to(tl.float32)
     
     #next power of 2 via log
     scales, scales_log2 = next_power_of_2_triton(tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6., eps)
 
-    # #Map to index
-    # wq = tensor / scales
-    # idx_pos = tl.sum(wq[:, :, None] + 0.25 > thr_pos[None, :, :], axis=2) - 1
-    # idx_neg = tl.sum(wq[:, :, None] < -thr_pos[None, :, :], axis=2) + 7
-    # out = tl.where(wq >= 0, idx_pos, idx_neg).to(out_dtype)
-
+    #Map to index
     wq = tensor / scales
     idx_abs = tl.sum(tl.abs(wq[:, :, None]) > thr_pos[None, :, :], axis=2)
     out = tl.where(wq >= 0, idx_abs, idx_abs + 8).to(out_dtype)
@@ -828,7 +825,8 @@ def scale_activations_mxfp4_triton_kernel_v2(
 
     #Store
     offs_k = pid_k * HALF_GROUP_SIZE + tl.arange(0, HALF_GROUP_SIZE)
-    tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out)
+    out_mask = ((offs_m[:, None] < M) & (offs_k[None, :] < (K // 2))).to(tl.int1)
+    tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out, mask=out_mask)
 
     offs_k = pid_k * 1 + tl.arange(0, 1)
     tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales_log2 + 127)
@@ -836,42 +834,36 @@ def scale_activations_mxfp4_triton_kernel_v2(
 def scale_activations_mxfp4_triton_v2(tensor: Tensor) -> Tuple[Tensor, Tensor]:
     group_size = 32
     eps = 2 ** -30
+
     tensor = tensor.contiguous()
-    
-    orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
-    inter_shape = (tensor.shape[0], tensor.shape[1] // 2)
-    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
-    post_pad_shape = (inter_shape[0] + pad_rows, inter_shape[1])
     M, K = tensor.shape
 
-    out = torch.empty(inter_shape, device=tensor.device, dtype=torch.uint8) 
-    scales = torch.empty(
-        (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
-        device=tensor.device,
-        dtype=torch.uint8,
-    )
+    pad_m = (group_size - M % group_size) % group_size
+    M_padded = M + pad_m
+
+    out = torch.empty((M, K // 2), device=tensor.device, dtype=torch.uint8)
+    scales = torch.empty((M_padded, K // group_size), device=tensor.device, dtype=torch.uint8)
+
+    BLOCK_SIZE_M = min(max(next_power_of_2(M), group_size), 128)
+    #BLOCK_SIZE_M = group_size
+    grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
     device_index = tensor.device.index
 
-    BLOCK_SIZE_M = min(next_power_of_2(M), 4) 
-    grid = lambda meta: (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
-
     scale_activations_mxfp4_triton_kernel_v2[grid](
-                tensor,
-                out,
-                scales,
-                thr_pos[device_index],
-                M, K,
-                tensor.stride(0), tensor.stride(1),
-                scales.stride(0), scales.stride(1),
-                out.stride(0), out.stride(1),
-                #########################
-                eps=eps,
-                GROUP_SIZE=group_size,
-                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                num_stages=1,
-                num_warps=4,
-                )
+        tensor,
+        out,
+        scales,
+        thr_pos[device_index],
+        M, K, 
+        tensor.stride(0), tensor.stride(1),
+        scales.stride(0), scales.stride(1),
+        out.stride(0), out.stride(1),
+        #########################
+        eps=eps,
+        GROUP_SIZE=group_size,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+    )
 
     return out, scales
 
@@ -889,6 +881,7 @@ def scale_activations_nvfp4_triton_kernel_v2(
     eps: tl.constexpr,
     GROUP_SIZE: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
+    meta_scales: tl.constexpr = NVFP4_META_SCALE,
 ):
 
     pid_m = tl.program_id(axis=0)
@@ -904,20 +897,19 @@ def scale_activations_nvfp4_triton_kernel_v2(
     offs_k = pid_k * GROUP_SIZE + tl.arange(0, GROUP_SIZE)
 
     #Load
-    mask = (offs_m[:, None] < M).to(tl.int1)
+    mask = ((offs_m[:, None] < M) & (offs_k[None, :] < K)).to(tl.int1)
     tensor_ptrs = tensor_ptr + (offs_m[:, None] * stride_m_t + offs_k[None, :] * stride_k_t)
     tensor = tl.load(tensor_ptrs, mask=mask, other=0.0).to(tl.float32)
     
     #FP8 scales
-    scales = tl.max(tl.abs(tensor), axis=1, keep_dims=True) / 6.
-    scales = tl.minimum(scales, max_fp8)#.to(fp8_dtype).to(tl.float32)
-    scales = tl.maximum(scales, eps)
+    scales = tl.max(tl.abs(tensor), axis=1, keep_dims=True) / (6. * meta_scales)
+    scales = tl.minimum(scales, max_fp8).to(fp8_dtype)
 
     #Map to index
-    wq = tensor / scales
-    idx_pos = tl.sum(wq[:, :, None] > thr_pos[None, :, :], axis=2) - 1
-    idx_neg = tl.sum(wq[:, :, None] < -thr_pos[None, :, :], axis=2) + 7
-    out = tl.where(wq >= 0, idx_pos, idx_neg).to(out_dtype)
+    scales_full = tl.maximum(scales.to(tl.float32) * meta_scales, eps)
+    wq = tensor / scales_full
+    idx_abs = tl.sum(tl.abs(wq[:, :, None]) > thr_pos[None, :, :], axis=2)
+    out = tl.where(wq >= 0, idx_abs, idx_abs + 8).to(out_dtype)
 
     #Pack
     lo, hi = tl.split(out.reshape((BLOCK_SIZE_M, HALF_GROUP_SIZE, 2), can_reorder=False))
@@ -925,58 +917,52 @@ def scale_activations_nvfp4_triton_kernel_v2(
 
     #Store
     offs_k = pid_k * HALF_GROUP_SIZE + tl.arange(0, HALF_GROUP_SIZE)
-    tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out)
+    out_mask = ((offs_m[:, None] < M) & (offs_k[None, :] < (K // 2))).to(tl.int1)
+    tl.store(out_ptr + (offs_m[:, None] * stride_m_o + offs_k[None, :] * stride_k_o), out, mask=out_mask)
 
-    offs_k = pid_k * 1 + tl.arange(0, 1)
+    offs_k = pid_k + tl.arange(0, 1)
     tl.store(scales_ptr + (offs_m[:, None] * stride_m_s + offs_k[None, :] * stride_k_s), scales)
 
 
 def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     group_size = 16
-    eps = 2 ** -6
-    fp8_dtype = torch.float8_e4m3fn  # Supports Nvidia only
+    eps = 1e-6
+    fp8_dtype = torch.float8_e4m3fn #Nvidia only
+
     tensor = tensor.contiguous()
-    
-    orig_shape = tensor.shape
     tensor = tensor.view(-1, tensor.shape[-1])
-    inter_shape = (tensor.shape[0], tensor.shape[1] // 2)
-    pad_rows = (group_size - inter_shape[0] % group_size) % group_size
-    post_pad_shape = (inter_shape[0] + pad_rows, inter_shape[1])
     M, K = tensor.shape
 
-    out = torch.empty(inter_shape, device=tensor.device, dtype=torch.uint8) 
-    scales = torch.empty(
-        (post_pad_shape[0], post_pad_shape[1] * 2 // group_size),
-        device=tensor.device,
-        dtype=torch.float32,
-    )
+    pad_m = (group_size - M % group_size) % group_size
+    M_padded = M + pad_m
+
+    out = torch.empty((M, K // 2), device=tensor.device, dtype=torch.uint8)
+    scales = torch.empty((M_padded, K // group_size), device=tensor.device, dtype=fp8_dtype)
+
+    #BLOCK_SIZE_M = min(max(next_power_of_2(M), group_size), 128)
+    BLOCK_SIZE_M = group_size
+    grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
     device_index = tensor.device.index
 
-    BLOCK_SIZE_M = min(next_power_of_2(M), 8) 
-    grid = lambda meta: (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
-
     scale_activations_nvfp4_triton_kernel_v2[grid](
-                tensor,
-                out,
-                scales,
-                thr_pos[device_index],
-                M, K,
-                tensor.stride(0), tensor.stride(1),
-                scales.stride(0), scales.stride(1),
-                out.stride(0), out.stride(1),
-                #########################
-                eps=eps,
-                GROUP_SIZE=group_size,
-                BLOCK_SIZE_M=BLOCK_SIZE_M,
-                num_stages=1,
-                num_warps=4,
-                )
+        tensor,
+        out,
+        scales,
+        thr_pos[device_index],
+        M, K, 
+        tensor.stride(0), tensor.stride(1),
+        scales.stride(0), scales.stride(1),
+        out.stride(0), out.stride(1),
+        #########################
+        eps=eps,
+        GROUP_SIZE=group_size,
+        BLOCK_SIZE_M=BLOCK_SIZE_M,
+    )
 
-    scales = (scales / nvfp4_meta_scale).to(fp8_dtype)
     return out, scales
 
 ####################################################################################################################
 scale_activations_per_token = scale_activations_per_token_triton
-scale_activations_mxfp8 = scale_activations_mxfp8_triton_v2 
-scale_activations_mxfp4 = scale_activations_mxfp4_torch #scale_activations_mxfp4_triton_v2
-scale_activations_nvfp4 = scale_activations_nvfp4_torch #scale_activations_nvfp4_triton_v2
+scale_activations_mxfp8 = scale_activations_mxfp8_torch #scale_activations_mxfp8_triton_v2
+scale_activations_mxfp4 = scale_activations_mxfp4_triton_v2
+scale_activations_nvfp4 = scale_activations_nvfp4_triton_v2
