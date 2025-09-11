@@ -6,10 +6,10 @@ from gemlite import reset_config, set_autotune
 from gemlite.triton_kernels.config import KERNEL
 from gemlite.helper import *
 
-def is_fp8_supported():
+def is_fp8_supported(device_index=0):
     if not torch.cuda.is_available():
         return False
-    capability = torch.cuda.get_device_capability(0) 
+    capability = torch.cuda.get_device_capability(device_index) 
     return capability >= (8, 9)  
 
 device        = 'cuda:0'
