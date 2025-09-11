@@ -482,6 +482,7 @@ def gemm_splitK_MX_kernel(
     atomic_mode: tl.constexpr = 'relaxed',
     a_evict: tl.constexpr = 'evict_last',
     b_evict: tl.constexpr = 'evict_first',
+    meta_scale_norm: tl.constexpr = (0.05 ** 2),
     #################################
 ):
     pid   = tl.program_id(axis=0)
@@ -560,7 +561,7 @@ def gemm_splitK_MX_kernel(
 
     #NVFP4 meta-scale
     if(group_size == 16):
-        acc *= ((0.05) ** 2)
+        acc *= meta_scale_norm
 
     #############################################################################################################
     #Channel-wise scaling

@@ -445,6 +445,7 @@ def gemm_MX_kernel(
     meta_evict_policy: tl.constexpr = '',
     a_evict: tl.constexpr = '',
     b_evict: tl.constexpr = '',
+    meta_scale_norm: tl.constexpr = (0.05 ** 2),
 ):
 
     pid = tl.program_id(axis=0)
@@ -518,7 +519,7 @@ def gemm_MX_kernel(
 
     #NVFP4 meta-scale
     if(group_size == 16):
-        acc *= ((0.05) ** 2)
+        acc *= meta_scale_norm
 
     #############################################################################################################
     #Channel-wise scaling
