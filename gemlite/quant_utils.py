@@ -561,8 +561,8 @@ def scale_activations_mxfp8_triton_v2(
     out = torch.empty((M, K), device=tensor.device, dtype=w_dtype)
     scales = torch.empty((M_padded, K // group_size), device=tensor.device, dtype=torch.uint8)
 
-    BLOCK_SIZE_M = min(max(next_power_of_2(M), group_size), 128)
-    #BLOCK_SIZE_M = group_size
+    #BLOCK_SIZE_M = min(max(next_power_of_2(M), group_size), 128)
+    BLOCK_SIZE_M = group_size
     grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
     device_index = tensor.device.index
 
@@ -580,6 +580,8 @@ def scale_activations_mxfp8_triton_v2(
         eps_exp=eps_exp,
         GROUP_SIZE=group_size,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
+        num_stages=2,
+        num_warps=4,
     )
 
     return out, scales
@@ -831,6 +833,7 @@ def scale_activations_mxfp4_triton_v2(tensor: Tensor) -> Tuple[Tensor, Tensor]:
 
     #BLOCK_SIZE_M = min(max(next_power_of_2(M), group_size), 128)
     BLOCK_SIZE_M = group_size
+    
     grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(K, group_size))
     device_index = tensor.device.index
 
@@ -847,6 +850,8 @@ def scale_activations_mxfp4_triton_v2(tensor: Tensor) -> Tuple[Tensor, Tensor]:
         eps_exp=eps_exp,
         GROUP_SIZE=group_size,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
+        num_stages=2,
+        num_warps=4,
     )
 
     return out, scales
@@ -910,8 +915,8 @@ def scale_activations_nvfp4_triton_kernel_v2(
 
 
 def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    group_size = 16
-    eps = 1e-6
+    group_size: int = 16
+    eps: float = 1e-6
     fp8_dtype = torch.float8_e4m3fn #Nvidia only
 
     tensor = tensor.contiguous()
@@ -942,6 +947,8 @@ def scale_activations_nvfp4_triton_v2(tensor: torch.Tensor) -> Tuple[torch.Tenso
         eps=eps,
         GROUP_SIZE=group_size,
         BLOCK_SIZE_M=BLOCK_SIZE_M,
+        num_stages=2,
+        num_warps=4,
     )
 
     return out, scales
