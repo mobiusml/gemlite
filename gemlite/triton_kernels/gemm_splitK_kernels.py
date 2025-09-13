@@ -73,13 +73,12 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Constraint: BLOCK_SIZE_K >= group_size, only for load_as_block = False
         if(load_scales_as_block):
             num_stages = max(num_stages, 2) #for dot_scaled kernels with pipelined loads
-            if(g == 16):
+            if(e > 1):
                 block_size_k = max(block_size_k, 64) #m16n8k64
             else:
                 block_size_k = max(block_size_k, 32) #m16n8k32
         else:
             block_size_k = min(block_size_k, g)
-
 
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
@@ -99,8 +98,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 continue
 
         #Avoid OOM
-        while num_stages > 0 and not load_scales_as_block: #TODO: extend for MXFP
-            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof) 
+        while num_stages > 0 and not load_scales_as_block: #TODO: revisit MXFP case
+            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof)
             if(e > 1): 
                 shared_mem += block_size_k * block_size_n * a_sizeof
             shared_mem *= num_stages
@@ -109,6 +108,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             num_stages -= 1
 
         if(num_stages == 0): continue #config too large
+
+        ###########################################
+        if(load_scales_as_block):#tmp MXFP fix
+            block_size_k = min(block_size_k, 128)
+        ###########################################
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, split_k, A_load_order, num_stages, num_warps)
         

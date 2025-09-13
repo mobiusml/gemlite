@@ -66,7 +66,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Constraint: BLOCK_SIZE_K >= group_size, only for load_as_block = False
         if(load_scales_as_block):
             num_stages = max(num_stages, 2) #for dot_scaled kernels with pipelined loads
-            if(g == 16):
+            if(e > 1):
                 block_size_k = max(block_size_k, 64) #m16n8k64
             else:
                 block_size_k = max(block_size_k, 32) #m16n8k32
@@ -88,8 +88,8 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 continue
 
         #Avoid OOM
-        while num_stages > 0 and not load_scales_as_block: #TODO: extend for MXFP
-            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof) 
+        while num_stages > 0 and not load_scales_as_block: #TODO: revisit MXFP case
+            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof)
             if(e > 1): 
                 shared_mem += block_size_k * block_size_n * a_sizeof
             shared_mem *= num_stages
@@ -98,6 +98,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             num_stages -= 1
 
         if(num_stages == 0): continue #config too large
+
+        ###########################################
+        if(load_scales_as_block):#tmp MXFP fix
+            block_size_k = min(block_size_k, 128)
+        ###########################################
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, A_load_order, num_stages, num_warps)
 
@@ -509,18 +514,17 @@ def gemm_MX_kernel(
 
     acc = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=acc_dtype)
     for k in tl.range(num_pid_k, num_stages=NUM_STAGES):
-        #TODO: load_order
         a = tl.load(a_ptrs, mask=a_mask, other=0., eviction_policy=a_evict)
         b = tl.load(b_ptrs, eviction_policy=b_evict)
 
         k_m = k * BLOCK_SIZE_K_S
         scales_b = tl.load(scales_b_ptrs + k_m * stride_meta_g, eviction_policy=meta_evict_policy)
-        
+
         if(channel_scale_mode == 4):
             scales_a = tl.load(scales_a_ptrs + k_m * stride_meta_a_g, eviction_policy=meta_evict_policy)
         else:
             scales_a = tl.full((BLOCK_SIZE_M, BLOCK_SIZE_K_S), value=127, dtype=tl.uint8)
-
+        
         acc = tl.dot_scaled(a, scales_a, a_dtype, b, scales_b, b_dtype, acc)
 
         a_ptrs += BLOCK_SIZE_K_A * stride_ak

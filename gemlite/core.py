@@ -392,8 +392,10 @@ class GemLiteLinearTriton(torch.nn.Module):
             )  # Over-K
             
             if contiguous is None:
-                contiguous = True
-                #TODO: check this for MX dtypes
+                if(is_mx_dtype(self.input_dtype)):
+                    contiguous = False
+                else:
+                    contiguous = True
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
