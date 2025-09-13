@@ -70,11 +70,16 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         #Only use higher split_k values for smaller m
         if(m >= 32): split_k = min(split_k, 8)
 
-        #Constraint: BLOCK_SIZE_K >= group_size, only for oad_as_block = False
+        #Constraint: BLOCK_SIZE_K >= group_size, only for load_as_block = False
         if(load_scales_as_block):
             num_stages = max(num_stages, 2) #for dot_scaled kernels with pipelined loads
+            if(g == 16):
+                block_size_k = max(block_size_k, 64) #m16n8k64
+            else:
+                block_size_k = max(block_size_k, 32) #m16n8k32
         else:
             block_size_k = min(block_size_k, g)
+
 
         block_size_k = next_power_of_2(block_size_k)
         block_size_n = next_power_of_2(block_size_n)
@@ -86,11 +91,15 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Nvidia
         if not IS_HIP:
-            if(e > 1): num_stages = min(num_stages, 4) #Limit num stages when data is packed
-            if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+            if e > 1 and not load_scales_as_block:
+                #Limit num stages when data is packed
+                num_stages = min(num_stages, 4)
+            if(e == 1 and num_stages == 1): 
+                #skip num_stages=1 for non-packed weights
+                continue
 
         #Avoid OOM
-        while num_stages > 0:
+        while num_stages > 0 and not load_scales_as_block: #TODO: extend for MXFP
             shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof) 
             if(e > 1): 
                 shared_mem += block_size_k * block_size_n * a_sizeof
@@ -584,9 +593,6 @@ def gemm_splitK_MX_kernel(
     else:
         tl.store(c_ptrs, acc, mask=mask)
 
-
-#gemm_splitK_kernel = gemm_splitK_INT_kernel
-#gemm_splitK_kernel = gemm_splitK_MX_kernel
 def gemm_splitK_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x: Tensor,
                         W_nbits: int, group_size: int, unpack_mask: int, elements_per_sample: int,
                         input_dtype: int, output_dtype: int, acc_dtype: int, meta_dtype:int, 
