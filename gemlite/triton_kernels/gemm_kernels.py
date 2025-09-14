@@ -101,7 +101,7 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         ###########################################
         if(load_scales_as_block):#tmp MXFP fix
-            block_size_k = min(block_size_k, 128)
+            block_size_k = min(block_size_k, 256)
         ###########################################
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, A_load_order, num_stages, num_warps)
@@ -495,10 +495,6 @@ def gemm_MX_kernel(
     BLOCK_SIZE_K_B: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
     offs_bk = tl.arange(0, BLOCK_SIZE_K_B)
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    if(data_contiguous):
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_B), BLOCK_SIZE_K_B) #row_major
-    else:
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
     b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
 
     #Scales
@@ -546,7 +542,6 @@ def gemm_MX_kernel(
     #Output
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     mask    = ((offs_cm[:, None] < M) & (offs_cn[None, :] < N)).to(tl.int1)
     tl.store(c_ptrs, acc, mask=mask)
