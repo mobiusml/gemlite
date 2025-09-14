@@ -98,9 +98,9 @@ def kernel_config_pruner(configs, nargs, **kwargs):
                 continue
 
         #Avoid OOM
-        while num_stages > 0 and not load_scales_as_block: #TODO: revisit MXFP case
+        while num_stages > 0: #TODO: revisit MXFP case
             shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof)
-            if(e > 1): 
+            if(e > 1 and not load_scales_as_block): 
                 shared_mem += block_size_k * block_size_n * a_sizeof
             shared_mem *= num_stages
             if int(shared_mem) <= gpu_shared_memory:
