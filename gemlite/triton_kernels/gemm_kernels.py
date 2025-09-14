@@ -63,9 +63,13 @@ def kernel_config_pruner(configs, nargs, **kwargs):
         elif m <= 256: block_size_m = min(max(block_size_m, 64), 256) #m: [128...256]
         elif m > 256:  block_size_m = min(max(block_size_m, 64), 256) #m > 256
     
-        #Constraint: BLOCK_SIZE_K >= group_size, only for oad_as_block = False
+        #Constraint: BLOCK_SIZE_K >= group_size, only for load_as_block = False
         if(load_scales_as_block):
             num_stages = max(num_stages, 2) #for dot_scaled kernels with pipelined loads
+            if(e > 1):
+                block_size_k = max(block_size_k, 64) #m16n8k64
+            else:
+                block_size_k = max(block_size_k, 32) #m16n8k32
         else:
             block_size_k = min(block_size_k, g)
 
@@ -76,12 +80,16 @@ def kernel_config_pruner(configs, nargs, **kwargs):
 
         #Nvidia
         if not IS_HIP:
-            if(e > 1): num_stages = min(num_stages, 4) #Limit num stages when data is packed
-            if(e == 1 and num_stages == 1): continue #skip num_stages=1 for non-packed weights
+            if e > 1 and not load_scales_as_block:
+                #Limit num stages when data is packed
+                num_stages = min(num_stages, 4)
+            if(e == 1 and num_stages == 1): 
+                #skip num_stages=1 for non-packed weights
+                continue
 
         #Avoid OOM
-        while num_stages > 0:
-            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof) 
+        while num_stages > 0 and not load_scales_as_block: #TODO: revisit MXFP case
+            shared_mem = (block_size_m * block_size_k * a_sizeof + block_size_k * block_size_n * b_sizeof)
             if(e > 1): 
                 shared_mem += block_size_k * block_size_n * a_sizeof
             shared_mem *= num_stages
@@ -90,6 +98,11 @@ def kernel_config_pruner(configs, nargs, **kwargs):
             num_stages -= 1
 
         if(num_stages == 0): continue #config too large
+
+        ###########################################
+        if(load_scales_as_block):#tmp MXFP fix
+            block_size_k = min(block_size_k, 256)
+        ###########################################
 
         key = (block_size_m, block_size_n, block_size_k, group_size_m, A_load_order, num_stages, num_warps)
 
@@ -445,6 +458,7 @@ def gemm_MX_kernel(
     meta_evict_policy: tl.constexpr = '',
     a_evict: tl.constexpr = '',
     b_evict: tl.constexpr = '',
+    meta_scale_norm: tl.constexpr = (0.05 ** 2),
 ):
 
     pid = tl.program_id(axis=0)
@@ -481,10 +495,6 @@ def gemm_MX_kernel(
     BLOCK_SIZE_K_B: tl.constexpr = BLOCK_SIZE_K // elements_per_sample
     offs_bk = tl.arange(0, BLOCK_SIZE_K_B)
     offs_bn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    if(data_contiguous):
-        offs_bk = tl.max_contiguous(tl.multiple_of(offs_bk, BLOCK_SIZE_K_B), BLOCK_SIZE_K_B) #row_major
-    else:
-        offs_bn = tl.max_contiguous(tl.multiple_of(offs_bn, BLOCK_SIZE_N), BLOCK_SIZE_N) #col_major
     b_ptrs = b_ptr + offs_bk[:, None] * stride_bk + offs_bn[None, :] * stride_bn
 
     #Scales
@@ -516,6 +526,10 @@ def gemm_MX_kernel(
         a_ptrs += BLOCK_SIZE_K_A * stride_ak
         b_ptrs += BLOCK_SIZE_K_B * stride_bk
 
+    #NVFP4 meta-scale
+    if(group_size == 16):
+        acc *= meta_scale_norm
+
     #############################################################################################################
     #Channel-wise scaling
     if(channel_scale_mode == 2): #activation-only
@@ -528,7 +542,6 @@ def gemm_MX_kernel(
     #Output
     offs_cm = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
-    offs_cn = tl.max_contiguous(tl.multiple_of(offs_cn, BLOCK_SIZE_N), BLOCK_SIZE_N)
     c_ptrs  = c_ptr + (offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn)
     mask    = ((offs_cm[:, None] < M) & (offs_cn[None, :] < N)).to(tl.int1)
     tl.store(c_ptrs, acc, mask=mask)

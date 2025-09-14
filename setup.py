@@ -11,7 +11,7 @@ setup(
         "gemlite": ["gemlite/*.py", "configs/*.json"],
     },
     include_package_data=True,
-    install_requires=["numpy", "torch", "tqdm"],
+    install_requires=["numpy", "tqdm"],
 )
 
 # python3 setup.py install
