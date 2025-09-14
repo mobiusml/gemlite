@@ -374,7 +374,7 @@ class GemLiteLinearTriton(torch.nn.Module):
             else: 
                 assert self.W_nbits == 8, "Invalid 8-bit weights."
 
-            self.W_q = W_q.t() #row-major
+            self.W_q = W_q.t()
             self.elements_per_sample = 1
 
             if(contiguous is None): 
@@ -392,18 +392,20 @@ class GemLiteLinearTriton(torch.nn.Module):
             )  # Over-K
             
             if contiguous is None:
-                contiguous = True
-                #TODO: check this for MX dtypes
+                if(is_mx_dtype(self.input_dtype)):
+                    contiguous = False
+                else:
+                    contiguous = True
 
         if(self.W_q is None):
             raise Exception('Weights were not packed, please check your W_q.dtype')
 
         #Bias / device
         self.device = self.W_q.device
-        self.bias   = None if (bias is None) else bias.to(device=self.device)
+        self.bias = None if (bias is None) else bias.to(device=self.device)
         
         #initial values
-        self.W_group_mode       = -1
+        self.W_group_mode = -1
         self.channel_scale_mode = 0
 
         #FP16 x FP16 / FP8 x FP8 / INT8 x INT8 - no meta-data case 
@@ -447,7 +449,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         #weight-only
         if((self.scaled_activations == False) and (self.meta_is_channelwise == True)):
             self.channel_scale_mode = 1
-            self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+            self.W_group_mode = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
         #activation-only
         if((self.scaled_activations == True) and (self.meta_is_channelwise == False)):
@@ -456,7 +458,7 @@ class GemLiteLinearTriton(torch.nn.Module):
         #weight + activation mode
         if((self.scaled_activations == True) and (self.meta_is_channelwise == True)):
              self.channel_scale_mode = 3
-             self.W_group_mode       = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
+             self.W_group_mode = 1 if(self.zeros is not None) else 0 #only with fma_mode=False
 
         if(self.channel_scale_mode in [1, 3]):
             assert self.W_group_mode not in [3, 4], "Can't use channel_scale_mode with W_group_mode == 3 or 4."
@@ -498,10 +500,10 @@ class GemLiteLinearTriton(torch.nn.Module):
             self.meta_dtype = TORCH_TO_DTYPE[self.scales.dtype]
 
         #Register tensors as buffers
-        self.W_q        = torch.nn.Parameter(self.W_q, requires_grad=False)
-        self.bias       = torch.nn.Parameter(self.bias, requires_grad=False) if self.bias is not None else None
-        self.scales     = torch.nn.Parameter(self.scales,requires_grad=False)
-        self.zeros      = torch.nn.Parameter(self.zeros, requires_grad=False)
+        self.W_q = torch.nn.Parameter(self.W_q, requires_grad=False)
+        self.bias = torch.nn.Parameter(self.bias, requires_grad=False) if self.bias is not None else None
+        self.scales = torch.nn.Parameter(self.scales,requires_grad=False)
+        self.zeros  = torch.nn.Parameter(self.zeros, requires_grad=False)
 
         #Register metadata
         self.metadata = torch.nn.Parameter(

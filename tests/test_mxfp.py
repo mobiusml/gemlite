@@ -6,10 +6,10 @@ from gemlite import reset_config, set_autotune
 from gemlite.triton_kernels.config import KERNEL
 from gemlite.helper import *
 
-def is_fp8_supported():
+def is_fp8_supported(device_index=0):
     if not torch.cuda.is_available():
         return False
-    capability = torch.cuda.get_device_capability(0) 
+    capability = torch.cuda.get_device_capability(device_index) 
     return capability >= (8, 9)  
 
 device        = 'cuda:0'
@@ -74,4 +74,11 @@ class TestGemliteMXFP(unittest.TestCase):
 		self.assertTrue(gemlite_linear.W_q.numel() * gemlite_linear.W_q.itemsize == (in_features * out_features // 2))
 		self.assertTrue(gemlite_linear.scaled_activations)
 		self.eval(gemlite_linear, tol = 1e-3)
+
+	def test_A4W4_NVFP_dynamic(self):
+		gemlite_linear = A4W4_MXFP_dynamic(device=device, dtype=compute_dtype).from_linear(linear_layer, del_orig=False)
+		self.assertTrue(gemlite_linear.W_q.numel() * gemlite_linear.W_q.itemsize == (in_features * out_features // 2))
+		self.assertTrue(gemlite_linear.scaled_activations)
+		self.eval(gemlite_linear, tol = 1e-3)
+
 
