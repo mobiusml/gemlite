@@ -564,7 +564,6 @@ def gemm_forward(x: Tensor, W_q: Tensor, scales: Tensor, zeros: Tensor, scales_x
         stride_meta_a_m, stride_meta_a_g = scales_x.stride(0), scales_x.stride(1)
     else:
         stride_meta_a_m, stride_meta_a_g = None, None
-        channel_scale_mode = 0
 
     if(is_mx_dtype(input_dtype)):
         gemm_kernel = gemm_MX_kernel

@@ -73,11 +73,12 @@ def patch_model(model, device, processor, skip_modules=[]):
 
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8/FP8 weight-only channel-wise
-    def __init__(self, device='cuda:0', dtype=None, fp8=None, fp32_scale=False):
+    def __init__(self, device='cuda:0', dtype=None, fp8=None, fp32_scale=True, post_scale=False):
         self.device = device
         self.dtype = dtype
         self.fp8 = fp8
         self.fp32_scale = fp32_scale
+        self.post_scale = post_scale
 
     def from_weights(self, weight, bias=None, scales=None):
         if(isinstance(weight, torch.nn.Parameter)):
@@ -126,7 +127,7 @@ class A16W8: #INT8/FP8 weight-only channel-wise
             scales = scales.to(device=self.device)
             gemlite_dtype = TORCH_TO_DTYPE[dtype]
 
-        scales = scales.to(dtype=torch.float32 if self.fp32_scale else dtype)
+        #scales = scales.to(dtype=torch.float32 if self.fp32_scale else dtype)
         bias = bias.to(device=self.device, dtype=dtype) if (bias is not None) else None
 
         gemlite_linear = GemLiteLinearTriton(8, 
@@ -139,9 +140,15 @@ class A16W8: #INT8/FP8 weight-only channel-wise
 
         gemlite_linear.pack(W_q, scales, zeros=None, bias=bias)
 
-        #Pre-scaling
-        gemlite_linear.W_group_mode       = 2
-        gemlite_linear.channel_scale_mode = 0
+        if(self.post_scale):
+            #Post-scale
+            gemlite_linear.W_group_mode       = 0
+            gemlite_linear.channel_scale_mode = 1
+        else:
+            #Pre-scaling
+            gemlite_linear.W_group_mode       = 2
+            gemlite_linear.channel_scale_mode = 0
+
         return gemlite_linear
 
     def from_linear(self, linear_layer, del_orig=True):
@@ -307,15 +314,14 @@ class A16Wn:  # 8/4/2-bit weight-only as grouped "INT" / 8/4-bit as MXFP type
         torch.cuda.empty_cache()
         return out_layer
 
-
 #Alias
 class A16W8_INT8(A16W8):
-    def __init__(self, device='cuda:0', dtype=None, fp32_scale=False):
-        super().__init__(device=device, dtype=dtype, fp8=None, fp32_scale=fp32_scale)
+    def __init__(self, device='cuda:0', dtype=None, fp32_scale=True, post_scale=False):
+        super().__init__(device=device, dtype=dtype, fp8=None, fp32_scale=fp32_scale, post_scale=post_scale)
 
 class A16W8_FP8(A16W8):
-    def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8, fp32_scale=False):
-        super().__init__(device=device, dtype=dtype, fp8=fp8, fp32_scale=fp32_scale)
+    def __init__(self, device='cuda:0', dtype=None, fp8=default_fp8, fp32_scale=True, post_scale=False):
+        super().__init__(device=device, dtype=dtype, fp8=fp8, fp32_scale=fp32_scale, post_scale=post_scale)
 
 class A16Wn_HQQ_INT(A16Wn):
     def __init__(self, device='cuda:0', dtype=None, W_nbits=None):
