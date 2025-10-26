@@ -1066,86 +1066,54 @@ class A8W158_INT_dynamic:
 #################################################################################################
 default_batch_sizes = sorted(list(set(M_MAPPING)))[::-1]
 def warmup(
-    shapes: list,
-    batch_sizes: list = default_batch_sizes,
-    W_nbits: list = [4],
-    group_sizes: list = [64],
-    mode: str = "static",
-    dtype=torch.float16,
-    processor=None,
+    processor,
+    shapes: list[tuple],
+    batch_sizes: list[int] = default_batch_sizes,
+    group_size: int = 64,
+    dtype: torch.dtype = torch.float16,
 ):
     """
-    * Warm-up for A16W4 with group_size=64
-    warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
-    
-    * warm-up for A8W8 int8 dynamic
-    warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_int8')
-
-    * Warm-up for A8W8 fp8 dynamic
-    warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_fp8')
+    processor = A8W8_INT8_dynamic()
+    warmup(processor, shapes=[(4096, 4096), (4096, 2048)], batch_sizes=[1, 4, 8, ..])
+    `group_size` is only used for hqq quantization.
     """
 
-    use_predefined_process = processor is not None
+    if(hasattr(processor, "from_hqqlinear")):
+        try:
+            from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
+        except ImportException:
+            print("This processor requires the `hqq` package. Install it via `pip install hqq`.")
+    else:
+        class _NoHQQ: pass
+        HQQLinear = _NoHQQ
+
 
     device = torch.device(torch.cuda.current_device())
-    for W_nbits in W_nbits:
-        for group_size in group_sizes:
-            for shape in shapes:
-                out_features, in_features = shape
+    
+    for shape in shapes:
+        out_features, in_features = shape
 
-                linear = torch.nn.Linear(
-                    in_features=in_features,
-                    out_features=out_features,
-                    bias=False,
-                    dtype=dtype,
-                    device=device,
-                )
+        linear = torch.nn.Linear(
+            in_features=in_features,
+            out_features=out_features,
+            bias=False,
+            dtype=dtype,
+            device=device,
+        )
 
-                if(use_predefined_process):
-                    gemlite_linear = processor.from_linear(linear)
-                else:
-                    processor_args = {'device': device, 'dtype':dtype}
-                    if W_nbits == 8:
-                        if "dynamic" in mode:
-                            processor = A8W8_int8_dynamic #default: A8W8 int8
-                            if 'fp8' in mode:
-                                processor = A8W8_fp8_dynamic #A8W8 fp8
-                            if 'mxfp8' in mode:
-                                processor_args['post_scale'] = True if (group_size is None) else False #MXPF8 x MXPF8
-                                processor = A8W8_MXFP_dynamic
-                        else:
-                            if('mxfp8' in mode): #A16W8 - weight-only
-                                processor = A16W8_MXFP
-                            else:
-                                processor = A16W8
+        if(hasattr(processor, 'from_hqqlinear')):
+            W_nbits        = processor.W_nbits
+            quant_config   = BaseQuantizeConfig(nbits=W_nbits, group_size=group_size, axis=1)
+            linear         = HQQLinear(linear, quant_config=quant_config, compute_dtype=dtype, device=device)
+            gemlite_linear = processor.from_hqqlinear(linear)
+        else:
+            gemlite_linear = processor.from_linear(linear)
 
-                        gemlite_linear = processor(**processor_args).from_linear(linear)
+        for batch_size in tqdm(batch_sizes):
+            _ = gemlite_linear(torch.randn((batch_size, in_features), dtype=dtype, device=device) / 100.)
+            torch.cuda.synchronize()
 
-                    else:
-                        if(('mxfp' in mode or 'nvfp' in mode) and W_nbits == 4):
-                            if('mxfp8' in mode):
-                                processor = A8W4_MXFP_dynamic #MXFP8 x MXFP4
-                            if('mxfp4' in mode):
-                                if('dynamic' in mode): #MXFP4 x MXPF4
-                                    processor = A4W4_MXFP_dynamic
-                                else:
-                                    processor = A16W4_MXFP #MXFP4 weight-only
-                            elif('nvfp4' in mode):
-                                processor = A4W4_NVFP_dynamic
-
-                            gemlite_linear = processor(**processor_arg).from_linear(linear)
-
-                        else:
-                            processor      = A8Wn_dynamic if ('dynamic' in mode) else A16Wn
-                            quant_config   = BaseQuantizeConfig(nbits=W_nbits, group_size=group_size, axis=1)
-                            linear         = HQQLinear(linear, quant_config=quant_config, compute_dtype=dtype, device=device)
-                            gemlite_linear = processor(**processor_arg).from_hqqlinear(linear)
-
-                for batch_size in tqdm(batch_sizes):
-                    _ = gemlite_linear(torch.randn((batch_size, in_features), dtype=dtype, device=device) / 100.)
-                    torch.cuda.synchronize()
-
-                torch.cuda.empty_cache()
-                gc.collect()
-                time.sleep(1)
+        torch.cuda.empty_cache()
+        gc.collect()
+        time.sleep(1)
 
