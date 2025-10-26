@@ -31,10 +31,16 @@ def cleanup_linear(linear_layer, del_orig=True):
     torch.cuda.empty_cache()
 
 #Replaces all linear layers with the corresponding processor
-def patch_model(model, device, processor, skip_modules=[]):
-    #Loadd HQQLinear when needed
-    if(processor in [A16Wn, A8Wn_dynamic]):
-        from hqq.core.quantize import HQQLinear
+def patch_model(model, device, processor, skip_modules=['lm_head', 'vision', 'visual'], group_size=64):
+    """
+    Helper function to quantize the whole model from cpu device. 
+    The group_size parameter is only used in HQQ for W_nbits <=4, all the other configs do not use this parameter.
+    """
+    if(hasattr(processor, "from_hqqlinear")):
+        try:
+            from hqq.core.quantize import HQQLinear, BaseQuantizeConfig
+        except ImportException:
+            print("This processor requires the `hqq` package. Install it via `pip install hqq`.")
     else:
         class _NoHQQ: pass
         HQQLinear = _NoHQQ
@@ -45,16 +51,20 @@ def patch_model(model, device, processor, skip_modules=[]):
 
     #Patching fct
     def _patching_fct(layer, device, skip_modules):
-        layer = layer.to(device, non_blocking=True)
+        layer = layer.to(device=device, non_blocking=True)
         if(any(s in layer.name for s in skip_modules)):
             return layer
         else:
-            if(isinstance(layer, torch.nn.Linear)):
-                return processor(device=device).from_linear(layer)
-            elif(isinstance(layer, HQQLinear)):
-                return processor(device=device).from_hqqlinear(layer)
+            if(hasattr(processor, "from_hqqlinear")):
+                if(isinstance(layer, torch.nn.Linear)):
+                    W_nbits = processor.W_nbits
+                    quant_config = BaseQuantizeConfig(nbits=W_nbits, group_size=group_size if W_nbits <=4 else None)
+                    layer = HQQLinear(layer, quant_config=quant_config, compute_dtype=layer.weight.dtype, device=device)
+                    layer = processor.from_hqqlinear(layer)
             else:
-                return layer
+                layer = processor.from_linear(layer)
+
+        return layer
 
     #Replaces linear layers
     def _patch_linearlayers(model, fct, device, skip_modules):
@@ -68,8 +78,11 @@ def patch_model(model, device, processor, skip_modules=[]):
     _patch_linearlayers(model, _patching_fct, device, skip_modules)
 
     #Clean-up
+    model = model.to(device=device)
     torch.cuda.empty_cache()
     gc.collect()
+
+    return model
 
 #16-bit activations / 8-bit weigths
 class A16W8: #INT8/FP8 weight-only channel-wise
