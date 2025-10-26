@@ -129,6 +129,13 @@ gemlite_linear = A8W4_MXFP_dynamic(device=device, dtype=dtype, post_scale=True).
 gemlite_linear = A4W4_MXFP_dynamic(device=device, dtype=dtype).from_linear(layer)
 gemlite_linear = A4W4_NVFP_dynamic(device=device, dtype=dtype).from_linear(layer)
 ```
+
+You can also patch the whole model (even from cpu) as follows:
+```Python
+from gemlite.helper import *
+patch_model(model, device=device, processor=A8W8_INT8_dynamic())
+```
+
 ### Config Caching
 Triton autotuning can be time-consuming. To accelerate this process, we provide tools to automatically cache and load the optimal autotuning configurations for all kernels:
 ```Python
@@ -146,14 +153,17 @@ import gemlite
 #Ignore pre-loaded configs - if you want to start from scratch (Optional)
 #gemlite.reset_config() 
 
-#Set autotune (by default uses powers of 2 up to 1024)
-#gemlite.set_autotune_setting(lambda M: M) #max-autotune example
+#Set autotune mode: fast or max
+#gemlite.set_autotune("max")
 
-#Warm-up for A16W4 with group_size=64
-gemlite.helper.warmup(shapes=[(4096, 4096)], W_nbits=[4], group_sizes=[64], mode='static')
+#Autotune with the default batch-sizes
+warmup(A8W8_INT8_dynamic(), shapes=[(4096, 4096), (2048, 4096)])
 
-#Warm-up for A8W8 dynamic_fp8 or dynamic_int8
-gemlite.helper.warmup(shapes=[(4096, 4096)], W_nbits=[8], mode='dynamic_fp8')
+#You can specify the batch-sizes too
+warmup(A8W8_INT8_dynamic(), shapes=[(4096, 4096), (2048, 4096)], batch_sizes=[1, 8, 64, 128])
+
+#If you want to specify the group-size for HQQ-style quantization
+warmup(A16W4_HQQ_INT(), shapes=[(4096, 4096), (2048, 4096)], group_size=64)
 
 #Cache your new config
 gemlite.cache_config('new_config.json')
