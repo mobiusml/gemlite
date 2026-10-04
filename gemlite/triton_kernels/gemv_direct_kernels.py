@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Written by Dr. Hicham Badri @Mobius Labs GmbH - 2025
-# Direct Accumulation GEMV (M=1) specialization for 2-bit Ampere/Ada
+# Direct Accumulation GEMV (M=1) specialization for 2-bit (validated on Ampere)
 
 import torch, math, random, copy
 from torch import Tensor
