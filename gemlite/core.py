@@ -58,6 +58,7 @@ GEMLITE_TRITON_KERNELS = [
     gemv,
     gemv_revsplitK,
     gemv_splitK,
+    gemv_direct,
     gemm_splitK, #gemm_splitK / gemm_splitK_persistent
     gemm,
 ]
@@ -168,13 +169,15 @@ def get_default_gemv(W_nbits: int, mx_dtype: bool = False) -> str:
         return 'GEMV_REVSPLITK' if (W_nbits < 8) else 'GEMV_SPLITK'
 
 #matmul type selection logic
-def get_matmul_type(batch_size: int, W_nbits: int, mx_dtype: bool = False):
+def get_matmul_type(batch_size: int, W_nbits: int, mx_dtype: bool = False, out_features: int = 0):
     gemm_limit = 64
     if batch_size >= gemm_limit:
         return "GEMM"
     gemv_limit = 4 if (W_nbits < 8 and not mx_dtype) else 2 # previous 1
     if batch_size > gemv_limit:
         return "GEMM_SPLITK"
+    elif batch_size == 1 and W_nbits == 2 and not mx_dtype and out_features >= 4096:
+        return "GEMV_DIRECT"
     else:
         return get_default_gemv(W_nbits, mx_dtype)
 
@@ -258,7 +261,7 @@ def forward_functional(
     if(matmul_type >= 0):
         matmul_type_str = GEMLITE_MATMUL_TYPES[matmul_type]
     else:
-        matmul_type_str = get_matmul_type(x.shape[0], W_nbits, is_mx_dtype(input_dtype)) #batch_size, W_nbits, is_mx_dtype
+        matmul_type_str = get_matmul_type(x.shape[0], W_nbits, is_mx_dtype(input_dtype), out_features=out_features) #batch_size, W_nbits, is_mx_dtype, out_features
 
     out = (
         GEMLITE_TRITON_MAPPING[matmul_type_str]
@@ -855,6 +858,9 @@ class GemLiteLinearTriton(torch.nn.Module):
 
         from .triton_kernels.gemv_splitK_kernels import gemv_splitK
         _GEMLITE_TRITON_MAPPING['GEMV_SPLITK'] = gemv_splitK
+
+        from .triton_kernels.gemv_direct_kernels import gemv_direct
+        _GEMLITE_TRITON_MAPPING['GEMV_DIRECT'] = gemv_direct
 
         from .triton_kernels.gemm_splitK_kernels import gemm_splitK
         _GEMLITE_TRITON_MAPPING['GEMM_SPLITK'] = gemm_splitK

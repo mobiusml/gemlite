@@ -6,7 +6,7 @@ if sys.version_info < (3, 12): import imp
 else: import importlib as imp
 from typing import Union
 
-MATMUL_DTYPES = ['GEMV', 'GEMV_REVSPLITK', 'GEMV_SPLITK', 'GEMM_SPLITK', 'GEMM']
+MATMUL_DTYPES = ['GEMV', 'GEMV_REVSPLITK', 'GEMV_SPLITK', 'GEMV_DIRECT', 'GEMM_SPLITK', 'GEMM']
 
 # Block-quant tile used for FP8/INT8 block-level quantization
 BLOCK_QUANT_SIZE = 128
@@ -22,6 +22,7 @@ class AUTOTUNE:
 	GEMV           = "fast" #"max", "fast", "default" 
 	GEMV_REVSPLITK = "fast"
 	GEMV_SPLITK    = "fast"
+	GEMV_DIRECT    = "fast"
 	GEMM_SPLITK    = "fast"
 	GEMM           = "fast"
 	USE_CUDA_GRAPH = False
@@ -39,6 +40,7 @@ def reload_all_modules():
 	from . import gemv_kernels
 	from . import gemv_splitK_kernels
 	from . import gemv_revsplitK_kernels
+	from . import gemv_direct_kernels
 
 	imp.reload(gemm_kernels)
 	imp.reload(gemm_splitK_kernels)
@@ -46,6 +48,7 @@ def reload_all_modules():
 	imp.reload(gemv_kernels)
 	imp.reload(gemv_splitK_kernels)
 	imp.reload(gemv_revsplitK_kernels)
+	imp.reload(gemv_direct_kernels)
 
 def set_kernel_caching(enable: bool):
 	KERNEL_CACHE.ENABLE = enable
